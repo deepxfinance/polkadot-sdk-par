@@ -229,6 +229,54 @@ impl<H: Hasher> Recorder<H> {
 
 		Ok(())
 	}
+
+	pub fn new_copy(&self) -> Self {
+		let new_recorder = Self::default();
+		new_recorder.merge(&self);
+		new_recorder
+	}
+
+	pub fn merge(&self, other: &Self) {
+		let mut inner = self.inner.lock();
+		let mut other_inner = other.inner.lock();
+		for (storage_root, kv) in other_inner.recorded_keys.iter() {
+			if let Some(kv_map) = inner.recorded_keys.get_mut(storage_root) {
+				for (k, v) in kv.iter() {
+					// TODO if we need to filter duplicate kv?
+					// if let Some(_) = kv_map.get_mut(k) {
+					// 	// return Err("Duplicate recorded key".to_string());
+					// 	continue;
+					// } else {
+					// 	kv_map.insert(k.clone(), v.clone());
+					// }
+					kv_map.insert(k.clone(), v.clone());
+				}
+			} else {
+				inner.recorded_keys.insert(storage_root.clone(), kv.clone());
+			}
+		}
+		let mut new_encoded_size_estimation = self.encoded_size_estimation.load(Ordering::Relaxed);
+		for (k, node) in other_inner.accessed_nodes.iter() {
+			// TODO if we need to filter duplicate node?
+			// if let Some(_) = inner.accessed_nodes.get_mut(k) {
+			// 	// return Err("Duplicate accessed_node key".to_string());
+			// 	continue;
+			// } else {
+			// 	inner.accessed_nodes.insert(k.clone(), node.clone());
+			// }
+			new_encoded_size_estimation = new_encoded_size_estimation.saturating_add(node.encoded_size());
+			if let Some(old) = inner.accessed_nodes.insert(k.clone(), node.clone()) {
+				new_encoded_size_estimation = new_encoded_size_estimation.saturating_sub(old.encoded_size());
+			}
+		}
+		self.encoded_size_estimation.store(new_encoded_size_estimation, Ordering::Relaxed);
+		// TODO check transaction duplicate
+		for transaction in mem::replace(&mut other_inner.transactions, vec![]) {
+			inner.transactions.push(transaction);
+		}
+		drop(other_inner);
+		drop(inner);
+	}
 }
 
 /// The [`TrieRecorder`](trie_db::TrieRecorder) implementation.

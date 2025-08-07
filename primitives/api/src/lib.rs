@@ -102,7 +102,7 @@ pub use sp_runtime::{
 #[cfg(feature = "std")]
 pub use sp_state_machine::{
 	backend::AsTrieBackend, Backend as StateBackend, InMemoryBackend, OverlayedChanges,
-	StorageProof, TrieBackend, TrieBackendBuilder,
+	StorageProof, TrieBackend, TrieBackendBuilder, OverlayedEntry, MergeErr, MergeChange,
 };
 #[doc(hidden)]
 pub use sp_std::{mem, slice, vec};
@@ -110,6 +110,7 @@ pub use sp_std::{mem, slice, vec};
 pub use sp_version::{create_apis_vec, ApiId, ApisVec, RuntimeVersion};
 #[cfg(feature = "std")]
 use std::cell::RefCell;
+pub use sp_std::collections::btree_map::BTreeMap;
 
 /// Maximum nesting level for extrinsics.
 pub const MAX_EXTRINSIC_DEPTH: u32 = 256;
@@ -450,6 +451,8 @@ pub use sp_api_proc_macro::impl_runtime_apis;
 /// # fn main() {}
 /// ```
 pub use sp_api_proc_macro::mock_impl_runtime_apis;
+#[cfg(feature = "std")]
+pub use sp_state_machine::{StorageValue, StorageKey};
 
 /// A type that records all accessed trie nodes and generates a proof out of it.
 #[cfg(feature = "std")]
@@ -584,6 +587,27 @@ pub trait ApiExt<Block: BlockT> {
 		backend: &Self::StateBackend,
 		parent_hash: Block::Hash,
 	) -> Result<StorageChanges<Self::StateBackend, Block>, String>
+	where
+		Self: Sized;
+
+	fn debug_info(&self) -> String
+	where
+		Self: Sized;
+
+	fn take_all_changes(&mut self) -> (
+		OverlayedChanges,
+		StorageTransactionCache<Block, Self::StateBackend>,
+		Option<ProofRecorder<Block>>,
+	)
+	where
+		Self: Sized;
+
+	fn merge_all_changes<M: MergeChange<StorageKey, Option<StorageValue>>>(
+		&mut self,
+		_changes: OverlayedChanges,
+		_recorder: Option<ProofRecorder<Block>>,
+		_merge_top: &M,
+	) -> Result<(), MergeErr>
 	where
 		Self: Sized;
 }

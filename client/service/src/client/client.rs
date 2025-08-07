@@ -38,7 +38,7 @@ use sc_client_api::{
 	},
 	execution_extensions::ExecutionExtensions,
 	notifications::{StorageEventStream, StorageNotifications},
-	CallExecutor, ExecutorProvider, KeysIter, OnFinalityAction, OnImportAction, PairsIter,
+	CallExecutor, CloneForExecution, ExecutorProvider, KeysIter, OnFinalityAction, OnImportAction, PairsIter,
 	ProofProvider, UsageProvider,
 };
 use sc_consensus::{
@@ -260,6 +260,33 @@ where
 		telemetry,
 		config,
 	)
+}
+
+impl<B, E, Block, RA> CloneForExecution for Client<B, E, Block, RA>
+where
+	B: backend::Backend<Block>,
+	E: CallExecutor<Block> + Clone,
+	Block: BlockT,
+{
+	/// Only clone for build runtime api to execute extrinsic.
+	fn clone_for_execution(&self) -> Self {
+		Client {
+			backend: self.backend.clone(),
+			executor: self.executor.clone(),
+			storage_notifications: StorageNotifications::new(None),
+			import_notification_sinks: Default::default(),
+			every_import_notification_sinks: Default::default(),
+			finality_notification_sinks: Default::default(),
+			import_actions: Default::default(),
+			finality_actions: Default::default(),
+			importing_block: Default::default(),
+			block_rules: BlockRules::new(None, None),
+			config: self.config.clone(),
+			telemetry: self.telemetry.clone(),
+			unpin_worker_sender: self.unpin_worker_sender.clone(),
+			_phantom: Default::default(),
+		}
+	}
 }
 
 impl<B, E, Block, RA> BlockOf for Client<B, E, Block, RA>

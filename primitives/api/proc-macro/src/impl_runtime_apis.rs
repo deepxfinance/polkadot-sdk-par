@@ -317,6 +317,49 @@ fn generate_runtime_api_base_structures() -> Result<TokenStream> {
 					state_version,
 				)
 			}
+
+			fn debug_info(&self) -> String
+			where
+				Self: Sized
+			{
+				format!("changes: {:?}\n", std::cell::RefCell::borrow(&self.changes).top_keys())
+				// format!("storage_transaction_cache: {:?}\nrecorder: {:#?}", std::cell::RefCell::borrow(&self.storage_transaction_cache).transaction_storage_root, self.recorder.clone().map(|r| r.to_storage_proof()))
+			}
+
+			fn take_all_changes(&mut self) -> (
+				#crate_::OverlayedChanges,
+				#crate_::StorageTransactionCache<Block, C::StateBackend>,
+				std::option::Option<#crate_::ProofRecorder<Block>>,
+			) 
+			where 
+				Self: Sized
+			{
+				let changes = std::cell::RefCell::take(&self.changes);
+				let recorder = self.recorder.take();
+				let storage_transaction_cache = core::cell::RefCell::take(&self.storage_transaction_cache);
+				(changes, storage_transaction_cache, recorder)
+			}
+
+			fn merge_all_changes<M: #crate_::MergeChange<#crate_::StorageKey, std::option::Option<#crate_::StorageValue>>>(
+				&mut self,
+				changes: #crate_::OverlayedChanges,
+				recorder: std::option::Option<#crate_::ProofRecorder<Block>>,
+				merge_top: &M,
+			) -> std::result::Result<(), #crate_::MergeErr>
+			where
+				Self: Sized,
+			{
+				// merge changes
+				std::cell::RefCell::borrow_mut(&self.changes).merge(&changes, merge_top)?;
+				// merge recorder
+				if self.recorder.is_some() {
+					if let std::option::Option::Some(other_recorder) = &recorder {
+						self.recorder.as_mut().unwrap().merge(other_recorder)
+					}
+				}
+				// storage_transaction_cache does not need merge, it is updated by [Self::into_storage_changes]
+				Ok(())
+			}
 		}
 
 		#[cfg(any(feature = "std", test))]

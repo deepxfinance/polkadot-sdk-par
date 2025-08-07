@@ -41,7 +41,7 @@ use std::{
 	any::{Any, TypeId},
 	boxed::Box,
 };
-
+pub use crate::overlayed_changes::changeset::{OverlayedEntry, MergeChange};
 pub use self::changeset::{AlreadyInRuntime, NoOpenTransaction, NotInRuntime, OverlayedValue};
 
 /// Changes that are made outside of extrinsics are marked with this index;
@@ -102,6 +102,74 @@ pub struct OverlayedChanges {
 	collect_extrinsics: bool,
 	/// Collect statistic on this execution.
 	stats: StateMachineStats,
+}
+
+/// Error type returned when merge [OverlayedChanges].
+#[derive(Clone, Debug)]
+pub enum MergeErr{
+	/// Some [OverlayedChanges] not finished.
+	Unfinished(&'static str),
+	/// Two [OverlayedChanges] have changed same top keys and can not be merged.
+	DuplicateTopKeys(Vec<StorageKey>),
+	/// Two [OverlayedChanges] have changed same child keys and can not be merged.
+	DuplicateChildKeys(Vec<StorageKey>),
+	/// Two [OverlayedChanges] have changed same offchain keys and can not be merged.
+	DuplicateOffchainKeys(Vec<(Vec<u8>, Vec<u8>)>),
+}
+
+impl OverlayedChanges {
+	/// get keys for top changes.
+	pub fn top_keys(&self) -> Vec<StorageKey> {
+		self.top.changes().map(|(k, _)| k.clone()).collect()
+	}
+
+	/// merge with a custom handler for top changes' meet conflict key.
+	pub fn merge<M: MergeChange<StorageKey, Option<StorageValue>>>(
+		&mut self,
+		other: &Self,
+		merge_handle: &M,
+	) -> Result<(), MergeErr> {
+		if let Err(duplicate_keys) = self.top.merge_custom(other.top.clone(), Some(merge_handle)) {
+			if duplicate_keys.is_empty() {
+				return Err(MergeErr::Unfinished("OverlayedChanges merge top meet unfinished transaction"));
+			} else {
+				return Err(MergeErr::DuplicateTopKeys(duplicate_keys));
+			}
+		};
+		for (key, (set, info)) in other.children.iter() {
+			if let Some((changeset, _info)) = self.children.get_mut(key) {
+				if let Err(duplicate_keys) = changeset.merge(set.clone()) {
+					if duplicate_keys.is_empty() {
+						return Err(MergeErr::Unfinished("OverlayedChanges merge children meet unfinished transaction"));
+					} else {
+						return Err(MergeErr::DuplicateChildKeys(duplicate_keys));
+					}
+				}
+			} else {
+				self.children.insert(key.clone(), (set.clone(), info.clone()));
+			}
+		}
+		if let Err(duplicate_keys) = self.offchain.overlay_mut().merge(other.offchain.overlay().clone()) {
+			if duplicate_keys.is_empty() {
+				return Err(MergeErr::Unfinished("OverlayedChanges merge offchain meet unfinished transaction"));
+			} else {
+				return Err(MergeErr::DuplicateOffchainKeys(duplicate_keys));
+			}
+		};
+		let offset = self.transaction_index_ops.last().map(|tio| match tio {
+			IndexOperation::Insert { extrinsic: e, .. } => *e + 1,
+			IndexOperation::Renew { extrinsic: e, .. } => *e + 1,
+		}).unwrap_or(0);
+		for mut other_tio in other.transaction_index_ops.clone() {
+			match &mut other_tio {
+				IndexOperation::Insert { extrinsic: e, .. } => *e += offset,
+				IndexOperation::Renew { extrinsic: e, .. } => *e += offset,
+			}
+			self.transaction_index_ops.push(other_tio);
+		}
+		self.stats.add(&other.stats);
+		Ok(())
+	}
 }
 
 /// Transaction index operation.

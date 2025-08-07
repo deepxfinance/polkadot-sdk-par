@@ -9,6 +9,8 @@ use sc_service::{error::Error as ServiceError, Configuration, TaskManager, WarpS
 use sc_telemetry::{Telemetry, TelemetryWorker};
 use sp_consensus_aura::sr25519::AuthorityPair as AuraPair;
 use std::{sync::Arc, time::Duration};
+use crate::merge_handler::MergeHandler;
+use crate::transaction_group::DefaultRCGroup;
 
 // Our native executor instance.
 pub struct ExecutorDispatch;
@@ -220,13 +222,14 @@ pub fn new_full(config: Configuration) -> Result<TaskManager, ServiceError> {
 	})?;
 
 	if role.is_authority() {
-		let proposer_factory = sc_basic_authorship::ProposerFactory::new(
-			task_manager.spawn_handle(),
-			client.clone(),
-			transaction_pool,
-			prometheus_registry.as_ref(),
-			telemetry.as_ref().map(|x| x.handle()),
-		);
+		let proposer_factory: sc_basic_authorship::MTHProposerFactory<_, _, _, _, MergeHandler, DefaultRCGroup> =
+			sc_basic_authorship::MTHProposerFactory::new(
+				task_manager.spawn_handle(),
+				client.clone(),
+				transaction_pool,
+				prometheus_registry.as_ref(),
+				telemetry.as_ref().map(|x| x.handle()),
+			);
 
 		let slot_duration = sc_consensus_aura::slot_duration(&*client)?;
 

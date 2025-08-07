@@ -26,6 +26,9 @@
 
 #![warn(missing_docs)]
 
+pub mod merge_handler;
+pub use merge_handler::*;
+
 use codec::Encode;
 
 use sp_api::{
@@ -132,13 +135,13 @@ where
 
 /// Utility for building new (valid) blocks from a stream of extrinsics.
 pub struct BlockBuilder<'a, Block: BlockT, A: ProvideRuntimeApi<Block>, B> {
-	extrinsics: Vec<Block::Extrinsic>,
-	api: ApiRef<'a, A::Api>,
+	pub extrinsics: Vec<Block::Extrinsic>,
+	pub api: ApiRef<'a, A::Api>,
 	version: u32,
-	parent_hash: Block::Hash,
-	backend: &'a B,
+	pub parent_hash: Block::Hash,
+	pub backend: &'a B,
 	/// The estimated size of the block header.
-	estimated_header_size: usize,
+	pub estimated_header_size: usize,
 }
 
 impl<'a, Block, A, B> BlockBuilder<'a, Block, A, B>

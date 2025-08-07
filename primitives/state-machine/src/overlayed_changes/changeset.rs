@@ -28,7 +28,7 @@ use crate::warn;
 use smallvec::SmallVec;
 use sp_std::{
 	collections::{btree_map::BTreeMap, btree_set::BTreeSet},
-	hash::Hash,
+	hash::Hash, vec::Vec,
 };
 
 const PROOF_OVERLAY_NON_EMPTY: &str = "\
@@ -191,7 +191,7 @@ impl<V> OverlayedEntry<V> {
 	///
 	/// This makes sure that the old version is not overwritten and can be properly
 	/// rolled back when required.
-	fn set(&mut self, value: V, first_write_in_tx: bool, at_extrinsic: Option<u32>) {
+	pub fn set(&mut self, value: V, first_write_in_tx: bool, at_extrinsic: Option<u32>) {
 		if first_write_in_tx || self.transactions.is_empty() {
 			self.transactions.push(InnerValue { value, extrinsics: Default::default() });
 		} else {
@@ -399,6 +399,71 @@ impl<K: Ord + Hash + Clone, V> OverlayedMap<K, V> {
 	}
 }
 
+/// Basic requirement for custom merge two changes into one.
+pub trait MergeChange<K, V> {
+	/// Merge other changes into local changes, return duplicate keys.
+	fn merge_changes(
+		&self,
+		_local: &mut BTreeMap<K, OverlayedEntry<V>>,
+		_other: BTreeMap<K, OverlayedEntry<V>>,
+	) -> Vec<K> {
+		Vec::new()
+	}
+}
+
+#[derive(Default)]
+pub struct DefaultMerge;
+
+impl<K: Ord + Hash + Clone, V: PartialEq> MergeChange<K, V> for DefaultMerge {
+	fn merge_changes(
+		&self,
+		local: &mut BTreeMap<K, OverlayedEntry<V>>, 
+		other: BTreeMap<K, OverlayedEntry<V>>
+	) -> Vec<K>  {
+		let mut duplicate_keys = Vec::new();
+		for (k, v) in other.into_iter() {
+			if let Some(entry) = local.get_mut(&k) {
+				if entry.value_ref() == v.value_ref() {
+					let other_changes: Vec<_> = v.extrinsics().into_iter().collect();
+					let local_changes: Vec<_> = entry.extrinsics().into_iter().collect();
+					if local_changes == other_changes {
+						continue;
+					}
+				}
+				duplicate_keys.push(k);
+			} else {
+				local.insert(k, v);
+			}
+		}
+		duplicate_keys
+	}
+}
+
+impl<K: Ord + Hash + Clone, V: PartialEq> OverlayedMap<K, V> {
+	pub fn merge(&mut self, other: Self) -> Result<(), Vec<K>> {
+		self.merge_custom::<DefaultMerge>(other, None)
+	}
+	
+	pub fn merge_custom<M: MergeChange<K, V>>(&mut self, other: Self, merge_change: Option<&M>) -> Result<(), Vec<K>> {
+		// 1. If local or other change set have dirty key, that means some transaction not closed or rollback.
+		// Unfinished change should not merge.
+		if self.transaction_depth() != 0 || other.transaction_depth() != 0 {
+			return Err(Vec::new());
+		}
+		// 2. num_client_transactions and execution_mode will not be used, so we do not merge here.
+		// 3. merge changes.
+		let duplicate_keys = if let Some(m) = merge_change {
+			m.merge_changes(&mut self.changes, other.changes)
+		} else {
+			DefaultMerge::default().merge_changes(&mut self.changes, other.changes)
+		};
+		if !duplicate_keys.is_empty() {
+			return Err(duplicate_keys);
+		}
+		Ok(())
+	}
+}
+
 impl OverlayedChangeSet {
 	/// Get a mutable reference for a value.
 	///
@@ -567,6 +632,84 @@ mod test {
 		assert_changes(&changeset, &rolled_back);
 
 		assert_drained_changes(changeset, rolled_back);
+	}
+
+	#[test]
+	fn merge_change_set_no_conflict() {
+		let mut changeset = OverlayedChangeSet::default();
+		changeset.set(b"key0".to_vec(), Some(b"val0".to_vec()), Some(1));
+		changeset.set(b"key1".to_vec(), Some(b"val1".to_vec()), Some(1));
+		changeset.set(b"key0".to_vec(), Some(b"val0-1".to_vec()), Some(10));
+		changeset.start_transaction();
+		changeset.set(b"key42".to_vec(), Some(b"val42".to_vec()), Some(42));
+		changeset.set(b"key99".to_vec(), Some(b"val99".to_vec()), Some(99));
+		changeset.commit_transaction().unwrap();
+
+		changeset.start_transaction();
+		changeset.set(b"key3".to_vec(), Some(b"val3".to_vec()), Some(1));
+		changeset.set(b"key8".to_vec(), Some(b"val8".to_vec()), Some(10));
+		changeset.set(b"key6".to_vec(), Some(b"val6".to_vec()), Some(100));
+		changeset.commit_transaction().unwrap();
+
+		let all_changes: Changes = vec![
+			(b"key0", (Some(b"val0-1"), vec![1, 10])),
+			(b"key1", (Some(b"val1"), vec![1])),
+			(b"key3", (Some(b"val3"), vec![1])),
+			(b"key42", (Some(b"val42"), vec![42])),
+			(b"key6", (Some(b"val6"), vec![100])),
+			(b"key8", (Some(b"val8"), vec![10])),
+			(b"key99", (Some(b"val99"), vec![99])),
+		];
+		assert_changes(&changeset, &all_changes);
+
+		let mut changeset1 = OverlayedChangeSet::default();
+		changeset1.set(b"key0".to_vec(), Some(b"val0".to_vec()), Some(1));
+		changeset1.set(b"key1".to_vec(), Some(b"val1".to_vec()), Some(1));
+		changeset1.set(b"key0".to_vec(), Some(b"val0-1".to_vec()), Some(10));
+		changeset1.start_transaction();
+		changeset1.set(b"key42".to_vec(), Some(b"val42".to_vec()), Some(42));
+		changeset1.set(b"key99".to_vec(), Some(b"val99".to_vec()), Some(99));
+		changeset1.commit_transaction().unwrap();
+		let mut changeset2 = OverlayedChangeSet::default();
+		changeset1.set(b"key0".to_vec(), Some(b"val0".to_vec()), Some(1));
+		changeset1.set(b"key1".to_vec(), Some(b"val1".to_vec()), Some(1));
+		changeset1.set(b"key0".to_vec(), Some(b"val0-1".to_vec()), Some(10));
+		changeset2.start_transaction();
+		changeset2.set(b"key3".to_vec(), Some(b"val3".to_vec()), Some(1));
+		changeset2.set(b"key8".to_vec(), Some(b"val8".to_vec()), Some(10));
+		changeset2.set(b"key6".to_vec(), Some(b"val6".to_vec()), Some(100));
+		changeset2.commit_transaction().unwrap();
+
+		changeset1.merge(changeset2).unwrap();
+		assert_changes(&changeset1, &all_changes);
+	}
+	#[test]
+	fn merge_change_set_conflict() {
+		let mut changeset1 = OverlayedChangeSet::default();
+		changeset1.set(b"key0".to_vec(), Some(b"val0".to_vec()), Some(1));
+		changeset1.set(b"key1".to_vec(), Some(b"val1".to_vec()), Some(1));
+		changeset1.set(b"key0".to_vec(), Some(b"val0-1".to_vec()), Some(10));
+		changeset1.start_transaction();
+		changeset1.set(b"key42".to_vec(), Some(b"val42".to_vec()), Some(42));
+		changeset1.commit_transaction().unwrap();
+		let changes1: Changes = vec![
+			(b"key0", (Some(b"val0-1"), vec![1, 10])),
+			(b"key1", (Some(b"val1"), vec![1])),
+			(b"key42", (Some(b"val42"), vec![42])),
+		];
+		assert_changes(&changeset1, &changes1);
+		let mut changeset2 = OverlayedChangeSet::default();
+		changeset2.start_transaction();
+		changeset2.set(b"key0".to_vec(), Some(b"val2-1".to_vec()), Some(108));
+		changeset2.set(b"key42".to_vec(), Some(b"val42".to_vec()), Some(42));
+		changeset2.commit_transaction().unwrap();
+		let changes2: Changes = vec![
+			(b"key0", (Some(b"val2-1"), vec![108])),
+			(b"key42", (Some(b"val42"), vec![42])),
+		];
+		assert_changes(&changeset2, &changes2);
+
+		assert_eq!(changeset1.merge(changeset2), Err(vec![b"key0".to_vec()]));
 	}
 
 	#[test]
