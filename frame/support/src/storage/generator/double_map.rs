@@ -22,6 +22,7 @@ use crate::{
 };
 use codec::{Decode, Encode, EncodeLike, FullCodec, FullEncode};
 use sp_std::prelude::*;
+use scale_info::prelude::string::String;
 
 /// Generator for `StorageDoubleMap` used by `decl_storage`.
 ///
@@ -198,6 +199,10 @@ where
 		KArg2: EncodeLike<K2>,
 		VArg: EncodeLike<V>,
 	{
+		log::debug!(target: "storage_dev", "double map insert {} {}", 
+			String::from_utf8(Self::module_prefix().to_vec()).unwrap(), 
+			String::from_utf8(Self::storage_prefix().to_vec()).unwrap(),
+		);
 		unhashed::put(&Self::storage_double_map_final_key(k1, k2), &val)
 	}
 
@@ -285,6 +290,10 @@ where
 
 		let ret = f(&mut val);
 		if ret.is_ok() {
+			log::debug!(target: "storage_dev", "double map mutate {} {}", 
+				String::from_utf8(Self::module_prefix().to_vec()).unwrap(), 
+				String::from_utf8(Self::storage_prefix().to_vec()).unwrap(),
+			);
 			match G::from_query_to_optional_value(val) {
 				Some(ref val) => unhashed::put(final_key.as_ref(), val),
 				None => unhashed::kill(final_key.as_ref()),
@@ -304,6 +313,10 @@ where
 
 		let ret = f(&mut val);
 		if ret.is_ok() {
+			log::debug!(target: "storage_dev", "double map mutate_exists {} {}", 
+				String::from_utf8(Self::module_prefix().to_vec()).unwrap(), 
+				String::from_utf8(Self::storage_prefix().to_vec()).unwrap(),
+			);
 			match val {
 				Some(ref val) => unhashed::put(final_key.as_ref(), val),
 				None => unhashed::kill(final_key.as_ref()),
@@ -320,6 +333,10 @@ where
 		EncodeLikeItem: EncodeLike<Item>,
 		V: StorageAppend<Item>,
 	{
+		log::debug!(target: "storage_dev", "double map append {} {}", 
+			String::from_utf8(Self::module_prefix().to_vec()).unwrap(), 
+			String::from_utf8(Self::storage_prefix().to_vec()).unwrap(),
+		);
 		let final_key = Self::storage_double_map_final_key(k1, k2);
 		sp_io::storage::append(&final_key, item.encode());
 	}

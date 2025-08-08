@@ -22,6 +22,7 @@ use crate::{
 };
 use codec::{Decode, Encode, EncodeLike, FullCodec, FullEncode};
 use sp_std::borrow::Borrow;
+use scale_info::prelude::string::String;
 #[cfg(not(feature = "std"))]
 use sp_std::prelude::*;
 
@@ -253,6 +254,10 @@ impl<K: FullEncode, V: FullCodec, G: StorageMap<K, V>> storage::StorageMap<K, V>
 	}
 
 	fn insert<KeyArg: EncodeLike<K>, ValArg: EncodeLike<V>>(key: KeyArg, val: ValArg) {
+		log::debug!(target: "storage_dev", "map insert {} {}", 
+			String::from_utf8(Self::module_prefix().to_vec()).unwrap(), 
+			String::from_utf8(Self::storage_prefix().to_vec()).unwrap(),
+		);
 		unhashed::put(Self::storage_map_final_key(key).as_ref(), &val)
 	}
 
@@ -282,6 +287,10 @@ impl<K: FullEncode, V: FullCodec, G: StorageMap<K, V>> storage::StorageMap<K, V>
 
 		let ret = f(&mut val);
 		if ret.is_ok() {
+			log::debug!(target: "storage_dev", "map mutate {} {}", 
+				String::from_utf8(Self::module_prefix().to_vec()).unwrap(), 
+				String::from_utf8(Self::storage_prefix().to_vec()).unwrap(),
+			);
 			match G::from_query_to_optional_value(val) {
 				Some(ref val) => unhashed::put(final_key.as_ref(), &val.borrow()),
 				None => unhashed::kill(final_key.as_ref()),
@@ -299,6 +308,10 @@ impl<K: FullEncode, V: FullCodec, G: StorageMap<K, V>> storage::StorageMap<K, V>
 
 		let ret = f(&mut val);
 		if ret.is_ok() {
+			log::debug!(target: "storage_dev", "map mutate_exists {} {}", 
+				String::from_utf8(Self::module_prefix().to_vec()).unwrap(), 
+				String::from_utf8(Self::storage_prefix().to_vec()).unwrap(),
+			);
 			match val {
 				Some(ref val) => unhashed::put(final_key.as_ref(), &val.borrow()),
 				None => unhashed::kill(final_key.as_ref()),
@@ -320,6 +333,10 @@ impl<K: FullEncode, V: FullCodec, G: StorageMap<K, V>> storage::StorageMap<K, V>
 		EncodeLikeItem: EncodeLike<Item>,
 		V: StorageAppend<Item>,
 	{
+		log::debug!(target: "storage_dev", "map append {} {}", 
+			String::from_utf8(Self::module_prefix().to_vec()).unwrap(), 
+			String::from_utf8(Self::storage_prefix().to_vec()).unwrap(),
+		);
 		let key = Self::storage_map_final_key(key);
 		sp_io::storage::append(&key, item.encode());
 	}
