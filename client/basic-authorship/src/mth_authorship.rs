@@ -44,7 +44,7 @@ use sc_proposer_metrics::{EndProposingReason, MetricsLink as PrometheusMetrics};
 use sp_runtime::traits::One;
 use crate::DEFAULT_BLOCK_SIZE_LIMIT;
 
-const DEFAULT_SOFT_DEADLINE_PERCENT: Percent = Percent::from_percent(50);
+const DEFAULT_SOFT_DEADLINE_PERCENT: Percent = Percent::from_percent(80);
 
 /// [`Proposer`] factory.
 pub struct ProposerFactory<A, B, C, PR, MBH, RCG> {
@@ -347,11 +347,13 @@ where
         <A as TransactionPool>::InPoolTransaction: Send + Sync + 'static,
     {
         let propose_with_start = time::Instant::now();
+        let propose_time = deadline.saturating_duration_since(propose_with_start).as_millis();
         let mut block_builder =
             self.client.new_block_at(self.parent_hash.clone(), inherent_digests.clone(), PR::ENABLED)?;
         let create_inherents_start = time::Instant::now();
         let inherents = block_builder.create_inherents(inherent_data)?;
         let create_inherents_end = time::Instant::now();
+        let mut extrinsic_count = inherents.len();
 
         self.metrics.report(|metrics| {
             metrics.create_inherents_time.observe(
@@ -393,7 +395,6 @@ where
 			},
 		};
         let mut skipped = 0;
-        let mut extrinsic_count = 0usize;
         let block_size_limit = block_size_limit.unwrap_or(self.default_block_size_limit);
         let mut block_size = block_builder.estimated_header_size + block_builder.extrinsics.encoded_size();
         let mut proof_size = if self.include_proof_in_block_size_estimation {
@@ -405,12 +406,12 @@ where
             let pending_tx = if let Some(pending_tx) = pending_iterator.next() {
                 pending_tx
             } else {
-                debug!("out of transactions from pool(total {extrinsic_count})");
+                debug!(target: "mth_authorship", "out of transactions from pool(total {extrinsic_count})");
                 break;
             };
 
             let pending_tx_data = pending_tx.data().clone();
-            if block_size + pending_tx_data.encoded_size() + proof_size > block_size_limit - extrinsic_count * 200 {
+            if block_size + pending_tx_data.encoded_size() + proof_size > block_size_limit {
                 if skipped < MAX_SKIPPED_TRANSACTIONS {
                     skipped += 1;
                     debug!(
@@ -420,7 +421,7 @@ where
 					);
                     continue
                 } else {
-                    debug!("Reached block size limit, start execute transactions.");
+                    debug!(target: "mth_authorship", "Reached block size limit with extrinsic: {extrinsic_count}, start execute transactions.");
                     break;
                 }
             }
@@ -456,17 +457,15 @@ where
 
         let mbh = MBH::default();
         mbh.pre_handle(&block_builder.backend, &block_builder.parent_hash);
-        let mut extrinsic_group: Vec<Vec<Arc<<A as TransactionPool>::InPoolTransaction>>> = group.into_values().collect();
-        extrinsic_group.sort_by(|a, b| a.len().cmp(&b.len()));
+        let extrinsic_group: Vec<Vec<Arc<<A as TransactionPool>::InPoolTransaction>>> = group.into_values().collect();
         let (tx, mut rx) = mpsc::channel(extrinsic_group.len());
-        for i in 0..extrinsic_group.len() {
+        for (i, pending_txs) in extrinsic_group.into_iter().enumerate() {
             let parent_hash = self.parent_hash.clone();
             let spawn_handle = self.spawn_handle.clone();
-            let pending_txs = extrinsic_group[i].clone();
             let now = time::Instant::now();
             let left = deadline.saturating_duration_since(now);
             let left_micros: u64 = left.as_micros().saturated_into();
-            let soft_deadline =
+            let thread_deadline =
                 now + time::Duration::from_micros(self.soft_deadline_percent.mul_floor(left_micros));
             let inherent_digests_clone = inherent_digests.clone();
             let client_clone = self.client.clone_for_execution();
@@ -486,19 +485,32 @@ where
                     };
                     let mut unqueue_invalid = Vec::new();
                     let mut applied_extrinsics = Vec::new();
+                    let total_tx = pending_txs.len();
                     let mut pending_iterator = pending_txs.into_iter();
                     let end_reason = loop {
                         let pending_tx = if let Some(pending_tx) = pending_iterator.next() {
                             pending_tx
                         } else {
+                            debug!(
+                                target: "mth_authorship",
+								"[Thread {i}] Consensus finished in {}ms {}/{}/{total_tx} executed when pushing block transactions, \
+								report current state.",
+                                now.elapsed().as_millis(),
+                                block_builder.extrinsics.len(),
+                                unqueue_invalid.len(),
+							);
                             break EndProposingReason::NoMoreTransactions
                         };
 
                         let now = time::Instant::now();
-                        if now > deadline {
+                        if now > thread_deadline {
                             debug!(
-								"[Thread {i}] Consensus deadline reached when pushing block transactions, \
-								proceeding with proposing."
+                                target: "mth_authorship",
+								"[Thread {i}] Consensus thread_deadline reached {}ms {}/{}/{total_tx} executed when pushing block transactions, \
+								report current state.",
+                                left.as_millis(),
+                                block_builder.extrinsics.len(),
+                                unqueue_invalid.len(),
 							);
                             break EndProposingReason::HitDeadline
                         }
@@ -508,24 +520,22 @@ where
 
                         trace!("[{:?}] Pushing to the block.", pending_tx_hash);
                         match sc_block_builder::BlockBuilder::push(&mut block_builder, pending_tx_data.clone()) {
-                            Ok(()) => {
-                                applied_extrinsics.push(pending_tx_data);
-                                debug!("[{:?}] Pushed to the block.", pending_tx_hash);
-                            },
+                            Ok(()) => applied_extrinsics.push(pending_tx_data),
                             Err(ApplyExtrinsicFailed(Validity(e))) if e.exhausted_resources() => {
                                 if skipped < MAX_SKIPPED_TRANSACTIONS {
                                     skipped += 1;
                                     debug!(
-									"[Thread {i}] Block seems full, but will try {} more transactions before quitting.",
-									MAX_SKIPPED_TRANSACTIONS - skipped,
-								);
-                                } else if time::Instant::now() < soft_deadline {
+                                        "[Thread {i}] Block seems full, but will try {} more transactions before quitting.",
+                                        MAX_SKIPPED_TRANSACTIONS - skipped,
+                                    );
+                                } else if time::Instant::now() < thread_deadline {
                                     debug!(
-										"[Thread {i}] Block seems full, but we still have time before the soft deadline, \
-										 so we will try a bit more before quitting."
-									);
+                                        target: "mth_authorship",
+                                        "[Thread {i}] Block seems full, but we still have time before the thread deadline, \
+                                            so we will try a bit more before quitting."
+                                    );
                                 } else {
-                                    debug!("[Thread {i}] Reached block weight limit, proceeding with proposing.");
+                                    debug!(target: "mth_authorship", "[Thread {i}] Reached block weight limit, proceeding with proposing.");
                                     break EndProposingReason::HitBlockWeightLimit
                                 }
                             },
@@ -551,7 +561,8 @@ where
         let mut finish =
             futures_timer::Delay::new(deadline.saturating_duration_since((self.now)())).fuse();
         let mut threads = 0;
-        for _ in 0..extrinsic_group.len() {
+        let mut total_unqueue_invalid = 0;
+        for _ in 0..group_id {
             select! {
                 res = rx.next() => {
                     if let Some(result) = res {
@@ -560,6 +571,7 @@ where
                             Err(e) => return Err(e),
                         };
                         final_end_reason = end_reason;
+                        total_unqueue_invalid += unqueue_invalid.len();
                         self.transaction_pool.remove_invalid(&unqueue_invalid);
                         let exe_merge_start = time::Instant::now();
                         let (changes, _, recorder) = all_changes;
@@ -575,7 +587,11 @@ where
                     }
                 }
                 _ = finish => {
-                    warn!("Timeout fired waiting for threads result execution for block #{}. Build block with current state.", self.parent_number + One::one());
+                    warn!(
+                        target: "mth_authorship",
+                        "Timeout fired waiting for threads result execution for block #{} propose_time {propose_time}ms. Build block with current state.",
+                        self.parent_number + One::one(),
+                    );
                     break;
                 }
             }
@@ -598,7 +614,7 @@ where
         });
 
         info!(
-			"🎁 Prepared block for proposing at {} ({} ms {prepare_tx_time}ms {exe_merge_time}ms) [hash: {:?}; parent_hash: {}; extrinsics ({}), threads {threads}",
+			"🎁 Prepared block for proposing at {} ({}/{propose_time} ms {prepare_tx_time}ms {exe_merge_time}ms) [hash: {:?}; parent_hash: {}; extrinsics ({}/{total_unqueue_invalid}/{extrinsic_count}), threads {threads}",
 			block.header().number(),
 			block_timer.elapsed().as_millis(),
 			<Block as BlockT>::Hash::from(block.header().hash()),
