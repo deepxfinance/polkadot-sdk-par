@@ -51,7 +51,7 @@ impl MergeChange<StorageKey, Option<StorageValue>> for MergeHandler {
     fn merge_changes(
         &self,
         local: &mut BTreeMap<StorageKey, OverlayedEntry<Option<StorageValue>>>,
-        mut other: BTreeMap<StorageKey, OverlayedEntry<Option<StorageValue>>>,
+        other: &mut BTreeMap<StorageKey, OverlayedEntry<Option<StorageValue>>>,
     ) -> Vec<StorageKey> {
         const EXTRINSIC_INDEX: [u8; 16] = [58, 101, 120, 116, 114, 105, 110, 115, 105, 99, 95, 105, 110, 100, 101, 120];
 

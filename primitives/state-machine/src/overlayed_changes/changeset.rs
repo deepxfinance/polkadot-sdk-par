@@ -405,7 +405,7 @@ pub trait MergeChange<K, V> {
 	fn merge_changes(
 		&self,
 		_local: &mut BTreeMap<K, OverlayedEntry<V>>,
-		_other: BTreeMap<K, OverlayedEntry<V>>,
+		_other: &mut BTreeMap<K, OverlayedEntry<V>>,
 	) -> Vec<K> {
 		Vec::new()
 	}
@@ -418,10 +418,12 @@ impl<K: Ord + Hash + Clone, V: PartialEq> MergeChange<K, V> for DefaultMerge {
 	fn merge_changes(
 		&self,
 		local: &mut BTreeMap<K, OverlayedEntry<V>>, 
-		other: BTreeMap<K, OverlayedEntry<V>>
+		other: &mut BTreeMap<K, OverlayedEntry<V>>
 	) -> Vec<K>  {
 		let mut duplicate_keys = Vec::new();
-		for (k, v) in other.into_iter() {
+		let keys = other.keys().cloned().collect::<Vec<_>>();
+		for k in keys {
+			let v = other.remove(&k).unwrap();
 			if let Some(entry) = local.get_mut(&k) {
 				if entry.value_ref() == v.value_ref() {
 					let other_changes: Vec<_> = v.extrinsics().into_iter().collect();
@@ -430,7 +432,7 @@ impl<K: Ord + Hash + Clone, V: PartialEq> MergeChange<K, V> for DefaultMerge {
 						continue;
 					}
 				}
-				duplicate_keys.push(k);
+				duplicate_keys.push(k.clone());
 			} else {
 				local.insert(k, v);
 			}
@@ -444,7 +446,7 @@ impl<K: Ord + Hash + Clone, V: PartialEq> OverlayedMap<K, V> {
 		self.merge_custom::<DefaultMerge>(other, None)
 	}
 	
-	pub fn merge_custom<M: MergeChange<K, V>>(&mut self, other: Self, merge_change: Option<&M>) -> Result<(), Vec<K>> {
+	pub fn merge_custom<M: MergeChange<K, V>>(&mut self, mut other: Self, merge_change: Option<&M>) -> Result<(), Vec<K>> {
 		// 1. If local or other change set have dirty key, that means some transaction not closed or rollback.
 		// Unfinished change should not merge.
 		if self.transaction_depth() != 0 || other.transaction_depth() != 0 {
@@ -453,9 +455,9 @@ impl<K: Ord + Hash + Clone, V: PartialEq> OverlayedMap<K, V> {
 		// 2. num_client_transactions and execution_mode will not be used, so we do not merge here.
 		// 3. merge changes.
 		let duplicate_keys = if let Some(m) = merge_change {
-			m.merge_changes(&mut self.changes, other.changes)
+			m.merge_changes(&mut self.changes, &mut other.changes)
 		} else {
-			DefaultMerge::default().merge_changes(&mut self.changes, other.changes)
+			DefaultMerge::default().merge_changes(&mut self.changes, &mut other.changes)
 		};
 		if !duplicate_keys.is_empty() {
 			return Err(duplicate_keys);

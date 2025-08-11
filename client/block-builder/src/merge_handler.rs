@@ -28,7 +28,7 @@ impl<RE: Encode + Decode + Debug + Clone> MergeChange<StorageKey, Option<Storage
     fn merge_changes(
         &self,
         local: &mut BTreeMap<StorageKey, OverlayedEntry<Option<StorageValue>>>,
-        mut other: BTreeMap<StorageKey, OverlayedEntry<Option<StorageValue>>>,
+        other: &mut BTreeMap<StorageKey, OverlayedEntry<Option<StorageValue>>>,
     ) -> Vec<StorageKey> {
         use sp_io::hashing::twox_64;
 
@@ -235,7 +235,6 @@ impl<RE: Encode + Decode + Debug + Clone> MergeChange<StorageKey, Option<Storage
         }
         // update "System ExecutionPhase" u32
         if let Some(entry_other) = other.remove(&SYSTEM_EXECUTION_PHASE.to_vec()) {
-
             let other_phase: Phase = entry_other
                 .value_ref()
                 .as_ref()
@@ -279,7 +278,9 @@ impl<RE: Encode + Decode + Debug + Clone> MergeChange<StorageKey, Option<Storage
         }
 
         let mut new_extrinsic_data: Vec<(StorageKey, Option<StorageValue>, Option<u32>)> = vec![];
-        for (key, entry_other) in other.into_iter() {
+        let other_keys = other.keys().cloned().collect::<Vec<_>>();
+        for key in other_keys {
+            let entry_other = other.remove(&key).unwrap();
             if let Some(entry_local) = local.get_mut(&key) {
                 let key_len = key.len().min(32);
                 let local_val = entry_local.value_ref();
