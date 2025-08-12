@@ -5,6 +5,7 @@ use std::fmt::Debug;
 use std::marker::PhantomData;
 use std::sync::Mutex;
 use codec::{Decode, Encode};
+use sp_runtime::Digest;
 use sp_runtime::traits::Block as BlockT;
 use sp_state_machine::{MergeChange, OverlayedEntry, StorageKey, StorageValue};
 
@@ -51,6 +52,7 @@ impl<RE: Encode + Decode + Debug + Clone> MergeChange<StorageKey, Option<Storage
         const SYSTEM_EXTRINSIC_COUNT: [u8; 32] = [38, 170, 57, 78, 234, 86, 48, 224, 124, 72, 174, 12, 149, 88, 206, 247, 189, 192, 189, 48, 62, 152, 85, 129, 58, 168, 163, 13, 78, 252, 81, 18];
         const SYSTEM_BLOCK_WEIGHT: [u8; 32] = [38, 170, 57, 78, 234, 86, 48, 224, 124, 72, 174, 12, 149, 88, 206, 247, 52, 171, 245, 203, 52, 214, 36, 67, 120, 205, 219, 241, 142, 132, 157, 150];
         const SYSTEM_ALL_EXTRINSICS_LEN: [u8; 32] = [38, 170, 57, 78, 234, 86, 48, 224, 124, 72, 174, 12, 149, 88, 206, 247, 168, 109, 165, 169, 50, 104, 79, 25, 149, 57, 131, 111, 203, 140, 136, 111];
+        const SYSTEM_DIGEST: [u8; 32] = [38, 170, 57, 78, 234, 86, 48, 224, 124, 72, 174, 12, 149, 88, 206, 247, 153, 231, 249, 63, 198, 169, 143, 8, 116, 253, 5, 127, 17, 28, 77, 45];
         const SYSTEM_EVENT_COUNT: [u8; 32] = [38, 170, 57, 78, 234, 86, 48, 224, 124, 72, 174, 12, 149, 88, 206, 247, 10, 152, 253, 190, 156, 230, 197, 88, 55, 87, 108, 96, 199, 175, 56, 80];
         const SYSTEM_EVENTS: [u8; 32] = [38, 170, 57, 78, 234, 86, 48, 224, 124, 72, 174, 12, 149, 88, 206, 247, 128, 212, 30, 94, 22, 5, 103, 101, 188, 132, 97, 133, 16, 114, 201, 215];
         const SYSTEM_EXTRINSIC_DATA_PREFIX: [u8; 32] = [38, 170, 57, 78, 234, 86, 48, 224, 124, 72, 174, 12, 149, 88, 206, 247, 223, 29, 174, 184, 152, 104, 55, 242, 28, 197, 209, 117, 150, 187, 120, 209];
@@ -122,6 +124,34 @@ impl<RE: Encode + Decode + Debug + Clone> MergeChange<StorageKey, Option<Storage
             }
         }
 
+        // update "System Digest"
+        if let Some(entry_other) = other.remove(&SYSTEM_DIGEST.to_vec()) {
+            let other_digest: Digest = entry_other
+                .value_ref()
+                .as_ref()
+                .map(|data| Decode::decode(&mut data.as_slice()).unwrap())
+                .unwrap_or_default();
+            let extrinsics = entry_other.extrinsics();
+            let final_extrinsic = extrinsics.last().cloned().map(|e| e.saturating_add(offset));
+            if let Some(entry_local) = local.get_mut(&SYSTEM_DIGEST.to_vec()) {
+                let local_digest: Digest = entry_local
+                    .value_ref()
+                    .as_ref()
+                    .map(|data| Decode::decode(&mut data.as_slice()).unwrap())
+                    .unwrap_or_default();
+                let mut final_digest = local_digest.clone();
+                final_digest.logs.extend_from_slice(other_digest.logs.as_slice());
+                log::debug!(target: "develop", "merge AllExtrinsicsLen local: {local_digest:?}, other: {other_digest:?}, final: {final_digest:?}, extrinsic: {final_extrinsic:?}");
+                entry_local.set(Some(final_digest.encode()), false, final_extrinsic);
+            } else {
+                log::debug!(target: "develop", "merge AllExtrinsicsLen local: None, other: {other_digest:?}, final: {other_digest:?}, extrinsic: {final_extrinsic:?}");
+                let mut new_entry = OverlayedEntry::default();
+                new_entry.set(Some(other_digest.encode()), true, final_extrinsic);
+                local.insert(SYSTEM_DIGEST.to_vec(), new_entry);
+            }
+        }
+        
+        
         // update "System BlockWeight"
         if let Some(entry_other) = other.remove(&SYSTEM_BLOCK_WEIGHT.to_vec()) {
             #[derive(Encode, Decode, Debug, Clone, Default)]
