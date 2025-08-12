@@ -140,11 +140,15 @@ impl<RE: Encode + Decode + Debug + Clone> MergeChange<StorageKey, Option<Storage
                     .map(|data| Decode::decode(&mut data.as_slice()).unwrap())
                     .unwrap_or_default();
                 let mut final_digest = local_digest.clone();
-                final_digest.logs.extend_from_slice(other_digest.logs.as_slice());
-                log::debug!(target: "develop", "merge AllExtrinsicsLen local: {local_digest:?}, other: {other_digest:?}, final: {final_digest:?}, extrinsic: {final_extrinsic:?}");
+                for item in &other_digest.logs {
+                    if !final_digest.logs.contains(item) {
+                        final_digest.logs.push(item.clone());
+                    }
+                }
+                log::debug!(target: "develop", "merge Digest local: {local_digest:?}, other: {other_digest:?}, final: {final_digest:?}, extrinsic: {final_extrinsic:?}");
                 entry_local.set(Some(final_digest.encode()), false, final_extrinsic);
             } else {
-                log::debug!(target: "develop", "merge AllExtrinsicsLen local: None, other: {other_digest:?}, final: {other_digest:?}, extrinsic: {final_extrinsic:?}");
+                log::debug!(target: "develop", "merge Digest local: None, other: {other_digest:?}, final: {other_digest:?}, extrinsic: {final_extrinsic:?}");
                 let mut new_entry = OverlayedEntry::default();
                 new_entry.set(Some(other_digest.encode()), true, final_extrinsic);
                 local.insert(SYSTEM_DIGEST.to_vec(), new_entry);

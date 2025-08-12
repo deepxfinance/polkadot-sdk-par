@@ -20,7 +20,7 @@
 
 // FIXME #1021 move this into sp-consensus
 
-use codec::Encode;
+use codec::{Decode, Encode};
 use futures::{channel::{oneshot, mpsc}, future, future::{Future, FutureExt}, select, StreamExt};
 use log::{debug, error, info, trace, warn};
 use sc_block_builder::{BlockBuilderApi, BlockBuilderProvider, MultiThreadBlockBuilder};
@@ -617,6 +617,7 @@ where
             let inherent_digests = inherent_digests.clone();
             let block = block.clone();
             let main_storage_changes = storage_changes.main_storage_changes.clone();
+            let child_storage_changes = storage_changes.child_storage_changes.clone();
             let proof = proof.clone();
             self.spawn_handle.spawn_blocking(
                 "mth-authorship-proposer",
@@ -627,6 +628,7 @@ where
                         inherent_digests,
                         block,
                         main_storage_changes,
+                        child_storage_changes,
                         proof,
                     )
                         .await
@@ -676,6 +678,7 @@ where
         inherent_digests: Digest,
         block: Block,
         main_storage_changes: Vec<(StorageKey, Option<StorageValue>)>,
+        child_storage_changes: Vec<(StorageKey, Vec<(StorageKey, Option<StorageValue>)>)>,
         _proof: Option<StorageProof>,
     ) {
         let header = block.header();
@@ -704,30 +707,64 @@ where
                let (block_res, storage_changes_res, _proof_res) = res.into_inner();
                 // total block hash check
                 if block_res.hash() == block.hash() {
-                    info!( target: "mth_authorship", "[OTC Block {number}] Check Block Hash success");
+                    info!(target: "mth_authorship", "[OTC Block {number}] Check Block Hash success");
                     return;
                 }
-                // main_storage_changes check if block different.
-                let mut mth_main_changes = HashMap::new();
-                for (k, v) in main_storage_changes {
-                    mth_main_changes.insert(k, v);
-                }
-                let mut main_diff = vec![];
-                let mut main_extra = vec![];
-                for (k, v_res) in &storage_changes_res.main_storage_changes {
-                    if let Some(v) = mth_main_changes.remove(k) {
-                        if &v != v_res {
-                            main_diff.push(k.clone());
-                        }
-                    } else {
-                        main_extra.push(k.clone());
+                let change_diff = |mth: &Vec<(StorageKey, Option<StorageValue>)>, oth: &Vec<(StorageKey, Option<StorageValue>)>| {
+                    // main_storage_changes check if block different.
+                    let mut mth_changes = HashMap::new();
+                    for (k, v) in mth.clone() {
+                        mth_changes.insert(k, v);
                     }
-                }
-                let main_less: Vec<_> = mth_main_changes.keys().cloned().collect();
+                    let mut oth_diff = vec![];
+                    let mut oth_extra = vec![];
+                    for (k, v_res) in oth.iter() {
+                        if let Some(v) = mth_changes.remove(k) {
+                            if &v != v_res {
+                                oth_diff.push(k.clone());
+                            }
+                        } else {
+                            oth_extra.push(k.clone());
+                        }
+                    }
+                    let oth_less: Vec<_> = mth_changes.keys().cloned().collect();
+                    (oth_less, oth_diff, oth_extra)
+                };
+                // main_storage_changes check if block different.
+                let (oth_main_less, oth_main_diff, oth_main_extra) = change_diff(&main_storage_changes, &storage_changes_res.main_storage_changes);
                 error!(
                     target: "mth_authorship",
-                    "[OTC Block {number}] [one thread/multi threads] main change differences, less: {main_less:?}, diff: {main_diff:?}, extra: {main_extra:?}",
+                    "[OTC Block {number}] [one thread/multi threads] main change differences, less: {oth_main_less:?}, diff: {oth_main_diff:?}, extra: {oth_main_extra:?}",
                 );
+                // child_storage_changes check if block different.
+                let mut child_changes = HashMap::new();
+                for (k, v) in child_storage_changes.clone() {
+                    child_changes.insert(k, v);
+                }
+                let mut oth_extra_childs = vec![];
+                for (parent_key, child_storage_changes_res) in &storage_changes_res.child_storage_changes {
+                    if let Some(child_storage_changes) = child_changes.remove(parent_key) {
+                        let (oth_child_less, oth_child_diff, oth_child_extra) = change_diff(&child_storage_changes, child_storage_changes_res);
+                        error!(
+                            target: "mth_authorship",
+                            "[OTC Block {number}] [one thread/multi threads] child change differences parent key: {parent_key:?}, less: {oth_child_less:?}, diff: {oth_child_diff:?}, extra: {oth_child_extra:?}",
+                        );
+                    } else {
+                        let child_keys: Vec<_> = child_storage_changes.iter().map(|(key, _)| key.clone()).collect();
+                        oth_extra_childs.push((parent_key.clone(), child_keys));
+
+                    }
+                }
+                if !oth_extra_childs.is_empty() {
+                    error!(target: "mth_authorship", "[OTC Block {number}] oth extra child changes {oth_extra_childs:?}");
+                }
+                let mth_extra_childs: Vec<(StorageKey, Vec<StorageKey>)> = child_changes
+                    .into_iter()
+                    .map(|(parent, childs)| (parent, childs.into_iter().map(|(key, _)| key).collect()))
+                    .collect();
+                if !mth_extra_childs.is_empty() {
+                    error!(target: "mth_authorship", "[OTC Block {number}] mth extra child changes {mth_extra_childs:?}");
+                }
             },
             Err(e) => {
                 error!(target: "mth_authorship", "[OTC Block {number}] Build block error: {e:?}");
