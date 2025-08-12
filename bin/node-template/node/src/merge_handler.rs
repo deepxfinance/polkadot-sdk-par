@@ -30,17 +30,17 @@ where
     B: Backend<Block>,
     Block: BlockT,
 {
-    fn pre_handle(&self, backend: &B, parent: &Block::Hash) {
+    fn pre_handle(&self, backend: &B, parent: &Block::Hash, init_changes: Vec<(Vec<u8>, Option<Vec<u8>>)>) {
         let parent_state = backend.state_at(*parent).unwrap();
+        <DefaultMergeHandler<RuntimeEvent> as MultiThreadBlockBuilder<B, Block>>::pre_handle(&self.default, backend, parent, init_changes.clone());
 
+        let mut cache_state = self.cache_state.lock().unwrap();
         // query `balances_total_issuance`
         let balances_total_issuance_key = storage_prefix(b"Balances", b"TotalIssuance");
         let balances_total_issuance = parent_state
             .storage(balances_total_issuance_key.as_ref())
             .unwrap_or_default();
-
-        let mut cache_state = self.cache_state.lock().unwrap();
-        // store initial `balances_total_issuance`
+        // store initial `Balances TotalIssuance`
         if let Some(balances_total_issuance) = balances_total_issuance {
             cache_state.insert(balances_total_issuance_key.to_vec(), balances_total_issuance);
         }

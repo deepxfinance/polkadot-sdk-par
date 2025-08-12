@@ -593,6 +593,10 @@ pub trait ApiExt<Block: BlockT> {
 	fn debug_info(&self) -> String
 	where
 		Self: Sized;
+	
+	fn get_top_change(&self, key: &StorageKey) -> Option<Option<StorageValue>>
+	where
+		Self: Sized;
 
 	fn take_all_changes(&mut self) -> (
 		OverlayedChanges,

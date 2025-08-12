@@ -122,6 +122,11 @@ impl OverlayedChanges {
 	pub fn top_keys(&self) -> Vec<StorageKey> {
 		self.top.changes().map(|(k, _)| k.clone()).collect()
 	}
+	
+	/// get top change for some key
+	pub fn top_change(&self, key: &StorageKey) -> Option<Option<StorageValue>> {
+		self.top.get(key).map(|e| e.value_ref().clone())
+	}
 
 	/// merge with a custom handler for top changes' meet conflict key.
 	pub fn merge<M: MergeChange<StorageKey, Option<StorageValue>>>(

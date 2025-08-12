@@ -340,6 +340,13 @@ fn generate_runtime_api_base_structures() -> Result<TokenStream> {
 				(changes, storage_transaction_cache, recorder)
 			}
 
+			fn get_top_change(&self, key: &#crate_::StorageKey) -> std::option::Option<std::option::Option<#crate_::StorageValue>>
+			where
+				Self: Sized
+			{
+				std::cell::RefCell::borrow(&self.changes).top_change(key)
+			}
+
 			fn merge_all_changes<M: #crate_::MergeChange<#crate_::StorageKey, std::option::Option<#crate_::StorageValue>>>(
 				&mut self,
 				changes: #crate_::OverlayedChanges,

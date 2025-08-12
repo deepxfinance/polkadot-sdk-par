@@ -1,8 +1,9 @@
 //! Basic requests and implements for multi thread block builder.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fmt::Debug;
 use std::marker::PhantomData;
+use std::sync::Mutex;
 use codec::{Decode, Encode};
 use sp_runtime::traits::Block as BlockT;
 use sp_state_machine::{MergeChange, OverlayedEntry, StorageKey, StorageValue};
@@ -10,19 +11,33 @@ use sp_state_machine::{MergeChange, OverlayedEntry, StorageKey, StorageValue};
 /// Extended merge help trat for better handle state merge.
 pub trait MultiThreadBlockBuilder<B, Block: BlockT>: MergeChange<StorageKey, Option<StorageValue>> + Default {
     /// Pre handle the state for future [MergeChange::merge_changes]
-    fn pre_handle(&self, _backend: &B, _parent: &Block::Hash) {}
+    fn pre_handle(&self, _backend: &B, _parent: &Block::Hash, _init_change: Vec<(Vec<u8>, Option<Vec<u8>>)>) {}
 }
 
 /// Default type implement MultiThreadBlockBuilder trait.
-pub struct DefaultMergeHandler<RE>(PhantomData<RE>);
+pub struct DefaultMergeHandler<RE> {
+    cache_state: Mutex<HashMap<Vec<u8>, Option<Vec<u8>>>>,
+    phantom: PhantomData<RE>,
+}
 
 impl<RE: Encode + Decode + Debug + Clone> Default for DefaultMergeHandler<RE> {
     fn default() -> Self {
-        DefaultMergeHandler::<RE>(PhantomData)
+        DefaultMergeHandler {
+            cache_state: Default::default(),
+            phantom: PhantomData,
+        }
     }
 }
 
-impl<RE: Encode + Decode + Debug + Clone, B, Block: BlockT> MultiThreadBlockBuilder<B, Block> for DefaultMergeHandler<RE> {}
+impl<RE: Encode + Decode + Debug + Clone, B, Block: BlockT> MultiThreadBlockBuilder<B, Block> for DefaultMergeHandler<RE> {
+    fn pre_handle(&self, _backend: &B, _parent: &Block::Hash, init_changes: Vec<(Vec<u8>, Option<Vec<u8>>)>) {
+        let mut cache_state = self.cache_state.lock().unwrap();
+        // store useful initial changes.
+        for (key, value) in init_changes {
+            cache_state.insert(key, value);
+        }
+    }
+}
 
 impl<RE: Encode + Decode + Debug + Clone> MergeChange<StorageKey, Option<StorageValue>> for DefaultMergeHandler<RE> {
     fn merge_changes(
@@ -41,8 +56,6 @@ impl<RE: Encode + Decode + Debug + Clone> MergeChange<StorageKey, Option<Storage
         const SYSTEM_EXTRINSIC_DATA_PREFIX: [u8; 32] = [38, 170, 57, 78, 234, 86, 48, 224, 124, 72, 174, 12, 149, 88, 206, 247, 223, 29, 174, 184, 152, 104, 55, 242, 28, 197, 209, 117, 150, 187, 120, 209];
         const SYSTEM_EXECUTION_PHASE: [u8; 32] = [38, 170, 57, 78, 234, 86, 48, 224, 124, 72, 174, 12, 149, 88, 206, 247, 255, 85, 59, 90, 152, 98, 165, 22, 147, 157, 130, 179, 211, 216, 102, 26];
 
-        const TOTAL_ISSUANCE: [u8; 32] = [194, 38, 18, 118, 204, 157, 31, 133, 152, 234, 75, 106, 116, 177, 92, 47, 87, 200, 117, 228, 207, 247, 65, 72, 228, 98, 143, 38, 75, 151, 76, 128];
-
         let mut duplicate_keys = vec![];
         let offset: u32 = local.get(&EXTRINSIC_INDEX.to_vec())
             .map(|e| e.value_ref().clone().map(|v| Decode::decode(&mut v.as_slice()).unwrap()))
@@ -51,7 +64,7 @@ impl<RE: Encode + Decode + Debug + Clone> MergeChange<StorageKey, Option<Storage
         // update well_known_keys::EXTRINSIC_INDEX u32
         if let Some(entry_other) = other.remove(&EXTRINSIC_INDEX.to_vec()) {
             let index_other: u32 = entry_other.value_ref().clone().map(|v| Decode::decode(&mut v.as_slice()).unwrap()).unwrap_or(0);
-            let final_index = offset + index_other;
+            let final_index = offset.saturating_add(index_other);
             log::debug!(target: "develop", "merge EXTRINSIC_INDEX local: {offset}, other: {index_other}, final: {final_index}, extrinsic: {final_index}");
             if let Some(entry_local) = local.get_mut(&EXTRINSIC_INDEX.to_vec()) {
                 entry_local.set(Some(final_index.encode()), false, Some(final_index));
@@ -72,7 +85,7 @@ impl<RE: Encode + Decode + Debug + Clone> MergeChange<StorageKey, Option<Storage
                     .as_ref()
                     .map(|data| Decode::decode(&mut data.as_slice()).unwrap())
                     .unwrap_or_default();
-                let final_count = other_count + local_count;
+                let final_count = other_count.saturating_add(local_count);
                 log::debug!(target: "develop", "merge ExtrinsicCount local: {local_count}, other: {other_count}, final: {final_count}, extrinsic: {final_count}");
                 entry_local.set(Some(final_count.encode()), false, Some(final_count));
             } else {
@@ -91,14 +104,14 @@ impl<RE: Encode + Decode + Debug + Clone> MergeChange<StorageKey, Option<Storage
                 .map(|data| Decode::decode(&mut data.as_slice()).unwrap())
                 .unwrap_or_default();
             let extrinsics = entry_other.extrinsics();
-            let final_extrinsic = extrinsics.last().cloned().map(|e| e + offset);
+            let final_extrinsic = extrinsics.last().cloned().map(|e| e.saturating_add(offset));
             if let Some(entry_local) = local.get_mut(&SYSTEM_ALL_EXTRINSICS_LEN.to_vec()) {
                 let local_len: u32 = entry_local
                     .value_ref()
                     .as_ref()
                     .map(|data| Decode::decode(&mut data.as_slice()).unwrap())
                     .unwrap_or_default();
-                let final_len = local_len + other_len;
+                let final_len = local_len.saturating_add(other_len);
                 log::debug!(target: "develop", "merge AllExtrinsicsLen local: {local_len}, other: {other_len}, final: {final_len}, extrinsic: {final_extrinsic:?}");
                 entry_local.set(Some(final_len.encode()), false, final_extrinsic);
             } else {
@@ -132,7 +145,7 @@ impl<RE: Encode + Decode + Debug + Clone> MergeChange<StorageKey, Option<Storage
                 .map(|data| Decode::decode(&mut data.as_slice()).unwrap())
                 .unwrap_or_default();
             let extrinsics = entry_other.extrinsics();
-            let final_extrinsic = extrinsics.last().cloned().map(|e| e + offset);
+            let final_extrinsic = extrinsics.last().cloned().map(|e| e.saturating_add(offset));
             if let Some(entry_local) = local.get_mut(&SYSTEM_BLOCK_WEIGHT.to_vec()) {
                 if entry_local.value_ref() == entry_other.value_ref() {
                     log::debug!(target: "develop", "merge BlockWeight local same with other, not merge");
@@ -143,13 +156,26 @@ impl<RE: Encode + Decode + Debug + Clone> MergeChange<StorageKey, Option<Storage
                         .map(|data| Decode::decode(&mut data.as_slice()).unwrap())
                         .unwrap_or_default();
                     let mut final_weight = local_weight.clone();
-                    final_weight.normal.ref_time += other_weight.normal.ref_time;
-                    final_weight.normal.proof_size += other_weight.normal.proof_size;
-                    final_weight.operational.ref_time += other_weight.operational.ref_time;
-                    final_weight.operational.proof_size += other_weight.operational.proof_size;
-                    final_weight.mandatory.ref_time += other_weight.mandatory.ref_time;
-                    final_weight.mandatory.proof_size += other_weight.mandatory.proof_size;
-                    log::debug!(target: "develop", "merge BlockWeight local: {local_weight:?}, other: {other_weight:?}, final: {final_weight:?}, extrinsic: {final_extrinsic:?}");
+                    final_weight.normal.ref_time = final_weight.normal.ref_time.saturating_add(other_weight.normal.ref_time);
+                    final_weight.normal.proof_size = final_weight.normal.proof_size.saturating_add(other_weight.normal.proof_size);
+                    final_weight.operational.ref_time = final_weight.operational.ref_time.saturating_add(other_weight.operational.ref_time);
+                    final_weight.operational.proof_size = final_weight.operational.proof_size.saturating_add(other_weight.operational.proof_size);
+                    final_weight.mandatory.ref_time = final_weight.mandatory.ref_time.saturating_add(other_weight.mandatory.ref_time);
+                    final_weight.mandatory.proof_size = final_weight.mandatory.proof_size.saturating_add(other_weight.mandatory.proof_size);
+                    let init_weight: Option<Option<PerDispatchClass<Weight>>> = self.cache_state.lock().unwrap()
+                        .get(&SYSTEM_BLOCK_WEIGHT.to_vec())
+                        .cloned()
+                        .map(|data| data.map(|d| Decode::decode(&mut d.as_slice()).unwrap()));
+                    // remove initial BlockWeight for every storage change
+                    if let Some(Some(init_weight)) = init_weight.clone() {
+                        final_weight.normal.ref_time = final_weight.normal.ref_time.saturating_sub(init_weight.normal.ref_time);
+                        final_weight.normal.proof_size = final_weight.normal.proof_size.saturating_sub(init_weight.normal.proof_size);
+                        final_weight.operational.ref_time = final_weight.operational.ref_time.saturating_sub(init_weight.operational.ref_time);
+                        final_weight.operational.proof_size = final_weight.operational.proof_size.saturating_sub(init_weight.operational.proof_size);
+                        final_weight.mandatory.ref_time = final_weight.mandatory.ref_time.saturating_sub(init_weight.mandatory.ref_time);
+                        final_weight.mandatory.proof_size = final_weight.mandatory.proof_size.saturating_sub(init_weight.mandatory.proof_size);
+                    }
+                    log::debug!(target: "develop", "merge BlockWeight init: {init_weight:?}, local: {local_weight:?}, other: {other_weight:?}, final: {final_weight:?}, extrinsic: {final_extrinsic:?}");
                     entry_local.set(Some(final_weight.encode()), false, final_extrinsic);
                 }
             } else {
@@ -168,14 +194,14 @@ impl<RE: Encode + Decode + Debug + Clone> MergeChange<StorageKey, Option<Storage
                 .map(|data| Decode::decode(&mut data.as_slice()).unwrap())
                 .unwrap_or_default();
             let extrinsics = entry_other.extrinsics();
-            let final_extrinsic = extrinsics.last().cloned().map(|e| e + offset);
+            let final_extrinsic = extrinsics.last().cloned().map(|e| e.saturating_add(offset));
             if let Some(entry_local) = local.get_mut(&SYSTEM_EVENT_COUNT.to_vec()) {
                 let local_count: u32 = entry_local
                     .value_ref()
                     .as_ref()
                     .map(|data| Decode::decode(&mut data.as_slice()).unwrap())
                     .unwrap_or_default();
-                let final_count = local_count + other_count;
+                let final_count = local_count.saturating_add(other_count);
                 log::debug!(target: "develop", "merge EventCount local: {local_count}, other: {other_count}, final: {final_count}, extrinsic: {final_extrinsic:?}");
                 entry_local.set(Some(final_count.encode()), false, final_extrinsic);
             } else {
@@ -203,7 +229,7 @@ impl<RE: Encode + Decode + Debug + Clone> MergeChange<StorageKey, Option<Storage
                 .map(|data| Decode::decode(&mut data.as_slice()).unwrap())
                 .unwrap_or_default();
             let extrinsics = entry_other.extrinsics();
-            let final_extrinsic = extrinsics.last().cloned().map(|e| e + offset);
+            let final_extrinsic = extrinsics.last().cloned().map(|e| e.saturating_add(offset));
             if let Some(entry_local) = local.get_mut(&SYSTEM_EVENTS.to_vec()) {
                 let local_events: Vec<EventRecord<RE>> = entry_local
                     .value_ref()
@@ -213,7 +239,7 @@ impl<RE: Encode + Decode + Debug + Clone> MergeChange<StorageKey, Option<Storage
                 let mut final_events = local_events.clone();
                 for mut event in other_events.clone() {
                     if let Phase::ApplyExtrinsic(e) = &mut event.phase {
-                        *e += offset;
+                        *e = e.saturating_add(offset);
                     }
                     final_events.push(event);
                 }
@@ -241,7 +267,7 @@ impl<RE: Encode + Decode + Debug + Clone> MergeChange<StorageKey, Option<Storage
                 .map(|data| Decode::decode(&mut data.as_slice()).unwrap())
                 .unwrap_or(Phase::ApplyExtrinsic(0));
             let extrinsics = entry_other.extrinsics();
-            let final_extrinsic = extrinsics.last().cloned().map(|e| e + offset);
+            let final_extrinsic = extrinsics.last().cloned().map(|e| e.saturating_add(offset));
             if let Some(entry_local) = local.get_mut(&SYSTEM_EXECUTION_PHASE.to_vec()) {
                 let local_phase: Phase = entry_local
                     .value_ref()
@@ -253,13 +279,13 @@ impl<RE: Encode + Decode + Debug + Clone> MergeChange<StorageKey, Option<Storage
                         if e1 > e2 {
                             Phase::ApplyExtrinsic(*e1)
                         } else {
-                            Phase::ApplyExtrinsic(*e2 + offset)
+                            Phase::ApplyExtrinsic(e2.saturating_add(offset))
                         }
                     }
                     (Phase::ApplyExtrinsic(_), Phase::Initialization) => local_phase.clone(),
                     (Phase::Finalization, _) => Phase::Finalization,
                     _ => match other_phase {
-                        Phase::ApplyExtrinsic(e) => Phase::ApplyExtrinsic(e + offset),
+                        Phase::ApplyExtrinsic(e) => Phase::ApplyExtrinsic(e.saturating_add(offset)),
                         _ => other_phase.clone(),
                     },
                 };
@@ -267,7 +293,7 @@ impl<RE: Encode + Decode + Debug + Clone> MergeChange<StorageKey, Option<Storage
                 entry_local.set(Some(final_phase.encode()), false, final_extrinsic);
             } else {
                 let final_phase = match other_phase {
-                    Phase::ApplyExtrinsic(e) => Phase::ApplyExtrinsic(e + offset),
+                    Phase::ApplyExtrinsic(e) => Phase::ApplyExtrinsic(e.saturating_add(offset)),
                     _ => other_phase.clone(),
                 };
                 log::debug!(target: "develop", "merge ExecutionPhase local: None, other: {other_phase:?}, final: {final_phase:?}, extrinsic: {final_extrinsic:?}");
@@ -277,54 +303,32 @@ impl<RE: Encode + Decode + Debug + Clone> MergeChange<StorageKey, Option<Storage
             }
         }
 
-        let mut new_extrinsic_data: Vec<(StorageKey, Option<StorageValue>, Option<u32>)> = vec![];
         let other_keys = other.keys().cloned().collect::<Vec<_>>();
         for key in other_keys {
             let entry_other = other.remove(&key).unwrap();
-            if let Some(entry_local) = local.get_mut(&key) {
-                let key_len = key.len().min(32);
-                let local_val = entry_local.value_ref();
+            if key.starts_with(SYSTEM_EXTRINSIC_DATA_PREFIX.as_slice()) {
+                // update "System ExtrinsicData"
+                let other_index_data = key[40..].to_vec();
+                let other_index: u32 = Decode::decode(&mut other_index_data.as_slice()).unwrap();
+                let new_index = other_index.saturating_add(offset);
+                let new_index_data = new_index.encode();
+                log::debug!(target: "develop", "merge System ExtrinsicData other: {other_index} -> {new_index}");
+                let new_key = [SYSTEM_EXTRINSIC_DATA_PREFIX.to_vec(), twox_64(&new_index_data).to_vec(), new_index_data].concat();
+                let mut new_entry = OverlayedEntry::default();
+                new_entry.set(entry_other.value_ref().clone(), true, Some(new_index));
+                local.insert(new_key, new_entry);
+            } else if let Some(entry_local) = local.get_mut(&key) {
                 let other_val = entry_other.value_ref();
-                let local_exts: Vec<_> = entry_local.extrinsics().into_iter().collect();
                 let other_exts: Vec<_> = entry_other.extrinsics().into_iter().collect();
-                match &key[..key_len] {
-                    // "System ExtrinsicData" u32 -> Vec<u8>
-                    prefix if prefix == SYSTEM_EXTRINSIC_DATA_PREFIX.as_slice() => {
-                        let other_index_data = key[40..].to_vec();
-                        let other_index: u32 = Decode::decode(&mut other_index_data.as_slice()).unwrap();
-                        let new_index = other_index + offset;
-                        let new_index_data = new_index.encode();
-                        log::debug!(target: "develop", "merge System ExtrinsicData other: {other_index} -> {new_index}");
-                        let new_key = [key[..key_len].to_vec(), twox_64(&new_index_data).to_vec(), new_index_data].concat();
-                        new_extrinsic_data.push((new_key, entry_other.value_ref().clone(), Some(new_index)));
-                    },
-                    _ => if local_val == other_val && local_exts == other_exts {
-                        continue;
-                    } else {
-                        if key == TOTAL_ISSUANCE.as_slice() {
-                            let local: u128 = entry_local
-                                .value_ref()
-                                .as_ref()
-                                .map(|data| Decode::decode(&mut data.as_slice()).unwrap())
-                                .unwrap_or(0);
-                            let other: u128 = entry_other
-                                .value_ref()
-                                .as_ref()
-                                .map(|data| Decode::decode(&mut data.as_slice()).unwrap())
-                                .unwrap_or(0);
-                            log::warn!(target: "develop", "merge conflict Balances TotalIssuance local: {local}, other: {other}");
-                        }
-                        duplicate_keys.push(key);
-                    }
+                if entry_local.value_ref() == other_val
+                    && entry_local.extrinsics().into_iter().collect::<Vec<u32>>() == other_exts {
+                    continue;
+                } else {
+                    duplicate_keys.push(key);
                 }
             } else {
                 local.insert(key, entry_other);
             }
-        }
-        for (key, value, extrinsic) in new_extrinsic_data {
-            let mut new_entry = OverlayedEntry::default();
-            new_entry.set(value, true, extrinsic);
-            local.insert(key, new_entry);
         }
         duplicate_keys
     }
