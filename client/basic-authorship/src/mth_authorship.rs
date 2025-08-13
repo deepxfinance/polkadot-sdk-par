@@ -20,14 +20,14 @@
 
 // FIXME #1021 move this into sp-consensus
 
-use codec::{Decode, Encode};
+use codec::Encode;
 use futures::{channel::{oneshot, mpsc}, future, future::{Future, FutureExt}, select, StreamExt};
 use log::{debug, error, info, trace, warn};
-use sc_block_builder::{BlockBuilderApi, BlockBuilderProvider, MultiThreadBlockBuilder};
+use sc_block_builder::{BlockBuilder, BlockBuilderApi, BlockBuilderProvider, MultiThreadBlockBuilder};
 use sc_client_api::{backend, CloneForExecution};
 use sc_telemetry::{telemetry, TelemetryHandle, CONSENSUS_INFO};
 use sc_transaction_pool_api::{InPoolTransaction, TransactionPool};
-use sp_api::{ApiExt, ProvideRuntimeApi, StorageKey, StorageProof, StorageValue};
+use sp_api::{ApiExt, MergeErr, OverlayedChanges, ProofRecorder, ProvideRuntimeApi, StorageKey, StorageProof, StorageTransactionCache, StorageValue};
 use sp_blockchain::{ApplyExtrinsicFailed::Validity, Error::ApplyExtrinsicFailed, HeaderBackend};
 use sp_consensus::{DisableProofRecording, EnableProofRecording, ProofRecording, Proposal};
 use sp_core::traits::SpawnNamed;
@@ -39,6 +39,7 @@ use sp_runtime::{
 use std::{marker::PhantomData, pin::Pin, sync::Arc, time};
 use std::collections::HashMap;
 use std::ops::DerefMut;
+use futures::channel::mpsc::{Sender, Receiver};
 use prometheus_endpoint::Registry as PrometheusRegistry;
 use sc_proposer_metrics::{EndProposingReason, MetricsLink as PrometheusMetrics};
 use sp_runtime::traits::One;
@@ -179,7 +180,7 @@ where
     C::Api:
     ApiExt<Block, StateBackend = backend::StateBackendFor<B, Block>> + BlockBuilderApi<Block>,
     MBH: MultiThreadBlockBuilder<B, Block>,
-    RCG: RCGroup + Send + 'static,
+    RCG: RCGroup + Send + Sync + 'static,
 {
     fn init_with_now(
         &mut self,
@@ -226,7 +227,7 @@ where
     ApiExt<Block, StateBackend = backend::StateBackendFor<B, Block>> + BlockBuilderApi<Block>,
     PR: ProofRecording,
     MBH: MultiThreadBlockBuilder<B, Block> + Send + Sync + 'static,
-    RCG: RCGroup + Send + 'static,
+    RCG: RCGroup + Send + Sync + 'static,
 {
     type Proposer = Proposer<B, Block, C, A, PR, MBH, RCG>;
     type CreateProposer = future::Ready<Result<Self::Proposer, Self::Error>>;
@@ -270,7 +271,7 @@ where
     ApiExt<Block, StateBackend = backend::StateBackendFor<B, Block>> + BlockBuilderApi<Block>,
     PR: ProofRecording,
     MBH: MultiThreadBlockBuilder<B, Block> + Send + Sync + 'static,
-    RCG: RCGroup + Send + 'static,
+    RCG: RCGroup + Send + Sync + 'static,
 {
     type Error = sp_blockchain::Error;
     type Transaction = backend::TransactionFor<B, Block>;
@@ -316,6 +317,8 @@ where
 /// this number of transactions before quitting for real.
 /// It allows us to increase block utilization.
 const MAX_SKIPPED_TRANSACTIONS: usize = 8;
+type ExecuteRes<A, B, Backend> = (usize, (OverlayedChanges, StorageTransactionCache<B, Backend>, Option<ProofRecorder<B>>), Vec<<B as BlockT>::Extrinsic>, Vec<<A as TransactionPool>::Hash>, EndProposingReason);
+type MergeType<A, B> = (Vec<usize>, OverlayedChanges, Option<ProofRecorder<B>>, Vec<<B as BlockT>::Extrinsic>, Vec<<A as TransactionPool>::Hash>, EndProposingReason);
 
 impl<A, B, Block, C, PR, MBH, RCG> Proposer<B, Block, C, A, PR, MBH, RCG>
 where
@@ -333,7 +336,7 @@ where
     ApiExt<Block, StateBackend = backend::StateBackendFor<B, Block>> + BlockBuilderApi<Block>,
     PR: ProofRecording,
     MBH: MultiThreadBlockBuilder<B, Block> + Send + Sync + 'static,
-    RCG: RCGroup + Send + 'static,
+    RCG: RCGroup + Send + Sync + 'static,
 {
     async fn propose_with(
         self,
@@ -350,12 +353,15 @@ where
 
         let propose_with_start = time::Instant::now();
         let propose_time = deadline.saturating_duration_since(propose_with_start).as_millis();
+        // 1. initialize main thread
         let mut block_builder =
             self.client.new_block_at(self.parent_hash.clone(), inherent_digests.clone(), PR::ENABLED)?;
+        // get changes of initialize state.
         let mut init_change = vec![];
         if let Some(block_weight) = block_builder.api.get_top_change(&SYSTEM_BLOCK_WEIGHT.to_vec()) {
             init_change.push((SYSTEM_BLOCK_WEIGHT.to_vec(), block_weight));
         }
+        // 2. initialize main thread block_builder by inherent transactions.
         let create_inherents_start = time::Instant::now();
         let inherents = block_builder.create_inherents(inherent_data)?;
         let create_inherents_end = time::Instant::now();
@@ -368,6 +374,7 @@ where
                     .as_secs_f64(),
             );
         });
+        let inherent_length = inherents.len();
         for inherent in inherents {
             match block_builder.push(inherent) {
                 Err(ApplyExtrinsicFailed(Validity(e))) if e.exhausted_resources() => {
@@ -384,224 +391,67 @@ where
             }
         }
         let block_timer = time::Instant::now();
-        let mut group_id = 0usize;
-        let mut group: HashMap<usize, Vec<Arc<<A as TransactionPool>::InPoolTransaction>>> = HashMap::new();
-        let mut tx_data_group : HashMap<Vec<u8>, usize> = HashMap::new();
-        let mut t1 = self.transaction_pool.ready_at(self.parent_number).fuse();
-        let mut t2 =
-            futures_timer::Delay::new(deadline.saturating_duration_since((self.now)()) / 8).fuse();
-        let mut pending_iterator = select! {
-			res = t1 => res,
-			_ = t2 => {
-				warn!(
-					"Timeout fired waiting for transaction pool at block #{}. Proceeding with production.",
-					self.parent_number,
-				);
-				self.transaction_pool.ready()
-			},
-		};
-        let mut skipped = 0;
+        // 3. prepare transactions by group.
         let block_size_limit = block_size_limit.unwrap_or(self.default_block_size_limit);
-        let mut block_size = block_builder.estimated_header_size + block_builder.extrinsics.encoded_size();
-        let mut proof_size = if self.include_proof_in_block_size_estimation {
-            block_builder.api.proof_recorder().map(|pr| pr.estimate_encoded_size()).unwrap_or(0)
-        } else {
-            0
-        };
-        loop {
-            let pending_tx = if let Some(pending_tx) = pending_iterator.next() {
-                pending_tx
+        let (extrinsic_group, single_group) = self.group_transactions_from_pool(
+            deadline.clone(),
+            block_size_limit,
+            block_builder.estimated_header_size + block_builder.extrinsics.encoded_size(),
+            if self.include_proof_in_block_size_estimation {
+                block_builder.api.proof_recorder().map(|pr| pr.estimate_encoded_size()).unwrap_or(0)
             } else {
-                debug!(target: "mth_authorship", "out of transactions from pool(total {extrinsic_count})");
-                break;
-            };
-
-            let pending_tx_data = pending_tx.data().clone();
-            if block_size + pending_tx_data.encoded_size() + proof_size > block_size_limit {
-                if skipped < MAX_SKIPPED_TRANSACTIONS {
-                    skipped += 1;
-                    debug!(
-						"Transaction would overflow the block size limit, \
-						but will try {} more transactions before quitting.",
-						MAX_SKIPPED_TRANSACTIONS - skipped,
-					);
-                    continue
-                } else {
-                    debug!(target: "mth_authorship", "Reached block size limit with extrinsic: {extrinsic_count}, start execute transactions.");
-                    break;
-                }
-            }
-            let call_group_data = RCG::call_dependent_data(pending_tx_data.encode()).unwrap();
-            let mut gid = group_id;
-            for data in &call_group_data {
-                // if dependent data is already dispatched to group id, this call should be in this group.
-                if let Some(id) = tx_data_group.get(data) {
-                    gid = *id;
-                    break;
-                }
-            };
-            // insert tx to gid.
-            if let Some(gp) = group.get_mut(&gid) {
-                gp.push(pending_tx);
-            } else {
-                group.insert(gid, vec![pending_tx]);
-            }
-            // record call_group_data to gid
-            for data in call_group_data {
-                tx_data_group.insert(data, gid);
-            };
-            // if new group_id used, group_id += 1
-            if gid == group_id {
-                group_id += 1;
-            }
-
-            block_size += pending_tx_data.encoded_size();
-            extrinsic_count += 1;
-            // TODO update proof_size with new extrinsic. This is hard since we do not actually execute the extrinsic.
-            proof_size += 0;
-        }
-
-        let mbh = MBH::default();
-        mbh.pre_handle(&block_builder.backend, &block_builder.parent_hash, init_change);
-        let extrinsic_group: Vec<Vec<Arc<<A as TransactionPool>::InPoolTransaction>>> = group.into_values().collect();
-        let (tx, mut rx) = mpsc::channel(extrinsic_group.len());
-        for (i, pending_txs) in extrinsic_group.into_iter().enumerate() {
-            let parent_hash = self.parent_hash.clone();
-            let now = time::Instant::now();
-            let left = deadline.saturating_duration_since(now);
-            let left_micros: u64 = left.as_micros().saturated_into();
-            let thread_deadline =
-                now + time::Duration::from_micros(self.soft_deadline_percent.mul_floor(left_micros));
-            let inherent_digests_clone = inherent_digests.clone();
-            let client_clone = self.client.clone_for_execution();
-            let mut res_tx = tx.clone();
-            self.spawn_handle.spawn_blocking(
-                "mth-authorship-proposer",
-                None,
-                Box::pin(async move {
-                    let mut block_builder = match client_clone.new_block_at(parent_hash, inherent_digests_clone, PR::ENABLED) {
-                        Ok(builder) => builder,
-                        Err(e) => {
-                            if res_tx.start_send(Err(e)).is_err() {
-                                error!("Could not send block production err to proposer!");
-                            }
-                            return;
-                        }
-                    };
-                    let mut unqueue_invalid = Vec::new();
-                    let mut applied_extrinsics = Vec::new();
-                    let total_tx = pending_txs.len();
-                    let mut pending_iterator = pending_txs.into_iter();
-                    let end_reason = loop {
-                        let pending_tx = if let Some(pending_tx) = pending_iterator.next() {
-                            pending_tx
-                        } else {
-                            debug!(
-                                target: "mth_authorship",
-								"[Thread {i}] Consensus finished in {}ms {}/{}/{total_tx} executed when pushing block transactions, \
-								report current state.",
-                                now.elapsed().as_millis(),
-                                block_builder.extrinsics.len(),
-                                unqueue_invalid.len(),
-							);
-                            break EndProposingReason::NoMoreTransactions
-                        };
-
-                        let now = time::Instant::now();
-                        if now > thread_deadline {
-                            debug!(
-                                target: "mth_authorship",
-								"[Thread {i}] Consensus thread_deadline reached {}ms {}/{}/{total_tx} executed when pushing block transactions, \
-								report current state.",
-                                left.as_millis(),
-                                block_builder.extrinsics.len(),
-                                unqueue_invalid.len(),
-							);
-                            break EndProposingReason::HitDeadline
-                        }
-
-                        let pending_tx_data = pending_tx.data().clone();
-                        let pending_tx_hash = pending_tx.hash().clone();
-
-                        trace!("[{:?}] Pushing to the block.", pending_tx_hash);
-                        match sc_block_builder::BlockBuilder::push(&mut block_builder, pending_tx_data.clone()) {
-                            Ok(()) => applied_extrinsics.push(pending_tx_data),
-                            Err(ApplyExtrinsicFailed(Validity(e))) if e.exhausted_resources() => {
-                                if skipped < MAX_SKIPPED_TRANSACTIONS {
-                                    skipped += 1;
-                                    debug!(
-                                        "[Thread {i}] Block seems full, but will try {} more transactions before quitting.",
-                                        MAX_SKIPPED_TRANSACTIONS - skipped,
-                                    );
-                                } else if time::Instant::now() < thread_deadline {
-                                    debug!(
-                                        target: "mth_authorship",
-                                        "[Thread {i}] Block seems full, but we still have time before the thread deadline, \
-                                            so we will try a bit more before quitting."
-                                    );
-                                } else {
-                                    debug!(target: "mth_authorship", "[Thread {i}] Reached block weight limit, proceeding with proposing.");
-                                    break EndProposingReason::HitBlockWeightLimit
-                                }
-                            },
-                            Err(e) => {
-                                debug!("[{:?}] Invalid transaction: {}", pending_tx_hash, e);
-                                unqueue_invalid.push(pending_tx_hash);
-                            },
-                        }
-                    };
-
-                    let results = block_builder.api.take_all_changes();
-                    if res_tx.start_send(Ok((i, results, applied_extrinsics, unqueue_invalid, end_reason))).is_err() {
-                        trace!("Could not send block production result to proposer!");
-                    }
-                }),
-            );
-        }
+                0
+            },
+        )
+            .await
+            .unwrap();
         let prepare_tx_time = block_timer.elapsed().as_millis();
+        extrinsic_count += extrinsic_group.iter().map(|g| g.len()).sum::<usize>();
+        extrinsic_count += single_group.len();
 
-        let mut final_end_reason = EndProposingReason::NoMoreTransactions;
-        let mut exe_merge_time = 0;
+        let thread_number = extrinsic_group.len();
+        let (_exe_merge_time, mth_time, mth_applied, mth_invalid, mut final_end_reason) = if !extrinsic_group.is_empty() {
+            let mth_start = time::Instant::now();
+            let (thread_tx, thread_rx) = mpsc::channel(thread_number);
+            // 4. execute group transaction by threads.
+            self.spawn_execute_groups(
+                deadline,
+                inherent_digests.clone(),
+                extrinsic_group,
+                thread_tx,
+            );
 
-        let mut finish =
-            futures_timer::Delay::new(deadline.saturating_duration_since((self.now)())).fuse();
-        let mut threads = 0;
-        let mut total_unqueue_invalid = vec![];
-        for _ in 0..group_id {
-            select! {
-                res = rx.next() => {
-                    if let Some(result) = res {
-                        let (i, all_changes, applied_extrinsics, unqueue_invalid, end_reason) = match result {
-                            Ok(result) => result,
-                            Err(e) => return Err(e),
-                        };
-                        final_end_reason = end_reason;
-                        total_unqueue_invalid.extend_from_slice(&unqueue_invalid);
-                        let exe_merge_start = time::Instant::now();
-                        let (changes, _, recorder) = all_changes;
-                        // TODO add ability to rollback failed merge. So that we can drop conflict threads if not group tx correctly. We can dorp this merge failed group txs.
-                        if let Err(e) = block_builder.api.deref_mut().merge_all_changes(changes, recorder, &mbh) {
-                            return Err(sp_blockchain::Error::Backend(format!("merge thread {i} {e:?}")));
-                        }
-                        block_builder.extrinsics.extend_from_slice(&applied_extrinsics);
-                        exe_merge_time += exe_merge_start.elapsed().as_nanos();
-                        threads += 1usize;
-                    } else {
-                        warn!("BlockBuilder Result Receiver Error!");
-                    }
-                }
-                _ = finish => {
-                    warn!(
-                        target: "mth_authorship",
-                        "Timeout fired waiting for threads result execution for block #{} propose_time {propose_time}ms. Build block with current state.",
-                        self.parent_number + One::one(),
-                    );
-                    break;
-                }
-            }
+            // 5. merge all threads' changes to main block builder.
+            let (exe_merge_time, mth_unqueue_invalid, end_reason) = self.merge_threads_result(
+                propose_time,
+                &mut block_builder,
+                init_change,
+                deadline,
+                thread_number,
+                thread_rx,
+            )
+                .await?;
+            self.transaction_pool.remove_invalid(&mth_unqueue_invalid);
+            let mth_applied = block_builder.extrinsics.len() - inherent_length;
+            (exe_merge_time, mth_start.elapsed().as_millis(), mth_applied, mth_unqueue_invalid.len(), end_reason)
+        } else {
+            (0, 0, 0, 0, EndProposingReason::NoMoreTransactions)
+        };
+
+        // 6. execute all single thread transactions.
+        let single_exe_start = time::Instant::now();
+        let (single_applied, single_unqueue_invalid, end_reason) = Self::execute_one_thread_txs(
+            deadline,
+            self.soft_deadline_percent,
+            &mut block_builder,
+            single_group,
+            thread_number,
+        );
+        let single_exe_time = single_exe_start.elapsed().as_millis();
+        self.transaction_pool.remove_invalid(&single_unqueue_invalid);
+        if !single_applied.is_empty() || !single_unqueue_invalid.is_empty() {
+            final_end_reason = end_reason;
         }
-        self.transaction_pool.remove_invalid(&total_unqueue_invalid);
-        exe_merge_time /= 1_000_000;
 
         let block_size =
             block_builder.estimate_block_size(self.include_proof_in_block_size_estimation);
@@ -609,10 +459,12 @@ where
             warn!("Hit block size limit of `{block_size_limit}` without including any transaction!");
         }
 
+        // 7. build block by finalize block.
         let (block, storage_changes, proof) = block_builder.build()?.into_inner();
 
+        // 8. spawn a single execution check if env `MTH_CHECK` is true, this is just an extra check, weill not block main block build.
         let single_thread_check = std::env::var("MTH_CHECK").unwrap_or("false".into()).parse().unwrap_or(false);
-        if single_thread_check {
+        if single_thread_check && thread_number > 0 {
             let client = self.client.clone_for_execution();
             let inherent_digests = inherent_digests.clone();
             let block = block.clone();
@@ -644,13 +496,14 @@ where
         });
 
         info!(
-			"🎁 Prepared block for proposing at {} ({}/{propose_time} ms {prepare_tx_time}ms {exe_merge_time}ms) [hash: {:?}; parent_hash: {}; extrinsics ({}/{}/{extrinsic_count}), threads {threads}",
+			"🎁 Prepared block for proposing at {} [{}/{propose_time}ms ({prepare_tx_time}ms {mth_time}ms {single_exe_time}ms)] \
+			[hash: {:?}; parent_hash: {}; extrinsics [({mth_applied}/{mth_invalid})/({}/{})/{extrinsic_count}], threads {thread_number}]",
 			block.header().number(),
 			block_timer.elapsed().as_millis(),
 			<Block as BlockT>::Hash::from(block.header().hash()),
 			block.header().parent_hash(),
-			block.extrinsics().len(),
-            total_unqueue_invalid.len(),
+            single_applied.len(),
+            single_unqueue_invalid.len(),
 		);
         telemetry!(
 			self.telemetry;
@@ -671,6 +524,387 @@ where
         });
 
         Ok(Proposal { block, proof, storage_changes })
+    }
+
+    async fn group_transactions_from_pool(
+        &self,
+        deadline: time::Instant,
+        block_size_limit: usize,
+        mut block_size: usize,
+        mut proof_size: usize,
+    ) -> Result<(Vec<Vec<(usize, Arc<<A as TransactionPool>::InPoolTransaction>)>>, Vec<(usize, Arc<<A as TransactionPool>::InPoolTransaction>)>), String> {
+        let mut group_id = 0usize;
+        let mut group: HashMap<usize, Vec<(usize, Arc<<A as TransactionPool>::InPoolTransaction>)>> = HashMap::new();
+        let mut single_group: Vec<(usize, Arc<<A as TransactionPool>::InPoolTransaction>)> = Vec::new();
+        let mut tx_data_group : HashMap<Vec<u8>, usize> = HashMap::new();
+        let mut t1 = self.transaction_pool.ready_at(self.parent_number).fuse();
+        let mut t2 =
+            futures_timer::Delay::new(deadline.saturating_duration_since((self.now)()) / 8).fuse();
+        let mut pending_iterator = select! {
+			res = t1 => res,
+			_ = t2 => {
+				warn!(
+					"Timeout fired waiting for transaction pool at block #{}. Proceeding with production.",
+					self.parent_number,
+				);
+				self.transaction_pool.ready()
+			},
+		};
+        let mut skipped = 0;
+        // channel support max 2^16 rcg parse results.
+        let (rcg_tx, mut rcg_rx) = mpsc::channel(65536);
+        self.spawn_handle.spawn_blocking(
+            "mth-authorship-proposer",
+            None,
+            Box::pin(async move {
+                use futures::task::SpawnExt;
+
+                let pool = futures::executor::ThreadPool::new().expect("Failed to build rcg parse pool");
+                let mut pool_extrinsic_count = 0usize;
+                // loop for
+                // 1. get enough transaction from pool.
+                // 2. spawn mission for every transaction:
+                //      parse transaction runtime call group info and return by channel.
+                loop {
+                    let pending_tx = if let Some(pending_tx) = pending_iterator.next() {
+                        pending_tx
+                    } else {
+                        debug!(target: "mth_authorship", "out of transactions from pool(total {pool_extrinsic_count})");
+                        break;
+                    };
+
+                    let pending_tx_data = pending_tx.data().clone();
+                    if block_size + pending_tx_data.encoded_size() + proof_size > block_size_limit {
+                        if skipped < MAX_SKIPPED_TRANSACTIONS {
+                            skipped += 1;
+                            debug!(
+                                "Transaction would overflow the block size limit, but will try {} more transactions before quitting.",
+                                MAX_SKIPPED_TRANSACTIONS - skipped,
+                            );
+                            continue
+                        } else {
+                            debug!(target: "mth_authorship", "Reached block size limit with extrinsic: {pool_extrinsic_count}, start execute transactions.");
+                            break;
+                        }
+                    }
+                    block_size += pending_tx.data().encoded_size();
+                    let mut rcg_tx_i = rcg_tx.clone();
+                    pool.spawn(async move {
+                        let rcg_info = RCG::call_dependent_data(pending_tx.data().encode());
+                        if rcg_tx_i.start_send((pool_extrinsic_count, pending_tx, rcg_info)).is_err() {
+                            debug!("Could not send call_group_data to transaction group, maybe channel is closed.");
+                        }
+                    })
+                        .unwrap();
+                    // TODO update proof_size with new extrinsic. This is hard since we do not actually execute the extrinsic.
+                    proof_size += 0;
+                    pool_extrinsic_count += 1;
+                }
+            })
+        );
+        // collect transactions' group info and dispatch to different groups.
+        // TODO add time limit or weight limit for group. We should limit the transaction prepare time.
+        loop {
+            match rcg_rx.next().await {
+                Some((tx_index, pending_tx, result)) => {
+                    let call_group_data = match result {
+                        Ok(data) => data,
+                        Err(e) => {
+                            warn!(target: "mth_authorship", "Parse RuntimeCallGroup for transaction {:?} failed for {e:?}", pending_tx.hash());
+                            continue;
+                        }
+                    };
+                    // if call_group_data is empty, the transaction will be executed in single thread after all parallel execution finished.
+                    if call_group_data.is_empty() {
+                        single_group.push((tx_index, pending_tx));
+                        continue;
+                    }
+                    let mut gid = group_id;
+                    for data in &call_group_data {
+                        // if dependent data is already dispatched to group id, this call should be in this group.
+                        if let Some(id) = tx_data_group.get(data) {
+                            gid = *id;
+                            break;
+                        }
+                    };
+                    // insert tx to gid.
+                    if let Some(gp) = group.get_mut(&gid) {
+                        gp.push((tx_index, pending_tx));
+                    } else {
+                        group.insert(gid, vec![(tx_index, pending_tx)]);
+                    }
+                    // record call_group_data to gid
+                    for data in call_group_data {
+                        tx_data_group.insert(data, gid);
+                    };
+                    // if new group_id used, group_id += 1
+                    if gid == group_id {
+                        group_id += 1;
+                    }
+                },
+                None => {
+                    // finished
+                    break;
+                },
+            };
+        }
+        let mut group_txs: Vec<_> = group.into_values().collect();
+        if group_txs.len() == 1 {
+            single_group = [group_txs.pop().unwrap(), single_group].concat();
+        }
+        Ok((group_txs, single_group))
+    }
+
+    fn spawn_execute_groups(
+        &self,
+        deadline: time::Instant,
+        inherent_digests: Digest,
+        extrinsic_group: Vec<Vec<(usize, Arc<<A as TransactionPool>::InPoolTransaction>)>>,
+        thread_tx: Sender<Result<ExecuteRes<A, Block, <<C as ProvideRuntimeApi<Block>>::Api as ApiExt<Block>>::StateBackend>, sp_blockchain::Error>>,
+    ) where
+        C: CloneForExecution,
+    {
+        for (i, pending_txs) in extrinsic_group.into_iter().enumerate() {
+            let parent_hash = self.parent_hash.clone();
+            let inherent_digests_clone = inherent_digests.clone();
+            let soft_deadline_percent = self.soft_deadline_percent.clone();
+            let client_clone = self.client.clone_for_execution();
+            let mut res_tx = thread_tx.clone();
+            self.spawn_handle.spawn_blocking(
+                "mth-authorship-proposer",
+                None,
+                Box::pin(async move {
+                    let mut block_builder = match client_clone.new_block_at(parent_hash, inherent_digests_clone, PR::ENABLED) {
+                        Ok(builder) => builder,
+                        Err(e) => {
+                            if res_tx.start_send(Err(e)).is_err() {
+                                error!("Could not send block production err to proposer!");
+                            }
+                            return;
+                        }
+                    };
+                    let (applied_extrinsics, unqueue_invalid, end_reason) = Self::execute_one_thread_txs(
+                        deadline,
+                        soft_deadline_percent,
+                        &mut block_builder,
+                        pending_txs,
+                        i
+                    );
+
+                    let results = block_builder.api.take_all_changes();
+                    if res_tx.start_send(Ok((i, results, applied_extrinsics, unqueue_invalid, end_reason))).is_err() {
+                        trace!("Could not send block production result to proposer!");
+                    }
+                }),
+            );
+        }
+    }
+
+    fn execute_one_thread_txs(
+        deadline: time::Instant,
+        soft_deadline_percent: Percent,
+        block_builder: &mut BlockBuilder<Block, C, B>,
+        mut pending_txs: Vec<(usize, Arc<<A as TransactionPool>::InPoolTransaction>)>,
+        thread: usize,
+    ) -> (Vec<<Block as BlockT>::Extrinsic>, Vec<<A as TransactionPool>::Hash>, EndProposingReason) {
+        if pending_txs.is_empty() {
+            return (Vec::new(), Vec::new(), EndProposingReason::NoMoreTransactions);
+        }
+        let now = time::Instant::now();
+        let left = deadline.saturating_duration_since(now);
+        let left_micros: u64 = left.as_micros().saturated_into();
+        let thread_deadline =
+            now + time::Duration::from_micros(soft_deadline_percent.mul_floor(left_micros));
+        let mut skipped = 0usize;
+        let mut unqueue_invalid = Vec::new();
+        let mut applied_extrinsics = Vec::new();
+        let total_tx = pending_txs.len();
+        // thread txs should be same order with pool.
+        pending_txs.sort_by(|a, b| a.0.cmp(&b.0));
+        let mut pending_iterator = pending_txs.into_iter();
+        let end_reason = loop {
+            let pending_tx = if let Some((_, pending_tx)) = pending_iterator.next() {
+                pending_tx
+            } else {
+                debug!(
+                    target: "mth_authorship",
+                    "[Thread {thread}] Consensus finished in {}ms {}/{}/{total_tx} executed when pushing block transactions, \
+							report current state.",
+                    now.elapsed().as_millis(),
+                    block_builder.extrinsics.len(),
+                    unqueue_invalid.len(),
+                );
+                break EndProposingReason::NoMoreTransactions
+            };
+
+            let now = time::Instant::now();
+            if now > thread_deadline {
+                debug!(
+                    target: "mth_authorship",
+                    "[Thread {thread}] Consensus thread_deadline reached {}ms {}/{}/{total_tx} executed when pushing block transactions, \
+							report current state.",
+                    left.as_millis(),
+                    block_builder.extrinsics.len(),
+                    unqueue_invalid.len(),
+                );
+                break EndProposingReason::HitDeadline
+            }
+
+            let pending_tx_data = pending_tx.data().clone();
+            let pending_tx_hash = pending_tx.hash().clone();
+
+            trace!("[{:?}] Pushing to the block.", pending_tx_hash);
+            match BlockBuilder::push(block_builder, pending_tx_data.clone()) {
+                Ok(()) => applied_extrinsics.push(pending_tx_data),
+                Err(ApplyExtrinsicFailed(Validity(e))) if e.exhausted_resources() => {
+                    if skipped < MAX_SKIPPED_TRANSACTIONS {
+                        skipped += 1;
+                        debug!(
+                            "[Thread {thread}] Block seems full, but will try {} more transactions before quitting.",
+                            MAX_SKIPPED_TRANSACTIONS - skipped,
+                        );
+                    } else if time::Instant::now() < thread_deadline {
+                        debug!(
+                            target: "mth_authorship",
+                            "[Thread {thread}] Block seems full, but we still have time before the thread deadline, \
+                                so we will try a bit more before quitting."
+                        );
+                    } else {
+                        debug!(target: "mth_authorship", "[Thread {thread}] Reached block weight limit, proceeding with proposing.");
+                        break EndProposingReason::HitBlockWeightLimit
+                    }
+                },
+                Err(e) => {
+                    debug!(target: "mth_authorship", "[{:?}] Invalid transaction: {}", pending_tx_hash, e);
+                    unqueue_invalid.push(pending_tx_hash);
+                },
+            }
+        };
+        (applied_extrinsics, unqueue_invalid, end_reason)
+    }
+
+    async fn merge_threads_result<'a>(
+        &self,
+        propose_time: u128,
+        block_builder: &mut BlockBuilder<'a, Block, C, B>,
+        init_change: Vec<(Vec<u8>, Option<Vec<u8>>)>,
+        deadline: time::Instant,
+        thread_number: usize,
+        mut thread_rx: Receiver<Result<ExecuteRes<A, Block, <<C as ProvideRuntimeApi<Block>>::Api as ApiExt<Block>>::StateBackend>, sp_blockchain::Error>>,
+    ) -> Result<(u128, Vec<<A as TransactionPool>::Hash>, EndProposingReason), sp_blockchain::Error> {
+        let mth_merge = std::env::var("MTH_MERGE").unwrap_or("false".into()).parse().unwrap_or(false);
+        let mut final_end_reason = EndProposingReason::NoMoreTransactions;
+        let mut exe_merge_time = 0;
+        let mut finish =
+            futures_timer::Delay::new(deadline.saturating_duration_since((self.now)())).fuse();
+        let mut total_unqueue_invalid = vec![];
+        let mut merge_count = if mth_merge { thread_number * 2 - 1 } else { thread_number };
+        let mut merge_box = vec![];
+        let (mut merge_tx, mut merge_rx) = mpsc::channel(thread_number);
+        loop {
+            select! {
+                res = thread_rx.next() => {
+                    if let Some(result) = res {
+                        let (i, (overlay, _, recorder), applied_extrinsics, unqueue_invalid, end_reason) = match result {
+                            Ok(thread_result) => thread_result,
+                            Err(e) => return Err(e),
+                        };
+                        let changes = (vec![i], overlay, recorder, applied_extrinsics, unqueue_invalid, end_reason);
+                        merge_tx.start_send((changes, 0)).unwrap();
+                    }
+                }
+                res = merge_rx.next() => {
+                    if let Some((changes, merge_time)) = res {
+                        exe_merge_time += merge_time;
+                        merge_count -= 1;
+                        if !mth_merge || (mth_merge && merge_count == 0) {
+                            // final merge to main block builder.
+                            let mbh = MBH::default();
+                            mbh.pre_handle(&block_builder.backend, &block_builder.parent_hash, init_change.clone());
+                            let (threads, overlayed_changes, recorder, applied_extrinsics, unqueue_invalid, end_reason) = changes;
+                            final_end_reason = end_reason;
+                            total_unqueue_invalid.extend_from_slice(&unqueue_invalid);
+                            let exe_merge_start = time::Instant::now();
+                            // TODO add ability to rollback failed merge. So that we can drop conflict threads if not group tx correctly. We can dorp this merge failed group txs.
+                            if let Err(e) = block_builder.api.deref_mut().merge_all_changes(overlayed_changes, recorder, &mbh) {
+                                return Err(sp_blockchain::Error::Backend(format!("final merge threads {threads:?} {e:?}")));
+                            }
+                            block_builder.extrinsics.extend_from_slice(&applied_extrinsics);
+                            let merge_time = exe_merge_start.elapsed().as_nanos();
+                            debug!(target: "mth_authorship", "Merge Changes Threads {threads:?} to main builder in {merge_time}nanos");
+                            exe_merge_time += merge_time;
+                            if merge_count == 0 {
+                                break;
+                            }
+                        } else {
+                            if let Some(pre_changes) = merge_box.pop() {
+                                let mut merge_res_tx = merge_tx.clone();
+                                let mbh = MBH::default();
+                                mbh.pre_handle(&block_builder.backend, &block_builder.parent_hash, init_change.clone());
+                                self.spawn_handle.spawn_blocking(
+                                    "mth-authorship-proposer",
+                                    None,
+                                    Box::pin(async move {
+                                        let result = Self::merge_thread_changes(&mbh, pre_changes, changes).unwrap();
+                                        let threads = result.0.0.clone();
+                                        if merge_res_tx.start_send(result).is_err() {
+                                            panic!("Could not send merge result for threads {threads:?} to proposer!");
+                                        }
+                                    }),
+                                );
+                            } else {
+                                merge_box.push(changes);
+                                merge_box.sort_by(|a, b| b.3.len().cmp(&a.3.len()));
+                            }
+                        }
+                    }
+                }
+                _ = finish => {
+                    warn!(
+                        target: "mth_authorship",
+                        "Timeout fired waiting for threads result execution for block #{} propose_time {propose_time}ms. Build block with current state.",
+                        self.parent_number + One::one(),
+                    );
+                    break;
+                }
+            }
+        }
+        Ok((exe_merge_time / 1_000_000, total_unqueue_invalid, final_end_reason))
+    }
+
+    fn merge_thread_changes(
+        mbh: &MBH,
+        res1: MergeType<A, Block>,
+        res2: MergeType<A, Block>,
+    ) -> Result<(MergeType<A, Block>, u128), MergeErr> {
+        let exe_merge_start = time::Instant::now();
+        let merge = |mut target: MergeType<A, Block>, source: MergeType<A, Block>,| {
+            target.0.extend(source.0.clone());
+            if let Err(e) = target.1.merge(&source.1, mbh) {
+                return Err(e);
+            }
+            target.2 = match (target.2, source.2) {
+                (Some(recorder1), Some(recorder2)) => {
+                    recorder1.merge(&recorder2);
+                    Some(recorder1)
+                },
+                (Some(recorder1), None) => Some(recorder1),
+                (None, Some(recorder2)) => Some(recorder2),
+                (None, None) => None,
+            };
+            target.3.extend(source.3.clone());
+            target.4.extend(source.4.clone());
+            target.5 = source.5;
+            let merge_time = exe_merge_start.elapsed().as_nanos();
+            Ok((target, merge_time))
+        };
+        let (to_threads, from_threads, (target, merge_time)) = if res1.3.len() >= res2.3.len() {
+            (res1.0.clone(), res2.0.clone(), merge(res1, res2)?)
+        } else {
+            (res2.0.clone(), res1.0.clone(), merge(res2, res1)?)
+        };
+        debug!(target: "mth_authorship", "Merge Changes for Threads {to_threads:?} and {from_threads:?} in {merge_time}nanos");
+        Ok((target, merge_time))
     }
 
     async fn one_thread_build_check(
@@ -775,5 +1009,6 @@ where
 
 pub trait RCGroup {
     /// parse runtime call, return dependent data for dispatch call to groups
+    /// If return empty return, we will execute the transaction in a single thread for unknow transaction.
     fn call_dependent_data(tx_data: Vec<u8>) -> Result<Vec<Vec<u8>>, String>;
 }
