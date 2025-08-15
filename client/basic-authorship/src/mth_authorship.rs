@@ -38,6 +38,7 @@ use sp_runtime::{
 };
 use std::{marker::PhantomData, pin::Pin, sync::Arc, time};
 use std::collections::HashMap;
+use std::hash::Hash;
 use std::ops::DerefMut;
 use futures::channel::mpsc::{Sender, Receiver};
 use prometheus_endpoint::Registry as PrometheusRegistry;
@@ -533,10 +534,6 @@ where
         mut block_size: usize,
         mut proof_size: usize,
     ) -> Result<(Vec<Vec<(usize, Arc<<A as TransactionPool>::InPoolTransaction>)>>, Vec<(usize, Arc<<A as TransactionPool>::InPoolTransaction>)>), String> {
-        let mut group_id = 0usize;
-        let mut group: HashMap<usize, Vec<(usize, Arc<<A as TransactionPool>::InPoolTransaction>)>> = HashMap::new();
-        let mut single_group: Vec<(usize, Arc<<A as TransactionPool>::InPoolTransaction>)> = Vec::new();
-        let mut tx_data_group : HashMap<Vec<u8>, usize> = HashMap::new();
         let mut t1 = self.transaction_pool.ready_at(self.parent_number).fuse();
         let mut t2 =
             futures_timer::Delay::new(deadline.saturating_duration_since((self.now)()) / 8).fuse();
@@ -604,6 +601,7 @@ where
         );
         // collect transactions' group info and dispatch to different groups.
         // TODO add time limit or weight limit for group. We should limit the transaction prepare time.
+        let mut grouper = ConflictGroup::new();
         loop {
             match rcg_rx.next().await {
                 Some((tx_index, pending_tx, result)) => {
@@ -614,33 +612,7 @@ where
                             continue;
                         }
                     };
-                    // if call_group_data is empty, the transaction will be executed in single thread after all parallel execution finished.
-                    if call_group_data.is_empty() {
-                        single_group.push((tx_index, pending_tx));
-                        continue;
-                    }
-                    let mut gid = group_id;
-                    for data in &call_group_data {
-                        // if dependent data is already dispatched to group id, this call should be in this group.
-                        if let Some(id) = tx_data_group.get(data) {
-                            gid = *id;
-                            break;
-                        }
-                    };
-                    // insert tx to gid.
-                    if let Some(gp) = group.get_mut(&gid) {
-                        gp.push((tx_index, pending_tx));
-                    } else {
-                        group.insert(gid, vec![(tx_index, pending_tx)]);
-                    }
-                    // record call_group_data to gid
-                    for data in call_group_data {
-                        tx_data_group.insert(data, gid);
-                    };
-                    // if new group_id used, group_id += 1
-                    if gid == group_id {
-                        group_id += 1;
-                    }
+                    grouper.insert(call_group_data, (tx_index, pending_tx));
                 },
                 None => {
                     // finished
@@ -648,7 +620,8 @@ where
                 },
             };
         }
-        let mut group_txs: Vec<_> = group.into_values().collect();
+        let mut group_txs: Vec<_> = grouper.group().into_values().collect();
+        let mut single_group: Vec<_> = grouper.single_group();
         if group_txs.len() == 1 {
             single_group = [group_txs.pop().unwrap(), single_group].concat();
         }
@@ -801,6 +774,8 @@ where
         let mut merge_count = if mth_merge { thread_number * 2 - 1 } else { thread_number };
         let mut merge_box = vec![];
         let (mut merge_tx, mut merge_rx) = mpsc::channel(thread_number);
+        let mbh = MBH::default();
+        mbh.pre_handle(&block_builder.backend, &block_builder.parent_hash, init_change.clone());
         loop {
             select! {
                 res = thread_rx.next() => {
@@ -819,8 +794,6 @@ where
                         merge_count -= 1;
                         if !mth_merge || (mth_merge && merge_count == 0) {
                             // final merge to main block builder.
-                            let mbh = MBH::default();
-                            mbh.pre_handle(&block_builder.backend, &block_builder.parent_hash, init_change.clone());
                             let (threads, overlayed_changes, recorder, applied_extrinsics, unqueue_invalid, end_reason) = changes;
                             final_end_reason = end_reason;
                             total_unqueue_invalid.extend_from_slice(&unqueue_invalid);
@@ -878,31 +851,28 @@ where
         res2: MergeType<A, Block>,
     ) -> Result<(MergeType<A, Block>, u128), MergeErr> {
         let exe_merge_start = time::Instant::now();
-        let merge = |mut target: MergeType<A, Block>, source: MergeType<A, Block>,| {
-            target.0.extend(source.0.clone());
-            if let Err(e) = target.1.merge(&source.1, mbh) {
-                return Err(e);
-            }
-            target.2 = match (target.2, source.2) {
-                (Some(recorder1), Some(recorder2)) => {
-                    recorder1.merge(&recorder2);
-                    Some(recorder1)
-                },
-                (Some(recorder1), None) => Some(recorder1),
-                (None, Some(recorder2)) => Some(recorder2),
-                (None, None) => None,
-            };
-            target.3.extend(source.3.clone());
-            target.4.extend(source.4.clone());
-            target.5 = source.5;
-            let merge_time = exe_merge_start.elapsed().as_nanos();
-            Ok((target, merge_time))
-        };
-        let (to_threads, from_threads, (target, merge_time)) = if res1.3.len() >= res2.3.len() {
-            (res1.0.clone(), res2.0.clone(), merge(res1, res2)?)
+        let (to_threads, from_threads, mut target, source) = if res1.3.len() >= res2.3.len() {
+            (res1.0.clone(), res2.0.clone(), res1, res2)
         } else {
-            (res2.0.clone(), res1.0.clone(), merge(res2, res1)?)
+            (res2.0.clone(), res1.0.clone(), res2, res1)
         };
+        target.0.extend(source.0.clone());
+        if let Err(e) = target.1.merge(&source.1, mbh) {
+            return Err(e);
+        }
+        target.2 = match (target.2, source.2) {
+            (Some(recorder1), Some(recorder2)) => {
+                recorder1.merge(&recorder2);
+                Some(recorder1)
+            },
+            (Some(recorder1), None) => Some(recorder1),
+            (None, Some(recorder2)) => Some(recorder2),
+            (None, None) => None,
+        };
+        target.3.extend(source.3.clone());
+        target.4.extend(source.4.clone());
+        target.5 = source.5;
+        let merge_time = exe_merge_start.elapsed().as_nanos();
         debug!(target: "mth_authorship", "Merge Changes for Threads {to_threads:?} and {from_threads:?} in {merge_time}nanos");
         Ok((target, merge_time))
     }
@@ -1012,3 +982,137 @@ pub trait RCGroup {
     /// If return empty return, we will execute the transaction in a single thread for unknow transaction.
     fn call_dependent_data(tx_data: Vec<u8>) -> Result<Vec<Vec<u8>>, String>;
 }
+
+pub struct ConflictGroup<K, V> {
+    group_id: usize,
+    group: HashMap<usize, Vec<V>>,
+    single_group: Vec<V>,
+    key_group: HashMap<K, usize>,
+    group_keys: HashMap<usize, Vec<K>>,
+}
+
+impl<K: PartialEq + Eq + Hash + Clone, V> ConflictGroup<K, V>  {
+    pub fn new() -> Self {
+        Self {
+            group_id: 0,
+            group: HashMap::new(),
+            single_group: Vec::new(),
+            key_group: HashMap::new(),
+            group_keys: HashMap::new(),
+        }
+    }
+
+    /// Group value with some specific keys.
+    /// If two values have some conflict key, they should be merged into one group.
+    /// If keys is empty, it is considered as ungroupable value, we just insert to a single group.
+    /// As a result, values with any conflict key should be finally in same group.
+    pub fn insert(&mut self, keys: Vec<K>, value: V) {
+        // if keys is empty, the value will be push to single group.
+        if keys.is_empty() {
+            self.single_group.push(value);
+            return;
+        }
+        // by default, we will insert new value to new group id.
+        let mut gid = self.group_id;
+        for key in &keys {
+            // if some dependent key is already dispatched to group id, this value should be in this group.
+            if let Some(id) = self.key_group.get(key) {
+                gid = *id;
+                break;
+            }
+        };
+        let mut tmp_move_groups = vec![];
+        // merge conflict groups into one group
+        for key in &keys {
+            if let Some(used_group) = self.key_group.remove(key) {
+                if used_group != gid {
+                    let move_keys = self.group_keys.remove(&used_group).unwrap_or_default();
+                    // update move_key -> gid map.
+                    for move_key in &move_keys {
+                        self.key_group.insert(move_key.clone(), gid);
+                    }
+                    // insert move_keys to gid
+                    if let Some(keys) = self.group_keys.get_mut(&gid) {
+                        keys.extend_from_slice(&move_keys);
+                    } else {
+                        self.group_keys.insert(gid, move_keys);
+                    }
+                    // move transactions from used_group to gid.
+                    let move_values = self.group.remove(&used_group).unwrap_or_default();
+                    tmp_move_groups.push((used_group, gid, move_values.len()));
+                    if let Some(values) = self.group.get_mut(&gid) {
+                        values.extend(move_values);
+                    } else {
+                        self.group.insert(gid, move_values);
+                    }
+                }
+            } else {
+                if let Some(keys) = self.group_keys.get_mut(&gid) {
+                    keys.push(key.clone());
+                } else {
+                    self.group_keys.insert(gid, vec![key.clone()]);
+                }
+            }
+            // record key group_id
+            self.key_group.insert(key.clone(), gid);
+        }
+        if !tmp_move_groups.is_empty() {
+            info!(target: "mth_authorship", "ConflictGroup move groups: {tmp_move_groups:?}");
+        }
+        // insert tx to gid
+        if let Some(values) = self.group.get_mut(&gid) {
+            values.push(value);
+        } else {
+            self.group.insert(gid, vec![value]);
+        }
+        // if new group_id used, group_id += 1
+        if gid == self.group_id {
+            self.group_id += 1;
+        }
+    }
+
+    pub fn group(&mut self) -> HashMap<usize, Vec<V>> {
+        std::mem::take(&mut self.group)
+    }
+
+    pub fn single_group(&mut self) -> Vec<V> {
+        std::mem::take(&mut self.single_group)
+    }
+}
+
+#[test]
+fn test_conflict_group() {
+    let mut conflict_group: ConflictGroup<u32, String> = ConflictGroup::new();
+    // gid 0
+    conflict_group.insert(vec![0], "0".to_string());
+    // gid 1
+    conflict_group.insert(vec![1], "1".to_string());
+    // gid 2
+    conflict_group.insert(vec![2], "2".to_string());
+    // gid 3
+    conflict_group.insert(vec![3], "3".to_string());
+    // this insert will merge "1", "4" to gid 1.
+    conflict_group.insert(vec![1, 4], "4".to_string());
+    // this insert will merge "2", "5" to gid 2.
+    conflict_group.insert(vec![2, 5], "5".to_string());
+    // this insert will group "2", "3", "5", "6" to gid 3.
+    conflict_group.insert(vec![3, 5], "6".to_string());
+
+    assert_eq!(conflict_group.key_group.remove(&0), Some(0));
+    assert_eq!(conflict_group.key_group.remove(&1), Some(1));
+    assert_eq!(conflict_group.key_group.remove(&2), Some(3));
+    assert_eq!(conflict_group.key_group.remove(&3), Some(3));
+    assert_eq!(conflict_group.key_group.remove(&4), Some(1));
+    assert_eq!(conflict_group.key_group.remove(&5), Some(3));
+
+    assert_eq!(conflict_group.group_keys.remove(&0), Some(vec![0]));
+    assert_eq!(conflict_group.group_keys.remove(&1), Some(vec![1, 4]));
+    assert_eq!(conflict_group.group_keys.remove(&2), None);
+    assert_eq!(conflict_group.group_keys.remove(&3), Some(vec![3, 2, 5]));
+
+    assert_eq!(conflict_group.group.remove(&0), Some(vec!["0".to_string()]));
+    assert_eq!(conflict_group.group.remove(&1), Some(vec!["1".to_string(), "4".to_string()]));
+    assert_eq!(conflict_group.group.remove(&2), None);
+    assert_eq!(conflict_group.group.remove(&3), Some(vec!["3".to_string(), "2".to_string(), "5".to_string(), "6".to_string()]));
+}
+

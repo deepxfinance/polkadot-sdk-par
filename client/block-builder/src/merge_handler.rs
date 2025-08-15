@@ -154,8 +154,7 @@ impl<RE: Encode + Decode + Debug + Clone> MergeChange<StorageKey, Option<Storage
                 local.insert(SYSTEM_DIGEST.to_vec(), new_entry);
             }
         }
-        
-        
+
         // update "System BlockWeight"
         if let Some(entry_other) = other.remove(&SYSTEM_BLOCK_WEIGHT.to_vec()) {
             #[derive(Encode, Decode, Debug, Clone, Default)]
@@ -181,37 +180,33 @@ impl<RE: Encode + Decode + Debug + Clone> MergeChange<StorageKey, Option<Storage
             let extrinsics = entry_other.extrinsics();
             let final_extrinsic = extrinsics.last().cloned().map(|e| e.saturating_add(offset));
             if let Some(entry_local) = local.get_mut(&SYSTEM_BLOCK_WEIGHT.to_vec()) {
-                if entry_local.value_ref() == entry_other.value_ref() {
-                    log::debug!(target: "develop", "merge BlockWeight local same with other, not merge");
-                } else {
-                    let local_weight: PerDispatchClass<Weight> = entry_local
-                        .value_ref()
-                        .as_ref()
-                        .map(|data| Decode::decode(&mut data.as_slice()).unwrap())
-                        .unwrap_or_default();
-                    let mut final_weight = local_weight.clone();
-                    final_weight.normal.ref_time = final_weight.normal.ref_time.saturating_add(other_weight.normal.ref_time);
-                    final_weight.normal.proof_size = final_weight.normal.proof_size.saturating_add(other_weight.normal.proof_size);
-                    final_weight.operational.ref_time = final_weight.operational.ref_time.saturating_add(other_weight.operational.ref_time);
-                    final_weight.operational.proof_size = final_weight.operational.proof_size.saturating_add(other_weight.operational.proof_size);
-                    final_weight.mandatory.ref_time = final_weight.mandatory.ref_time.saturating_add(other_weight.mandatory.ref_time);
-                    final_weight.mandatory.proof_size = final_weight.mandatory.proof_size.saturating_add(other_weight.mandatory.proof_size);
-                    let init_weight: Option<Option<PerDispatchClass<Weight>>> = self.cache_state.lock().unwrap()
-                        .get(&SYSTEM_BLOCK_WEIGHT.to_vec())
-                        .cloned()
-                        .map(|data| data.map(|d| Decode::decode(&mut d.as_slice()).unwrap()));
-                    // remove initial BlockWeight for every storage change
-                    if let Some(Some(init_weight)) = init_weight.clone() {
-                        final_weight.normal.ref_time = final_weight.normal.ref_time.saturating_sub(init_weight.normal.ref_time);
-                        final_weight.normal.proof_size = final_weight.normal.proof_size.saturating_sub(init_weight.normal.proof_size);
-                        final_weight.operational.ref_time = final_weight.operational.ref_time.saturating_sub(init_weight.operational.ref_time);
-                        final_weight.operational.proof_size = final_weight.operational.proof_size.saturating_sub(init_weight.operational.proof_size);
-                        final_weight.mandatory.ref_time = final_weight.mandatory.ref_time.saturating_sub(init_weight.mandatory.ref_time);
-                        final_weight.mandatory.proof_size = final_weight.mandatory.proof_size.saturating_sub(init_weight.mandatory.proof_size);
-                    }
-                    log::debug!(target: "develop", "merge BlockWeight init: {init_weight:?}, local: {local_weight:?}, other: {other_weight:?}, final: {final_weight:?}, extrinsic: {final_extrinsic:?}");
-                    entry_local.set(Some(final_weight.encode()), false, final_extrinsic);
+                let local_weight: PerDispatchClass<Weight> = entry_local
+                    .value_ref()
+                    .as_ref()
+                    .map(|data| Decode::decode(&mut data.as_slice()).unwrap())
+                    .unwrap_or_default();
+                let mut final_weight = local_weight.clone();
+                final_weight.normal.ref_time = final_weight.normal.ref_time.saturating_add(other_weight.normal.ref_time);
+                final_weight.normal.proof_size = final_weight.normal.proof_size.saturating_add(other_weight.normal.proof_size);
+                final_weight.operational.ref_time = final_weight.operational.ref_time.saturating_add(other_weight.operational.ref_time);
+                final_weight.operational.proof_size = final_weight.operational.proof_size.saturating_add(other_weight.operational.proof_size);
+                final_weight.mandatory.ref_time = final_weight.mandatory.ref_time.saturating_add(other_weight.mandatory.ref_time);
+                final_weight.mandatory.proof_size = final_weight.mandatory.proof_size.saturating_add(other_weight.mandatory.proof_size);
+                let init_weight: Option<Option<PerDispatchClass<Weight>>> = self.cache_state.lock().unwrap()
+                    .get(&SYSTEM_BLOCK_WEIGHT.to_vec())
+                    .cloned()
+                    .map(|data| data.map(|d| Decode::decode(&mut d.as_slice()).unwrap()));
+                // remove initial BlockWeight for every storage change
+                if let Some(Some(init_weight)) = init_weight.clone() {
+                    final_weight.normal.ref_time = final_weight.normal.ref_time.saturating_sub(init_weight.normal.ref_time);
+                    final_weight.normal.proof_size = final_weight.normal.proof_size.saturating_sub(init_weight.normal.proof_size);
+                    final_weight.operational.ref_time = final_weight.operational.ref_time.saturating_sub(init_weight.operational.ref_time);
+                    final_weight.operational.proof_size = final_weight.operational.proof_size.saturating_sub(init_weight.operational.proof_size);
+                    final_weight.mandatory.ref_time = final_weight.mandatory.ref_time.saturating_sub(init_weight.mandatory.ref_time);
+                    final_weight.mandatory.proof_size = final_weight.mandatory.proof_size.saturating_sub(init_weight.mandatory.proof_size);
                 }
+                log::debug!(target: "develop", "merge BlockWeight init: {init_weight:?}, local: {local_weight:?}, other: {other_weight:?}, final: {final_weight:?}, extrinsic: {final_extrinsic:?}");
+                entry_local.set(Some(final_weight.encode()), false, final_extrinsic);
             } else {
                 log::debug!(target: "develop", "merge BlockWeight local: None, other: {other_weight:?}, final: {other_weight:?}, extrinsic: {final_extrinsic:?}");
                 let mut new_entry = OverlayedEntry::default();
