@@ -135,10 +135,14 @@ where
 
 /// Utility for building new (valid) blocks from a stream of extrinsics.
 pub struct BlockBuilder<'a, Block: BlockT, A: ProvideRuntimeApi<Block>, B> {
+	/// current applied extrinsic list.
 	pub extrinsics: Vec<Block::Extrinsic>,
+	/// Runtime api env.
 	pub api: ApiRef<'a, A::Api>,
 	version: u32,
+	/// parent hash
 	pub parent_hash: Block::Hash,
+	/// backend
 	pub backend: &'a B,
 	/// The estimated size of the block header.
 	pub estimated_header_size: usize,

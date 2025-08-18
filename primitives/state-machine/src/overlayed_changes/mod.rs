@@ -41,6 +41,7 @@ use std::{
 	any::{Any, TypeId},
 	boxed::Box,
 };
+use sp_core::bytes::to_hex;
 pub use crate::overlayed_changes::changeset::{OverlayedEntry, MergeChange};
 pub use self::changeset::{AlreadyInRuntime, NoOpenTransaction, NotInRuntime, OverlayedValue};
 
@@ -105,8 +106,8 @@ pub struct OverlayedChanges {
 }
 
 /// Error type returned when merge [OverlayedChanges].
-#[derive(Clone, Debug)]
-pub enum MergeErr{
+#[derive(Clone)]
+pub enum MergeErr {
 	/// Some [OverlayedChanges] not finished.
 	Unfinished(&'static str),
 	/// Two [OverlayedChanges] have changed same top keys and can not be merged.
@@ -115,6 +116,23 @@ pub enum MergeErr{
 	DuplicateChildKeys(Vec<StorageKey>),
 	/// Two [OverlayedChanges] have changed same offchain keys and can not be merged.
 	DuplicateOffchainKeys(Vec<(Vec<u8>, Vec<u8>)>),
+}
+
+impl std::fmt::Debug for MergeErr {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		match self {
+			Self::Unfinished(v) => write!(f, "Unfinished({v})"),
+			Self::DuplicateTopKeys(keys) => {
+				write!(f, "DuplicateTopKeys({:?})", keys.iter().map(|k| to_hex(&k, false)).collect::<Vec<_>>())
+			},
+			Self::DuplicateChildKeys(keys) => {
+				write!(f, "DuplicateChildKeys({:?})", keys.iter().map(|k| to_hex(&k, false)).collect::<Vec<_>>())
+			},
+			Self::DuplicateOffchainKeys(keys) => {
+				write!(f, "DuplicateOffchainKeys({:?})", keys.iter().map(|(k1, k2)| (to_hex(&k1, false), to_hex(&k2, false))).collect::<Vec<_>>())
+			},
+		}
+	}
 }
 
 impl OverlayedChanges {
@@ -129,12 +147,25 @@ impl OverlayedChanges {
 	}
 
 	/// merge with a custom handler for top changes' meet conflict key.
+	/// if `allow_rollback` is true, we will copy state to test change, and change real state when merge success(cost more memory).
 	pub fn merge<M: MergeChange<StorageKey, Option<StorageValue>>>(
 		&mut self,
 		other: &Self,
 		merge_handle: &M,
+		allow_rollback: bool,
 	) -> Result<(), MergeErr> {
-		if let Err(duplicate_keys) = self.top.merge_custom(other.top.clone(), Some(merge_handle)) {
+		let mut tmp_top = OverlayedChangeSet::default();
+		let mut tmp_children = Map::new();
+		let mut tmp_offchain = OffchainOverlayedChanges::default();
+		let (merge_top, merge_children, merge_offchain) = if allow_rollback {
+			tmp_top = self.top.clone();
+			tmp_children = self.children.clone();
+			tmp_offchain = self.offchain.clone();
+			(&mut tmp_top, &mut tmp_children, &mut tmp_offchain)
+		} else {
+			(&mut self.top, &mut self.children, &mut self.offchain)
+		};
+		if let Err(duplicate_keys) = merge_top.merge_custom(other.top.clone(), Some(merge_handle)) {
 			if duplicate_keys.is_empty() {
 				return Err(MergeErr::Unfinished("OverlayedChanges merge top meet unfinished transaction"));
 			} else {
@@ -142,7 +173,7 @@ impl OverlayedChanges {
 			}
 		};
 		for (key, (set, info)) in other.children.iter() {
-			if let Some((changeset, _info)) = self.children.get_mut(key) {
+			if let Some((changeset, _info)) = merge_children.get_mut(key) {
 				if let Err(duplicate_keys) = changeset.merge(set.clone()) {
 					if duplicate_keys.is_empty() {
 						return Err(MergeErr::Unfinished("OverlayedChanges merge children meet unfinished transaction"));
@@ -151,16 +182,22 @@ impl OverlayedChanges {
 					}
 				}
 			} else {
-				self.children.insert(key.clone(), (set.clone(), info.clone()));
+				merge_children.insert(key.clone(), (set.clone(), info.clone()));
 			}
 		}
-		if let Err(duplicate_keys) = self.offchain.overlay_mut().merge(other.offchain.overlay().clone()) {
+		if let Err(duplicate_keys) = merge_offchain.overlay_mut().merge(other.offchain.overlay().clone()) {
 			if duplicate_keys.is_empty() {
 				return Err(MergeErr::Unfinished("OverlayedChanges merge offchain meet unfinished transaction"));
 			} else {
 				return Err(MergeErr::DuplicateOffchainKeys(duplicate_keys));
 			}
 		};
+		if allow_rollback {
+			self.top = tmp_top;
+			self.children = tmp_children;
+			self.offchain = tmp_offchain;
+		}
+
 		let offset = self.transaction_index_ops.last().map(|tio| match tio {
 			IndexOperation::Insert { extrinsic: e, .. } => *e + 1,
 			IndexOperation::Renew { extrinsic: e, .. } => *e + 1,

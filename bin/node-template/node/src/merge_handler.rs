@@ -45,6 +45,13 @@ where
             cache_state.insert(balances_total_issuance_key.to_vec(), balances_total_issuance);
         }
     }
+
+    fn copy_state(&self) -> Self {
+        Self {
+            cache_state: Mutex::new(self.cache_state.lock().unwrap().clone()),
+            default: <DefaultMergeHandler<RuntimeEvent> as MultiThreadBlockBuilder<B, Block>>::copy_state(&self.default),
+        }
+    }
 }
 
 impl MergeChange<StorageKey, Option<StorageValue>> for MergeHandler {

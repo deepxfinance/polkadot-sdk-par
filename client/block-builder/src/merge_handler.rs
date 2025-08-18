@@ -13,6 +13,9 @@ use sp_state_machine::{MergeChange, OverlayedEntry, StorageKey, StorageValue};
 pub trait MultiThreadBlockBuilder<B, Block: BlockT>: MergeChange<StorageKey, Option<StorageValue>> + Default {
     /// Pre handle the state for future [MergeChange::merge_changes]
     fn pre_handle(&self, _backend: &B, _parent: &Block::Hash, _init_change: Vec<(Vec<u8>, Option<Vec<u8>>)>) {}
+    
+    /// Copy a new Self for another spawn merge work.
+    fn copy_state(&self) -> Self;
 }
 
 /// Default type implement MultiThreadBlockBuilder trait.
@@ -36,6 +39,13 @@ impl<RE: Encode + Decode + Debug + Clone, B, Block: BlockT> MultiThreadBlockBuil
         // store useful initial changes.
         for (key, value) in init_changes {
             cache_state.insert(key, value);
+        }
+    }
+
+    fn copy_state(&self) -> Self {
+        Self {
+            cache_state: Mutex::new(self.cache_state.lock().unwrap().clone()),
+            phantom: PhantomData,
         }
     }
 }

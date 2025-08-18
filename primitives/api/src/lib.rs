@@ -611,6 +611,7 @@ pub trait ApiExt<Block: BlockT> {
 		_changes: OverlayedChanges,
 		_recorder: Option<ProofRecorder<Block>>,
 		_merge_top: &M,
+		_allow_rollback: bool,
 	) -> Result<(), MergeErr>
 	where
 		Self: Sized;

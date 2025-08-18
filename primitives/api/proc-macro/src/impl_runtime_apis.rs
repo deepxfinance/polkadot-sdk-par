@@ -352,12 +352,13 @@ fn generate_runtime_api_base_structures() -> Result<TokenStream> {
 				changes: #crate_::OverlayedChanges,
 				recorder: std::option::Option<#crate_::ProofRecorder<Block>>,
 				merge_top: &M,
+				allow_rollback: bool,
 			) -> std::result::Result<(), #crate_::MergeErr>
 			where
 				Self: Sized,
 			{
 				// merge changes
-				std::cell::RefCell::borrow_mut(&self.changes).merge(&changes, merge_top)?;
+				std::cell::RefCell::borrow_mut(&self.changes).merge(&changes, merge_top, allow_rollback)?;
 				// merge recorder
 				if self.recorder.is_some() {
 					if let std::option::Option::Some(other_recorder) = &recorder {
