@@ -411,7 +411,7 @@ where
         extrinsic_count += single_group.len();
 
         let thread_number = extrinsic_group.len();
-        let (mth_time, mth_applied, mth_invalid, mut final_end_reason) = if !extrinsic_group.is_empty() {
+        let (mth_time, mth_applied, mth_invalid, extra_merge_time, mut final_end_reason) = if !extrinsic_group.is_empty() {
             let mth_start = time::Instant::now();
             let (thread_tx, thread_rx) = mpsc::channel(thread_number);
             // 4. execute group transaction by threads.
@@ -423,7 +423,7 @@ where
             );
 
             // 5. merge all threads' changes to main block builder.
-            let (mth_unqueue_invalid, end_reason) = self.merge_threads_result(
+            let (mth_unqueue_invalid, end_reason, extra_merge_time) = self.merge_threads_result(
                 propose_time,
                 &mut block_builder,
                 init_change,
@@ -434,9 +434,9 @@ where
                 .await?;
             self.transaction_pool.remove_invalid(&mth_unqueue_invalid);
             let mth_applied = block_builder.extrinsics.len() - inherent_length;
-            (mth_start.elapsed().as_millis(), mth_applied, mth_unqueue_invalid.len(), end_reason)
+            (mth_start.elapsed().as_millis(), mth_applied, mth_unqueue_invalid.len(), extra_merge_time, end_reason)
         } else {
-            (0, 0, 0, EndProposingReason::NoMoreTransactions)
+            (0, 0, 0, 0, EndProposingReason::NoMoreTransactions)
         };
 
         // 6. execute all single thread transactions.
@@ -499,7 +499,7 @@ where
         });
 
         info!(
-			"🎁 Prepared block for proposing at {} [{}/{propose_time}ms ({prepare_tx_time}ms {mth_time}ms {single_exe_time}ms)] \
+			"🎁 Prepared block for proposing at {} [{}/{propose_time}ms ({prepare_tx_time}ms {mth_time}({extra_merge_time})ms {single_exe_time}ms)] \
 			[hash: {:?}; parent_hash: {}; extrinsics [({mth_applied}/{mth_invalid})/({}/{})/{extrinsic_count}], threads {thread_number}]",
 			block.header().number(),
 			block_timer.elapsed().as_millis(),
@@ -777,14 +777,15 @@ where
         deadline: time::Instant,
         thread_number: usize,
         mut thread_rx: Receiver<Result<ExecuteRes<A, Block, <<C as ProvideRuntimeApi<Block>>::Api as ApiExt<Block>>::StateBackend>, sp_blockchain::Error>>,
-    ) -> Result<(Vec<<A as TransactionPool>::Hash>, EndProposingReason), sp_blockchain::Error> {
-        let mth_merge = std::env::var("MTH_MERGE").unwrap_or("false".into()).parse().unwrap_or(false);
-        let allow_rollback = std::env::var("MTH_MERGE_ROLLBACK").unwrap_or("false".into()).parse().unwrap_or(false);
+    ) -> Result<(Vec<<A as TransactionPool>::Hash>, EndProposingReason, u128), sp_blockchain::Error> {
+        let mth_merge = std::env::var("MTH_MERGE").unwrap_or("true".into()).parse().unwrap_or(true);
+        let allow_rollback = std::env::var("MTH_MERGE_ROLLBACK").unwrap_or("true".into()).parse().unwrap_or(true);
         let mut final_end_reason = EndProposingReason::NoMoreTransactions;
         let mut finish =
             futures_timer::Delay::new(deadline.saturating_duration_since((self.now)())).fuse();
         let mut total_unqueue_invalid = vec![];
         let mut merge_count = if mth_merge { thread_number * 2 - 1 } else { thread_number };
+        let mut extra_merge_count = (time::Instant::now(), thread_number);
         let mut merge_box: Vec<MergeType<A, Block>> = vec![];
         let (mut merge_tx, mut merge_rx) = mpsc::channel(thread_number);
         let mbh = MBH::default();
@@ -800,6 +801,11 @@ where
                         };
                         let changes = (vec![i], overlay, recorder, applied_extrinsics, unqueue_invalid, end_reason);
                         merge_tx.start_send(changes).unwrap();
+                        extra_merge_count.1 -= 1;
+                        if extra_merge_count.1 == 0 {
+                            // all threads execute finished, initialize extra merge start time.
+                            extra_merge_count.0 = time::Instant::now();
+                        }
                     }
                 }
                 res = merge_rx.next() => {
@@ -876,7 +882,8 @@ where
                 }
             }
         }
-        Ok((total_unqueue_invalid, final_end_reason))
+        let extra_merge_time = extra_merge_count.0.elapsed().as_millis();
+        Ok((total_unqueue_invalid, final_end_reason, extra_merge_time))
     }
 
     fn merge_thread_changes(
