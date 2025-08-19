@@ -784,7 +784,8 @@ where
         let mut finish =
             futures_timer::Delay::new(deadline.saturating_duration_since((self.now)())).fuse();
         let mut total_unqueue_invalid = vec![];
-        let mut merge_count = if mth_merge { thread_number * 2 - 1 } else { thread_number };
+        let mut merge_start = 0usize;
+        let mut merge_count = 0usize;
         let mut extra_merge_count = (time::Instant::now(), thread_number);
         let mut merge_box: Vec<MergeType<A, Block>> = vec![];
         let (mut merge_tx, mut merge_rx) = mpsc::channel(thread_number);
@@ -800,7 +801,7 @@ where
                             Err(e) => return Err(e),
                         };
                         let changes = (vec![i], overlay, recorder, applied_extrinsics, unqueue_invalid, end_reason);
-                        merge_tx.start_send(changes).unwrap();
+                        merge_tx.start_send((changes, false)).unwrap();
                         extra_merge_count.1 -= 1;
                         if extra_merge_count.1 == 0 {
                             // all threads execute finished, initialize extra merge start time.
@@ -809,13 +810,14 @@ where
                     }
                 }
                 res = merge_rx.next() => {
-                    if let Some(changes) = res {
-                        merge_count -= 1;
-                        if !mth_merge || (mth_merge && merge_count == 0) {
+                    if let Some((changes, merged)) = res {
+                        if merged { merge_count += 1; }
+                        if !mth_merge || (mth_merge && merge_start >= thread_number - 2) {
                             // final merge to main block builder.
                             let (threads, overlayed_changes, recorder, applied_extrinsics, unqueue_invalid, end_reason) = changes;
                             final_end_reason = end_reason;
                             total_unqueue_invalid.extend_from_slice(&unqueue_invalid);
+                            merge_start += 1;
                             let exe_merge_start = time::Instant::now();
                             let extrinsic_length = applied_extrinsics.len() + unqueue_invalid.len();
                             if let Err(e) = block_builder.api.deref_mut().merge_all_changes(overlayed_changes, recorder, &mbh, allow_rollback) {
@@ -829,46 +831,46 @@ where
                                 let merge_time = exe_merge_start.elapsed().as_nanos();
                                 debug!(target: "mth_authorship", "[MergeCh Block {block}] Merge threads {threads:?} to main builder in {merge_time}nanos");
                             }
-                            if merge_count == 0 {
+                            merge_count += 1;
+                            if merge_count == thread_number {
                                 break;
                             }
-                        } else {
-                            if let Some(pre_changes) = merge_box.pop() {
-                                let mut merge_res_tx = merge_tx.clone();
-                                let mbh = mbh.copy_state();
-                                let block = self.parent_number + One::one();
-                                self.spawn_handle.spawn_blocking(
-                                    "mth-authorship-proposer",
-                                    None,
-                                    Box::pin(async move {
-                                        let exe_merge_start = time::Instant::now();
-                                        let merge_result = Self::merge_thread_changes(&mbh, pre_changes, changes, allow_rollback);
-                                        let merge_time = exe_merge_start.elapsed().as_nanos();
-                                        let changes = match merge_result {
-                                            Ok((changes, to_threads, from_threads)) => {
-                                                debug!(target: "mth_authorship", "[MergeCh Block {block}] Merge threads {to_threads:?} and {from_threads:?} in {merge_time}nanos");
-                                                changes
-                                            },
-                                            Err((keep, drop, e)) => {
-                                                error!(
-                                                    target: "mth_authorship",
-                                                    "[MergeCh Block {block}] Merge threads keep {:?}, drop [threads {:?}, {} extrinsics] in {merge_time}nanos for error: {e:?}",
-                                                    keep.0,
-                                                    drop.0,
-                                                    drop.3.len() + drop.4.len(),
-                                                );
-                                                keep
-                                            }
-                                        };
-                                        if merge_res_tx.start_send(changes).is_err() {
-                                            panic!("Could not send merge result to proposer!");
+                        } else if let Some(pre_changes) = merge_box.pop() {
+                            let mut merge_res_tx = merge_tx.clone();
+                            let mbh = mbh.copy_state();
+                            let block = self.parent_number + One::one();
+                            merge_start += 1;
+                            self.spawn_handle.spawn_blocking(
+                                "mth-authorship-proposer",
+                                None,
+                                Box::pin(async move {
+                                    let exe_merge_start = time::Instant::now();
+                                    let merge_result = Self::merge_thread_changes(&mbh, pre_changes, changes, allow_rollback);
+                                    let merge_time = exe_merge_start.elapsed().as_nanos();
+                                    let changes = match merge_result {
+                                        Ok((changes, to_threads, from_threads)) => {
+                                            debug!(target: "mth_authorship", "[MergeCh Block {block}] Merge threads {to_threads:?} and {from_threads:?} in {merge_time}nanos");
+                                            changes
+                                        },
+                                        Err((keep, drop, e)) => {
+                                            error!(
+                                                target: "mth_authorship",
+                                                "[MergeCh Block {block}] Merge threads keep {:?}, drop [threads {:?}, {} extrinsics] in {merge_time}nanos for error: {e:?}",
+                                                keep.0,
+                                                drop.0,
+                                                drop.3.len() + drop.4.len(),
+                                            );
+                                            keep
                                         }
-                                    }),
-                                );
-                            } else {
-                                merge_box.push(changes);
-                                merge_box.sort_by(|a, b| b.3.len().cmp(&a.3.len()));
-                            }
+                                    };
+                                    if merge_res_tx.start_send((changes, true)).is_err() {
+                                        panic!("Could not send merge result to proposer!");
+                                    }
+                                }),
+                            );
+                        } else {
+                            merge_box.push(changes);
+                            merge_box.sort_by(|a, b| b.3.len().cmp(&a.3.len()));
                         }
                     }
                 }
