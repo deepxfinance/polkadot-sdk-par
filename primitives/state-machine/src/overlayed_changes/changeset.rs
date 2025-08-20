@@ -406,9 +406,14 @@ pub trait MergeChange<K, V> {
 		&self,
 		_local: &mut BTreeMap<K, OverlayedEntry<V>>,
 		_other: &mut BTreeMap<K, OverlayedEntry<V>>,
-	) -> Vec<K> {
-		Vec::new()
-	}
+	) -> Vec<K>;
+
+	/// Finalize state if after all merge finished.(e.g. delete tmp values when merge_changes).
+	fn finalize_merge(&self, _map: &mut BTreeMap<K, OverlayedEntry<V>>);
+	
+	/// Estimate merge weight(time) to merge this `changes` to others. 
+	/// This is used to decide faster merge(merge `a to b` or `b to a`)
+	fn merge_weight(_changes: &BTreeMap<K, OverlayedEntry<V>>) -> u32;
 }
 
 #[derive(Default)]
@@ -421,16 +426,10 @@ impl<K: Ord + Hash + Clone, V: PartialEq> MergeChange<K, V> for DefaultMerge {
 		other: &mut BTreeMap<K, OverlayedEntry<V>>
 	) -> Vec<K>  {
 		let mut duplicate_keys = Vec::new();
-		let keys = other.keys().cloned().collect::<Vec<_>>();
-		for k in keys {
-			let v = other.remove(&k).unwrap();
-			if let Some(entry) = local.get_mut(&k) {
+		for (k, v) in core::mem::replace(other, Default::default()) {
+			if let Some(entry) = local.get(&k) {
 				if entry.value_ref() == v.value_ref() {
-					let other_changes: Vec<_> = v.extrinsics().into_iter().collect();
-					let local_changes: Vec<_> = entry.extrinsics().into_iter().collect();
-					if local_changes == other_changes {
-						continue;
-					}
+					continue;
 				}
 				duplicate_keys.push(k.clone());
 			} else {
@@ -439,14 +438,24 @@ impl<K: Ord + Hash + Clone, V: PartialEq> MergeChange<K, V> for DefaultMerge {
 		}
 		duplicate_keys
 	}
+
+	fn finalize_merge(&self, _map: &mut BTreeMap<K, OverlayedEntry<V>>) {}
+
+	fn merge_weight(_changes: &BTreeMap<K, OverlayedEntry<V>>) -> u32 {
+		0
+	}
 }
 
 impl<K: Ord + Hash + Clone, V: PartialEq> OverlayedMap<K, V> {
+	pub fn merge_weight<M: MergeChange<K, V>>(&self) -> u32 {
+		M::merge_weight(&self.changes)
+	}
+	
 	pub fn merge(&mut self, other: Self) -> Result<(), Vec<K>> {
 		self.merge_custom::<DefaultMerge>(other, None)
 	}
 	
-	pub fn merge_custom<M: MergeChange<K, V>>(&mut self, mut other: Self, merge_change: Option<&M>) -> Result<(), Vec<K>> {
+	pub fn merge_custom<M: MergeChange<K, V>>(&mut self, mut other: Self, custom: Option<&M>) -> Result<(), Vec<K>> {
 		// 1. If local or other change set have dirty key, that means some transaction not closed or rollback.
 		// Unfinished change should not merge.
 		if self.transaction_depth() != 0 || other.transaction_depth() != 0 {
@@ -454,8 +463,12 @@ impl<K: Ord + Hash + Clone, V: PartialEq> OverlayedMap<K, V> {
 		}
 		// 2. num_client_transactions and execution_mode will not be used, so we do not merge here.
 		// 3. merge changes.
-		let duplicate_keys = if let Some(m) = merge_change {
-			m.merge_changes(&mut self.changes, &mut other.changes)
+		let duplicate_keys = if let Some(m) = custom {
+			[
+				m.merge_changes(&mut self.changes, &mut other.changes),
+				DefaultMerge::default().merge_changes(&mut self.changes, &mut other.changes),
+			]
+				.concat()
 		} else {
 			DefaultMerge::default().merge_changes(&mut self.changes, &mut other.changes)
 		};
@@ -463,6 +476,18 @@ impl<K: Ord + Hash + Clone, V: PartialEq> OverlayedMap<K, V> {
 			return Err(duplicate_keys);
 		}
 		Ok(())
+	}
+
+	pub fn finalize_merge(&mut self) {
+		self.finalize_merge_custom::<DefaultMerge>(None)
+	}
+
+	pub fn finalize_merge_custom<M: MergeChange<K, V>>(&mut self, custom: Option<&M>) {
+		if let Some(m) = custom {
+			m.finalize_merge(&mut self.changes);
+		} else {
+			DefaultMerge::default().finalize_merge(&mut self.changes)
+		}
 	}
 }
 

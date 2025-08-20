@@ -339,6 +339,18 @@ fn generate_runtime_api_base_structures() -> Result<TokenStream> {
 				let storage_transaction_cache = core::cell::RefCell::take(&self.storage_transaction_cache);
 				(changes, storage_transaction_cache, recorder)
 			}
+			
+			fn set_changes(&mut self, changes: #crate_::OverlayedChanges) {
+				self.changes = core::cell::RefCell::new(changes);
+			}
+			
+			fn set_recorder(&mut self, recorder: std::option::Option<#crate_::ProofRecorder<Block>>) {
+				self.recorder = recorder;
+			}
+			
+			fn set_storage_transaction_cache(&mut self, storage_transaction_cache: #crate_::StorageTransactionCache<Block, C::StateBackend>) {
+				self.storage_transaction_cache = core::cell::RefCell::new(storage_transaction_cache);
+			}
 
 			fn get_top_change(&self, key: &#crate_::StorageKey) -> std::option::Option<std::option::Option<#crate_::StorageValue>>
 			where

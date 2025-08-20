@@ -26,9 +26,6 @@
 
 #![warn(missing_docs)]
 
-pub mod merge_handler;
-pub use merge_handler::*;
-
 use codec::Encode;
 
 use sp_api::{

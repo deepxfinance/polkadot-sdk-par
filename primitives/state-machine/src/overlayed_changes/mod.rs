@@ -41,6 +41,7 @@ use std::{
 	any::{Any, TypeId},
 	boxed::Box,
 };
+#[cfg(feature = "std")]
 use sp_core::bytes::to_hex;
 pub use crate::overlayed_changes::changeset::{OverlayedEntry, MergeChange};
 pub use self::changeset::{AlreadyInRuntime, NoOpenTransaction, NotInRuntime, OverlayedValue};
@@ -118,8 +119,9 @@ pub enum MergeErr {
 	DuplicateOffchainKeys(Vec<(Vec<u8>, Vec<u8>)>),
 }
 
-impl std::fmt::Debug for MergeErr {
-	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+#[cfg(feature = "std")]
+impl sp_std::fmt::Debug for MergeErr {
+	fn fmt(&self, f: &mut sp_std::fmt::Formatter<'_>) -> sp_std::fmt::Result {
 		match self {
 			Self::Unfinished(v) => write!(f, "Unfinished({v})"),
 			Self::DuplicateTopKeys(keys) => {
@@ -145,6 +147,11 @@ impl OverlayedChanges {
 	pub fn top_change(&self, key: &StorageKey) -> Option<Option<StorageValue>> {
 		self.top.get(key).map(|e| e.value_ref().clone())
 	}
+	
+	/// return merge weight of `merge self to others`. 
+	pub fn merge_weight<M: MergeChange<StorageKey, Option<StorageValue>>>(&self) -> u32 {
+		self.top.merge_weight::<M>()
+	}
 
 	/// merge with a custom handler for top changes' meet conflict key.
 	/// if `allow_rollback` is true, we will copy state to test change, and change real state when merge success(cost more memory).
@@ -166,19 +173,19 @@ impl OverlayedChanges {
 			(&mut self.top, &mut self.children, &mut self.offchain)
 		};
 		if let Err(duplicate_keys) = merge_top.merge_custom(other.top.clone(), Some(merge_handle)) {
-			if duplicate_keys.is_empty() {
-				return Err(MergeErr::Unfinished("OverlayedChanges merge top meet unfinished transaction"));
+			return if duplicate_keys.is_empty() {
+				Err(MergeErr::Unfinished("OverlayedChanges merge top meet unfinished transaction"))
 			} else {
-				return Err(MergeErr::DuplicateTopKeys(duplicate_keys));
+				Err(MergeErr::DuplicateTopKeys(duplicate_keys))
 			}
 		};
 		for (key, (set, info)) in other.children.iter() {
 			if let Some((changeset, _info)) = merge_children.get_mut(key) {
 				if let Err(duplicate_keys) = changeset.merge(set.clone()) {
-					if duplicate_keys.is_empty() {
-						return Err(MergeErr::Unfinished("OverlayedChanges merge children meet unfinished transaction"));
+					return if duplicate_keys.is_empty() {
+						Err(MergeErr::Unfinished("OverlayedChanges merge children meet unfinished transaction"))
 					} else {
-						return Err(MergeErr::DuplicateChildKeys(duplicate_keys));
+						Err(MergeErr::DuplicateChildKeys(duplicate_keys))
 					}
 				}
 			} else {
@@ -186,10 +193,10 @@ impl OverlayedChanges {
 			}
 		}
 		if let Err(duplicate_keys) = merge_offchain.overlay_mut().merge(other.offchain.overlay().clone()) {
-			if duplicate_keys.is_empty() {
-				return Err(MergeErr::Unfinished("OverlayedChanges merge offchain meet unfinished transaction"));
+			return if duplicate_keys.is_empty() {
+				Err(MergeErr::Unfinished("OverlayedChanges merge offchain meet unfinished transaction"))
 			} else {
-				return Err(MergeErr::DuplicateOffchainKeys(duplicate_keys));
+				Err(MergeErr::DuplicateOffchainKeys(duplicate_keys))
 			}
 		};
 		if allow_rollback {
@@ -211,6 +218,18 @@ impl OverlayedChanges {
 		}
 		self.stats.add(&other.stats);
 		Ok(())
+	}
+
+	/// Finalize all merge work.
+	pub fn finalize_merge<M: MergeChange<StorageKey, Option<StorageValue>>>(
+		&mut self,
+		merge_handle: &M,
+	) {
+		self.top.finalize_merge_custom(Some(merge_handle));
+		for (_, (set, _)) in self.children.iter_mut() {
+			set.finalize_merge();
+		}
+		self.offchain.overlay_mut().finalize_merge();
 	}
 }
 

@@ -606,6 +606,17 @@ pub trait ApiExt<Block: BlockT> {
 	where
 		Self: Sized;
 
+	fn set_changes(&mut self, changes: OverlayedChanges)
+	where
+		Self: Sized;
+	fn set_recorder(&mut self, recorder: Option<ProofRecorder<Block>>)
+	where
+		Self: Sized;
+
+	fn set_storage_transaction_cache(&mut self, storage_transaction_cache: StorageTransactionCache<Block, Self::StateBackend>)
+	where
+		Self: Sized;
+
 	fn merge_all_changes<M: MergeChange<StorageKey, Option<StorageValue>>>(
 		&mut self,
 		_changes: OverlayedChanges,

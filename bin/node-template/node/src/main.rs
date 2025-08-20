@@ -9,6 +9,7 @@ mod cli;
 mod command;
 mod rpc;
 mod merge_handler;
+mod merge_balances;
 mod transaction_group;
 
 fn main() -> sc_cli::Result<()> {

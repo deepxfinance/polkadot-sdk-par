@@ -73,6 +73,8 @@
 mod basic_authorship;
 mod mth_authorship;
 
-pub use sc_block_builder::{DefaultMergeHandler, MultiThreadBlockBuilder};
-pub use crate::mth_authorship::{Proposer as MTHProposer, ProposerFactory as MTHProposerFactory, RCGroup};
+pub use crate::mth_authorship::{
+    Proposer as MTHProposer, ProposerFactory as MTHProposerFactory, RCGroup, MultiThreadBlockBuilder, 
+    MergeSystem, get_map_value, get_top_value, parse_entry_value,
+};
 pub use crate::basic_authorship::{Proposer, ProposerFactory, DEFAULT_BLOCK_SIZE_LIMIT};
