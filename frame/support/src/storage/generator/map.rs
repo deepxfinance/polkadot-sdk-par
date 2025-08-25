@@ -254,7 +254,7 @@ impl<K: FullEncode, V: FullCodec, G: StorageMap<K, V>> storage::StorageMap<K, V>
 	}
 
 	fn insert<KeyArg: EncodeLike<K>, ValArg: EncodeLike<V>>(key: KeyArg, val: ValArg) {
-		log::debug!(target: "storage_dev", "map insert {} {}", 
+		log::trace!(target: "storage_dev", "map insert {} {}",
 			String::from_utf8(Self::module_prefix().to_vec()).unwrap(), 
 			String::from_utf8(Self::storage_prefix().to_vec()).unwrap(),
 		);
@@ -287,7 +287,7 @@ impl<K: FullEncode, V: FullCodec, G: StorageMap<K, V>> storage::StorageMap<K, V>
 
 		let ret = f(&mut val);
 		if ret.is_ok() {
-			log::debug!(target: "storage_dev", "map mutate {} {}", 
+			log::trace!(target: "storage_dev", "map mutate {} {}",
 				String::from_utf8(Self::module_prefix().to_vec()).unwrap(), 
 				String::from_utf8(Self::storage_prefix().to_vec()).unwrap(),
 			);
@@ -308,7 +308,7 @@ impl<K: FullEncode, V: FullCodec, G: StorageMap<K, V>> storage::StorageMap<K, V>
 
 		let ret = f(&mut val);
 		if ret.is_ok() {
-			log::debug!(target: "storage_dev", "map mutate_exists {} {}", 
+			log::trace!(target: "storage_dev", "map mutate_exists {} {}",
 				String::from_utf8(Self::module_prefix().to_vec()).unwrap(), 
 				String::from_utf8(Self::storage_prefix().to_vec()).unwrap(),
 			);
@@ -333,7 +333,7 @@ impl<K: FullEncode, V: FullCodec, G: StorageMap<K, V>> storage::StorageMap<K, V>
 		EncodeLikeItem: EncodeLike<Item>,
 		V: StorageAppend<Item>,
 	{
-		log::debug!(target: "storage_dev", "map append {} {}", 
+		log::trace!(target: "storage_dev", "map append {} {}",
 			String::from_utf8(Self::module_prefix().to_vec()).unwrap(), 
 			String::from_utf8(Self::storage_prefix().to_vec()).unwrap(),
 		);

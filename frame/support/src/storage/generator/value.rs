@@ -87,7 +87,7 @@ impl<T: FullCodec, G: StorageValue<T>> storage::StorageValue<T> for G {
 	}
 
 	fn put<Arg: EncodeLike<T>>(val: Arg) {
-		log::debug!(target: "storage_dev", "value put {} {}", 
+		log::trace!(target: "storage_dev", "value put {} {}",
 			String::from_utf8(Self::module_prefix().to_vec()).unwrap(), 
 			String::from_utf8(Self::storage_prefix().to_vec()).unwrap(),
 		);
@@ -95,7 +95,7 @@ impl<T: FullCodec, G: StorageValue<T>> storage::StorageValue<T> for G {
 	}
 
 	fn set(maybe_val: Self::Query) {
-		log::debug!(target: "storage_dev", "value set {} {}", 
+		log::trace!(target: "storage_dev", "value set {} {}",
 			String::from_utf8(Self::module_prefix().to_vec()).unwrap(), 
 			String::from_utf8(Self::storage_prefix().to_vec()).unwrap(),
 		);
@@ -119,7 +119,7 @@ impl<T: FullCodec, G: StorageValue<T>> storage::StorageValue<T> for G {
 
 		let ret = f(&mut val);
 		if ret.is_ok() {
-			log::debug!(target: "storage_dev", "value mutate {} {}", 
+			log::trace!(target: "storage_dev", "value mutate {} {}",
 				String::from_utf8(Self::module_prefix().to_vec()).unwrap(), 
 				String::from_utf8(Self::storage_prefix().to_vec()).unwrap(),
 			);
@@ -147,7 +147,7 @@ impl<T: FullCodec, G: StorageValue<T>> storage::StorageValue<T> for G {
 
 		let ret = f(&mut val);
 		if ret.is_ok() {
-			log::debug!(target: "storage_dev", "value mutate_exists {} {}", 
+			log::trace!(target: "storage_dev", "value mutate_exists {} {}",
 				String::from_utf8(Self::module_prefix().to_vec()).unwrap(), 
 				String::from_utf8(Self::storage_prefix().to_vec()).unwrap(),
 			);
@@ -174,7 +174,7 @@ impl<T: FullCodec, G: StorageValue<T>> storage::StorageValue<T> for G {
 		EncodeLikeItem: EncodeLike<Item>,
 		T: StorageAppend<Item>,
 	{
-		log::debug!(target: "storage_dev", "value append {} {}", 
+		log::trace!(target: "storage_dev", "value append {} {}",
 			String::from_utf8(Self::module_prefix().to_vec()).unwrap(), 
 			String::from_utf8(Self::storage_prefix().to_vec()).unwrap(),
 		);

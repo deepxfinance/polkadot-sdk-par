@@ -199,7 +199,7 @@ where
 		KArg2: EncodeLike<K2>,
 		VArg: EncodeLike<V>,
 	{
-		log::debug!(target: "storage_dev", "double map insert {} {}", 
+		log::trace!(target: "storage_dev", "double map insert {} {}",
 			String::from_utf8(Self::module_prefix().to_vec()).unwrap(), 
 			String::from_utf8(Self::storage_prefix().to_vec()).unwrap(),
 		);
@@ -290,7 +290,7 @@ where
 
 		let ret = f(&mut val);
 		if ret.is_ok() {
-			log::debug!(target: "storage_dev", "double map mutate {} {}", 
+			log::trace!(target: "storage_dev", "double map mutate {} {}",
 				String::from_utf8(Self::module_prefix().to_vec()).unwrap(), 
 				String::from_utf8(Self::storage_prefix().to_vec()).unwrap(),
 			);
@@ -313,7 +313,7 @@ where
 
 		let ret = f(&mut val);
 		if ret.is_ok() {
-			log::debug!(target: "storage_dev", "double map mutate_exists {} {}", 
+			log::trace!(target: "storage_dev", "double map mutate_exists {} {}",
 				String::from_utf8(Self::module_prefix().to_vec()).unwrap(), 
 				String::from_utf8(Self::storage_prefix().to_vec()).unwrap(),
 			);
@@ -333,7 +333,7 @@ where
 		EncodeLikeItem: EncodeLike<Item>,
 		V: StorageAppend<Item>,
 	{
-		log::debug!(target: "storage_dev", "double map append {} {}", 
+		log::trace!(target: "storage_dev", "double map append {} {}",
 			String::from_utf8(Self::module_prefix().to_vec()).unwrap(), 
 			String::from_utf8(Self::storage_prefix().to_vec()).unwrap(),
 		);
