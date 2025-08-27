@@ -72,8 +72,6 @@ pub struct ProposerFactory<A, B, C, PR, MBH, RCG> {
     pool_deadline_percent: Percent,
     /// Merge execute result percentage of hard deadline.
     merge_deadline_percent: Percent,
-    /// Finalize percentage of hard deadline.
-    finalize_percent: u32,
     telemetry: Option<TelemetryHandle>,
     /// When estimating the block size, should the proof be included?
     include_proof_in_block_size_estimation: bool,
@@ -100,17 +98,19 @@ impl<A, B, C, MBH, RCG> ProposerFactory<A, B, C, DisableProofRecording, MBH, RCG
             },
             Err(_) => DEFAULT_SOFT_DEADLINE_PERCENT,
         };
-        let finalize_percent: u32 = std::env::var("MTH_FINALIZE_PERCENT").unwrap_or("33".into()).parse().unwrap_or(33);
-        if finalize_percent >= 100 {
-            panic!("finalize_percent should not greater than 100");
+        if soft_deadline_percent.deconstruct() > 100 {
+            panic!("`soft_deadline_percent` should not be greater than 100%");
         }
         let pool_deadline_percent: u8 = std::env::var("MTH_POOL_DEADLINE_PERCENT").unwrap_or("20".into()).parse().unwrap_or(20);
         let pool_deadline_percent = Percent::from_percent(pool_deadline_percent);
         let merge_deadline_percent: u8 = std::env::var("MTH_MERGE_DEADLINE_PERCENT").unwrap_or("5".into()).parse().unwrap_or(5);
         let merge_deadline_percent = Percent::from_percent(merge_deadline_percent);
+        if merge_deadline_percent.deconstruct() + pool_deadline_percent.deconstruct() >= soft_deadline_percent.deconstruct() {
+            panic!("`pool_deadline_percent` + `merge_deadline_percent` should not be greater equal than `soft_deadline_percent`");
+        }
         info!(
             target: "mth_authorship",
-            "ProposerFactory init soft_deadline_percent: {soft_deadline_percent:?}, pool_deadline_percent: {pool_deadline_percent:?}, merge_deadline_percent: {merge_deadline_percent:?}, finalize_percent: {finalize_percent}%",
+            "ProposerFactory init soft_deadline_percent: {soft_deadline_percent:?}, pool_deadline_percent: {pool_deadline_percent:?}, merge_deadline_percent: {merge_deadline_percent:?}",
         );
         ProposerFactory {
             spawn_handle: Box::new(spawn_handle),
@@ -120,7 +120,6 @@ impl<A, B, C, MBH, RCG> ProposerFactory<A, B, C, DisableProofRecording, MBH, RCG
             soft_deadline_percent,
             pool_deadline_percent,
             merge_deadline_percent,
-            finalize_percent,
             telemetry,
             client,
             include_proof_in_block_size_estimation: false,
@@ -230,7 +229,6 @@ where
             soft_deadline_percent: self.soft_deadline_percent,
             pool_deadline_percent: self.pool_deadline_percent,
             merge_deadline_percent: self.merge_deadline_percent,
-            finalize_percent: self.finalize_percent,
             telemetry: self.telemetry.clone(),
             _phantom: PhantomData,
             include_proof_in_block_size_estimation: self.include_proof_in_block_size_estimation,
@@ -282,7 +280,6 @@ pub struct Proposer<B, Block: BlockT, C: ProvideRuntimeApi<Block>, A: Transactio
     soft_deadline_percent: Percent,
     pool_deadline_percent: Percent,
     merge_deadline_percent: Percent,
-    finalize_percent: u32,
     telemetry: Option<TelemetryHandle>,
     _phantom: PhantomData<(B, PR, MBH, RCG)>,
 }
@@ -330,10 +327,8 @@ where
             "mth-authorship-proposer",
             None,
             Box::pin(async move {
-                // leave some time for evaluation and block finalization (finalize_percent)
-                let deadline = (self.now)() + max_duration * (100 - self.finalize_percent) / 100;
                 let res = self
-                    .propose_with(inherent_data, inherent_digests, deadline, block_size_limit)
+                    .propose_with(inherent_data, inherent_digests, max_duration, block_size_limit)
                     .await;
                 if tx.send(res).is_err() {
                     trace!("Could not send block production result to proposer!");
@@ -373,7 +368,7 @@ where
         self,
         inherent_data: InherentData,
         inherent_digests: Digest,
-        deadline: time::Instant,
+        max_duration: time::Duration,
         block_size_limit: Option<usize>,
     ) -> Result<Proposal<Block, backend::TransactionFor<B, Block>, PR::Proof>, sp_blockchain::Error>
     where
@@ -381,7 +376,7 @@ where
         <A as TransactionPool>::InPoolTransaction: Send + Sync + 'static,
     {
         let propose_with_start = time::Instant::now();
-        let propose_time = deadline.saturating_duration_since(propose_with_start).as_millis();
+        let deadline = (self.now)() + max_duration;
         // 1. initialize main thread
         let mut block_builder =
             self.client.new_block_at(self.parent_hash.clone(), inherent_digests.clone(), PR::ENABLED)?;
@@ -438,7 +433,7 @@ where
         extrinsic_count += single_group.len();
         let calculate_start = time::Instant::now();
         let elapsed = calculate_start.saturating_duration_since(propose_with_start).as_micros();
-        let hard_deadline_time = deadline.saturating_duration_since(propose_with_start).as_micros();
+        let hard_deadline_time = max_duration.as_micros();
         let soft_deadline_time = self.soft_deadline_percent.mul_floor(hard_deadline_time);
         let merge_deadline_time = self.merge_deadline_percent.mul_floor(hard_deadline_time);
         let execute_time: u64 = soft_deadline_time.saturating_sub(elapsed).saturating_sub(merge_deadline_time).saturated_into();
@@ -450,11 +445,14 @@ where
         let mth_execute_deadline = calculate_start + mth_execute_time;
         let mth_finish_deadline = mth_execute_deadline + mth_merge_time;
         let single_deadline = calculate_start + single_time;
+        let thread_number = extrinsic_group.len();
         debug!(
             target: "mth_authorship",
-            "[Execute Block {}] GroupTx use {} ms, execute limit mth_exe_time {} ms, mth_merge_time {} ms, oth_time {} ms, soft_deadline {} ms({:?})",
+            "[Execute Block {}] GroupTx use {} ms({} threads, {} txs), execute limit mth_exe_time {} ms, mth_merge_time {} ms, oth_time {} ms, soft_deadline {} ms({:?})",
             self.parent_number + One::one(),
             pool_time.1,
+            thread_number,
+            extrinsic_count - inherents.len(),
             mth_execute_time.as_millis(),
             mth_merge_time.as_millis(),
             single_time.as_millis(),
@@ -462,7 +460,6 @@ where
             self.soft_deadline_percent,
         );
 
-        let thread_number = extrinsic_group.len();
         let (mth_time, mth_applied, mth_invalid, extra_merge_time, mut final_end_reason) = if !extrinsic_group.is_empty() {
             let (merge_tx, merge_rx) = mpsc::channel(thread_number);
             // 4. execute group transaction by threads.
@@ -553,10 +550,11 @@ where
         });
 
         info!(
-			"🎁 Prepared block for proposing at {} [{}/{propose_time} ms ({}({}) {mth_time}({extra_merge_time}) {single_exe_time} {finalize_exe_time})ms] \
+			"🎁 Prepared block for proposing at {} [{}/{} ms ({}({}) {mth_time}({extra_merge_time}) {single_exe_time} {finalize_exe_time})ms] \
 			[hash: {:?}; parent_hash: {}; extrinsics [({mth_applied}/{mth_invalid})/({}/{})/{extrinsic_count}], threads {thread_number}]",
 			block.header().number(),
 			block_timer.elapsed().as_millis(),
+            max_duration.as_millis(),
             pool_time.1,
             pool_time.0,
 			<Block as BlockT>::Hash::from(block.header().hash()),
@@ -597,7 +595,7 @@ where
         let block = self.parent_number + One::one();
         let mut t1 = self.transaction_pool.ready_at(self.parent_number).fuse();
         let mut t2 =
-            futures_timer::Delay::new(deadline.saturating_duration_since((self.now)()) / 8).fuse();
+            futures_timer::Delay::new(deadline.saturating_duration_since((self.now)()) / 10).fuse();
         let mut pending_iterator = select! {
 			res = t1 => res,
 			_ = t2 => {
@@ -608,10 +606,9 @@ where
         let get_pool_time = pool_timer.elapsed().as_millis();
 
         // TODO Better limit for pool(e.g. weight).
-        let now = time::Instant::now();
-        let left_micros: u64 = deadline.saturating_duration_since(now).as_micros().saturated_into();
+        let left_micros: u64 = deadline.saturating_duration_since(pool_timer).as_micros().saturated_into();
         let pool_time = time::Duration::from_micros(pool_deadline_percent.mul_floor(left_micros));
-        let pool_deadline = time::Instant::now() + pool_time;
+        let get_pool_deadline = time::Instant::now() + pool_time / 2;
         let mut pool_finish = futures_timer::Delay::new(pool_time).fuse();
         let mut skipped = 0;
         // channel support max 2^16 rcg parse results.
@@ -628,8 +625,8 @@ where
                 // 2. spawn mission for every transaction:
                 //      parse transaction runtime call group info and return by channel.
                 loop {
-                    if time::Instant::now() > pool_deadline {
-                        debug!(target: "mth_authorship", "[GroupTx Block {block}] Reach deadline {}/{} ms (total {pool_extrinsic_count}, block size: {}/{block_size_limit})", start.elapsed().as_millis(), pool_time.as_millis(), block_size + proof_size);
+                    if time::Instant::now() > get_pool_deadline {
+                        debug!(target: "mth_authorship", "[GroupTx Block {block}] Reach get_deadline {}/{} ms (total {pool_extrinsic_count}, block size: {}/{block_size_limit})", start.elapsed().as_millis(), pool_time.as_millis(), block_size + proof_size);
                         break;
                     }
                     let pending_tx = if let Some(pending_tx) = pending_iterator.next() {
@@ -854,7 +851,6 @@ where
         let allow_rollback = std::env::var("MTH_MERGE_ROLLBACK").unwrap_or("true".into()).parse().unwrap_or(true);
         let mut mbh = MBH::default();
         mbh.prepare(&block_builder.backend, &block_builder.parent_hash, &block_builder.api);
-        // let mut finish = futures_timer::Delay::new(deadline.saturating_duration_since((self.now)())).fuse();
         let mut merge_count = 0usize;
         let mut extra_merge_count = (time::Instant::now(), thread_number);
         let mut merge_box: Vec<(u32, MergeType<A, Block>)> = vec![];
