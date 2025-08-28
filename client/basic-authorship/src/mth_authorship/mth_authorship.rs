@@ -409,7 +409,6 @@ where
                 Ok(_) => {},
             }
         }
-        let block_timer = time::Instant::now();
         // 3. prepare transactions by group.
         let block_size_limit = block_size_limit.unwrap_or(self.default_block_size_limit);
         let (extrinsic_group, single_group, pool_time) = self.group_transactions_from_pool(
@@ -462,11 +461,13 @@ where
 
         let (mth_time, mth_applied, mth_invalid, extra_merge_time, mut final_end_reason) = if !extrinsic_group.is_empty() {
             let (merge_tx, merge_rx) = mpsc::channel(thread_number);
+            let mut mbh = MBH::default();
+            mbh.prepare(&block_builder.backend, &block_builder.parent_hash, &block_builder.api);
             // 4. execute group transaction by threads.
             self.spawn_execute_groups(
+                &mut block_builder,
                 mth_execute_deadline.clone(),
                 inherents.clone(),
-                inherent_digests.clone(),
                 extrinsic_group,
                 merge_tx.clone(),
             );
@@ -475,6 +476,7 @@ where
             let (mth_unqueue_invalid, end_reason, extra_merge_time) = self.merge_threads_result(
                 mth_execute_time.as_millis() + mth_merge_time.as_millis(),
                 &mut block_builder,
+                &mbh,
                 inherents.len(),
                 mth_finish_deadline,
                 thread_number,
@@ -544,7 +546,7 @@ where
 
         self.metrics.report(|metrics| {
             metrics.number_of_transactions.set(block.extrinsics().len() as u64);
-            metrics.block_constructed.observe(block_timer.elapsed().as_secs_f64());
+            metrics.block_constructed.observe(propose_with_start.elapsed().as_secs_f64());
 
             metrics.report_end_proposing_reason(final_end_reason);
         });
@@ -553,13 +555,13 @@ where
 			"🎁 Prepared block for proposing at {} [{}/{} ms ({}({}) {mth_time}({extra_merge_time}) {single_exe_time} {finalize_exe_time})ms] \
 			[hash: {:?}; parent_hash: {}; extrinsics [({mth_applied}/{mth_invalid})/({}/{})/{extrinsic_count}], threads {thread_number}]",
 			block.header().number(),
-			block_timer.elapsed().as_millis(),
+			propose_with_start.elapsed().as_millis(),
             max_duration.as_millis(),
             pool_time.1,
             pool_time.0,
 			<Block as BlockT>::Hash::from(block.header().hash()),
 			block.header().parent_hash(),
-            single_applied.len(),
+            single_applied.len().saturating_sub(inherent_length),
             single_unqueue_invalid.len(),
 		);
         telemetry!(
@@ -702,9 +704,9 @@ where
 
     fn spawn_execute_groups(
         &self,
+        block_builder: &mut BlockBuilder<Block, C, B>,
         mth_execute_deadline: time::Instant,
         inherents: Vec<<Block as BlockT>::Extrinsic>,
-        inherent_digests: Digest,
         extrinsic_group: Vec<Vec<(usize, Arc<<A as TransactionPool>::InPoolTransaction>)>>,
         merge_tx: Sender<(MergeType<A, Block>, bool)>,
     ) where
@@ -714,16 +716,25 @@ where
             .pool_size(cmp::min(extrinsic_group.len(), num_cpus::get()))
             .create()
             .expect("Failed to build groups execution pool");
+        let (init_changes, _, init_recorder) = block_builder.api.take_all_changes();
         for (i, pending_txs) in extrinsic_group.into_iter().enumerate() {
             let thread_inherents = inherents.clone();
             let parent_hash = self.parent_hash.clone();
-            let inherent_digests_clone = inherent_digests.clone();
-            let client_clone = self.client.clone_for_execution();
+            let estimated_header_size = block_builder.estimated_header_size.clone();
+            let extrinsics = block_builder.extrinsics.clone();
+            let init_changes = init_changes.clone();
+            let init_recorder = init_recorder.clone();
+            let thread_client = self.client.clone_for_execution();
             let block = self.parent_number + One::one();
             let mut res_tx = merge_tx.clone();
             pool.spawn(async move {
-                let mut block_builder = match client_clone.new_block_at(parent_hash, inherent_digests_clone, PR::ENABLED) {
-                    Ok(builder) => builder,
+                let mut thread_builder = match thread_client.new_with_other(parent_hash, estimated_header_size) {
+                    Ok(mut builder) => {
+                        builder.extrinsics = extrinsics;
+                        builder.api.set_changes(init_changes);
+                        builder.api.set_recorder(init_recorder);
+                        builder
+                    },
                     Err(e) => {
                         error!("Could not create block builder for thread {} for error: {e:?}", i + 1);
                         return;
@@ -732,13 +743,13 @@ where
                 let (applied_extrinsics, unqueue_invalid, end_reason) = Self::execute_one_thread_txs(
                     block,
                     mth_execute_deadline,
-                    &mut block_builder,
+                    &mut thread_builder,
                     thread_inherents,
                     pending_txs,
                     i + 1
                 );
 
-                let (overlay, _, recorder) = block_builder.api.take_all_changes();
+                let (overlay, _, recorder) = thread_builder.api.take_all_changes();
                 let changes = (vec![i + 1], overlay, recorder, applied_extrinsics, unqueue_invalid, end_reason);
                 if res_tx.start_send((changes, false)).is_err() {
                     trace!("Could not send block production result to proposer!");
@@ -841,6 +852,7 @@ where
         &self,
         mth_time: u128,
         block_builder: &mut BlockBuilder<'a, Block, C, B>,
+        mbh: &MBH,
         inherents_len: usize,
         mth_finish_deadline: time::Instant,
         thread_number: usize,
@@ -849,8 +861,6 @@ where
     ) -> Result<(Vec<<A as TransactionPool>::Hash>, EndProposingReason, u128), sp_blockchain::Error> {
         let mut mth_merge = std::env::var("MTH_MERGE").unwrap_or("false".into()).parse().unwrap_or(false);
         let allow_rollback = std::env::var("MTH_MERGE_ROLLBACK").unwrap_or("true".into()).parse().unwrap_or(true);
-        let mut mbh = MBH::default();
-        mbh.prepare(&block_builder.backend, &block_builder.parent_hash, &block_builder.api);
         let mut merge_count = 0usize;
         let mut extra_merge_count = (time::Instant::now(), thread_number);
         let mut merge_box: Vec<(u32, MergeType<A, Block>)> = vec![];
@@ -896,7 +906,7 @@ where
                     }
                     let _ = block_builder.api.take_all_changes();
                     // finalize merge
-                    changes.1.finalize_merge(&mbh);
+                    changes.1.finalize_merge(mbh);
                     // final main block builder state.
                     block_builder.api.set_changes(changes.1);
                     block_builder.api.set_recorder(changes.2);
@@ -951,7 +961,7 @@ where
                     "[MergeCh Block {block}] Merge threads keep {:?}, drop [threads {:?}, {} extrinsics] in {merge_time} micros for error: {e:?}",
                     keep.0,
                     drop.0,
-                    drop.3.len() + drop.4.len() - inherents_len * 2,
+                    drop.3.len() + drop.4.len() - inherents_len,
                 );
                 keep
             }
@@ -1012,6 +1022,7 @@ where
         child_storage_changes: Vec<(StorageKey, Vec<(StorageKey, Option<StorageValue>)>)>,
         _proof: Option<StorageProof>,
     ) {
+        let block_timer = time::Instant::now();
         let header = block.header();
         let number = header.number().clone();
         let parent_hash = header.parent_hash().clone();
@@ -1023,7 +1034,8 @@ where
                 return;
             },
         };
-        let block_timer = time::Instant::now();
+        let init_time = block_timer.elapsed().as_millis();
+        let execute_timer = time::Instant::now();
         for (index, pending_tx_data) in extrinsic.into_iter().enumerate() {
             if let Err(e) = sc_block_builder::BlockBuilder::push(&mut block_builder, pending_tx_data.clone()) {
                 error!(
@@ -1033,14 +1045,17 @@ where
                 return;
             }
         };
+        let execute_time = execute_timer.elapsed().as_millis();
 
+        let build_timer = time::Instant::now();
         match block_builder.build() {
             Ok(res) => {
                 let block_time = block_timer.elapsed().as_millis();
+                let build_time = build_timer.elapsed().as_millis();
                 let (block_res, storage_changes_res, _proof_res) = res.into_inner();
                 // total block hash check
                 if block_res.hash() == block.hash() {
-                    info!(target: "mth_authorship", "[OTC Block {number}({block_time} ms)] Check Block Hash success");
+                    info!(target: "mth_authorship", "[OTC Block {number}({block_time} ({init_time} {execute_time} {build_time}) ms)] Check Block Hash success");
                     return;
                 }
                 let change_diff = |mth: &Vec<(StorageKey, Option<StorageValue>)>, oth: &Vec<(StorageKey, Option<StorageValue>)>| {
@@ -1067,7 +1082,7 @@ where
                 let (oth_main_less, oth_main_diff, oth_main_extra) = change_diff(&main_storage_changes, &storage_changes_res.main_storage_changes);
                 error!(
                     target: "mth_authorship",
-                    "[OTC Block {number}({block_time} ms)] [one thread/multi threads] main change differences, less: {oth_main_less:?}, diff: {oth_main_diff:?}, extra: {oth_main_extra:?}",
+                    "[OTC Block {number}({block_time} ({init_time} {execute_time} {build_time}) ms)] [one thread/multi threads] main change differences, less: {oth_main_less:?}, diff: {oth_main_diff:?}, extra: {oth_main_extra:?}",
                 );
                 // child_storage_changes check if block different.
                 let mut child_changes = HashMap::new();
@@ -1080,7 +1095,7 @@ where
                         let (oth_child_less, oth_child_diff, oth_child_extra) = change_diff(&child_storage_changes, child_storage_changes_res);
                         error!(
                             target: "mth_authorship",
-                            "[OTC Block {number}({block_time} ms)] [one thread/multi threads] child change differences parent key: {parent_key:?}, less: {oth_child_less:?}, diff: {oth_child_diff:?}, extra: {oth_child_extra:?}",
+                            "[OTC Block {number}({block_time} ({init_time} {execute_time} {build_time}) ms)] [one thread/multi threads] child change differences parent key: {parent_key:?}, less: {oth_child_less:?}, diff: {oth_child_diff:?}, extra: {oth_child_extra:?}",
                         );
                     } else {
                         let child_keys: Vec<_> = child_storage_changes.iter().map(|(key, _)| key.clone()).collect();
@@ -1089,19 +1104,20 @@ where
                     }
                 }
                 if !oth_extra_childs.is_empty() {
-                    error!(target: "mth_authorship", "[OTC Block {number}({block_time} ms)] oth extra child changes {oth_extra_childs:?}");
+                    error!(target: "mth_authorship", "[OTC Block {number}({block_time} ({init_time} {execute_time} {build_time}) ms)] oth extra child changes {oth_extra_childs:?}");
                 }
                 let mth_extra_childs: Vec<(StorageKey, Vec<StorageKey>)> = child_changes
                     .into_iter()
                     .map(|(parent, childs)| (parent, childs.into_iter().map(|(key, _)| key).collect()))
                     .collect();
                 if !mth_extra_childs.is_empty() {
-                    error!(target: "mth_authorship", "[OTC Block {number}({block_time} ms)] mth extra child changes {mth_extra_childs:?}");
+                    error!(target: "mth_authorship", "[OTC Block {number}({block_time} ({init_time} {execute_time} {build_time}) ms)] mth extra child changes {mth_extra_childs:?}");
                 }
             },
             Err(e) => {
                 let block_time = block_timer.elapsed().as_millis();
-                error!(target: "mth_authorship", "[OTC Block {number}({block_time} ms)] Build block error: {e:?}");
+                let build_time = build_timer.elapsed().as_millis();
+                error!(target: "mth_authorship", "[OTC Block {number}({block_time} ({init_time} {execute_time} {build_time}) ms)] Build block error: {e:?}");
             }
         }
     }

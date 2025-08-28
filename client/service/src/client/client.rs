@@ -1470,6 +1470,19 @@ where
 		)
 	}
 
+	fn new_with_other(
+		&self,
+		parent: Block::Hash,
+		estimated_header_size: usize,
+	) -> sp_blockchain::Result<sc_block_builder::BlockBuilder<Block, Self, B>> {
+		sc_block_builder::BlockBuilder::new_with_other(
+			self,
+			parent,
+			estimated_header_size,
+			&self.backend,
+		)
+	}
+
 	fn new_block(
 		&self,
 		inherent_digests: Digest,

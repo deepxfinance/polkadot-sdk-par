@@ -123,6 +123,15 @@ where
 		record_proof: R,
 	) -> sp_blockchain::Result<BlockBuilder<Block, RA, B>>;
 
+	/// Create a new block with some state.
+	///
+	/// This is used to copy other builder.
+	fn new_with_other(
+		&self,
+		parent: Block::Hash,
+		estimated_header_size: usize,
+	) -> sp_blockchain::Result<BlockBuilder<Block, RA, B>>;
+
 	/// Create a new block, built on the head of the chain.
 	fn new_block(
 		&self,
@@ -136,7 +145,7 @@ pub struct BlockBuilder<'a, Block: BlockT, A: ProvideRuntimeApi<Block>, B> {
 	pub extrinsics: Vec<Block::Extrinsic>,
 	/// Runtime api env.
 	pub api: ApiRef<'a, A::Api>,
-	version: u32,
+	pub version: u32,
 	/// parent hash
 	pub parent_hash: Block::Hash,
 	/// backend
@@ -188,6 +197,27 @@ where
 			&header,
 		)?;
 
+		let version = api
+			.api_version::<dyn BlockBuilderApi<Block>>(parent_hash)?
+			.ok_or_else(|| Error::VersionInvalid("BlockBuilderApi".to_string()))?;
+
+		Ok(Self {
+			parent_hash,
+			extrinsics: Vec::new(),
+			api,
+			version,
+			backend,
+			estimated_header_size,
+		})
+	}
+
+	pub fn new_with_other(
+		api: &'a A,
+		parent_hash: Block::Hash,
+		estimated_header_size: usize,
+		backend: &'a B,
+	) -> Result<Self, Error> {
+		let mut api = api.runtime_api();
 		let version = api
 			.api_version::<dyn BlockBuilderApi<Block>>(parent_hash)?
 			.ok_or_else(|| Error::VersionInvalid("BlockBuilderApi".to_string()))?;
