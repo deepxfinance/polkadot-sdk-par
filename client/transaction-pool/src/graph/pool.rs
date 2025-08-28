@@ -143,12 +143,17 @@ enum CheckBannedBeforeVerify {
 /// Extrinsics pool that performs validation.
 pub struct Pool<B: ChainApi> {
 	validated_pool: Arc<ValidatedPool<B>>,
+	api_verify_sleep_micros: u64,
 }
 
 impl<B: ChainApi> Pool<B> {
 	/// Create a new transaction pool.
 	pub fn new(options: Options, is_validator: IsValidator, api: Arc<B>) -> Self {
-		Self { validated_pool: Arc::new(ValidatedPool::new(options, is_validator, api)) }
+		let api_verify_sleep_micros: u64 = std::env::var("POOL_API_VERIFY_SLEEP_MICROS").unwrap_or("0".into()).parse().unwrap_or(0);
+		Self {
+			validated_pool: Arc::new(ValidatedPool::new(options, is_validator, api)),
+			api_verify_sleep_micros,
+		}
 	}
 
 	/// Imports a bunch of unverified extrinsics to the pool
@@ -159,7 +164,7 @@ impl<B: ChainApi> Pool<B> {
 		xts: impl IntoIterator<Item = ExtrinsicFor<B>>,
 	) -> Result<Vec<Result<ExtrinsicHash<B>, B::Error>>, B::Error> {
 		let xts = xts.into_iter().map(|xt| (source, xt));
-		let validated_transactions = self.verify(at, xts, CheckBannedBeforeVerify::Yes).await?;
+		let validated_transactions = self.verify(at, xts, CheckBannedBeforeVerify::Yes, self.api_verify_sleep_micros).await?;
 		Ok(self.validated_pool.submit(validated_transactions.into_values()))
 	}
 
@@ -173,7 +178,7 @@ impl<B: ChainApi> Pool<B> {
 		xts: impl IntoIterator<Item = ExtrinsicFor<B>>,
 	) -> Result<Vec<Result<ExtrinsicHash<B>, B::Error>>, B::Error> {
 		let xts = xts.into_iter().map(|xt| (source, xt));
-		let validated_transactions = self.verify(at, xts, CheckBannedBeforeVerify::No).await?;
+		let validated_transactions = self.verify(at, xts, CheckBannedBeforeVerify::No, self.api_verify_sleep_micros).await?;
 		Ok(self.validated_pool.submit(validated_transactions.into_values()))
 	}
 
@@ -345,7 +350,7 @@ impl<B: ChainApi> Pool<B> {
 			prune_status.pruned.into_iter().map(|tx| (tx.source, tx.data.clone()));
 
 		let reverified_transactions =
-			self.verify(at, pruned_transactions, CheckBannedBeforeVerify::Yes).await?;
+			self.verify(at, pruned_transactions, CheckBannedBeforeVerify::Yes, 0).await?;
 
 		log::trace!(target: LOG_TARGET, "Pruning at {:?}. Resubmitting transactions.", at);
 		// And finally - submit reverified transactions back to the pool
@@ -376,10 +381,11 @@ impl<B: ChainApi> Pool<B> {
 		at: &BlockId<B::Block>,
 		xts: impl IntoIterator<Item = (TransactionSource, ExtrinsicFor<B>)>,
 		check: CheckBannedBeforeVerify,
+		sleep_micros: u64,
 	) -> Result<HashMap<ExtrinsicHash<B>, ValidatedTransactionFor<B>>, B::Error> {
 		// we need a block number to compute tx validity
 		let block_number = self.resolve_block_number(at)?;
-
+		std::thread::sleep(Duration::from_micros(sleep_micros));
 		let res = futures::future::join_all(
 			xts.into_iter()
 				.map(|(source, xt)| self.verify_one(at, block_number, source, xt, check)),
@@ -449,7 +455,7 @@ impl<B: ChainApi> Pool<B> {
 
 impl<B: ChainApi> Clone for Pool<B> {
 	fn clone(&self) -> Self {
-		Self { validated_pool: self.validated_pool.clone() }
+		Self { validated_pool: self.validated_pool.clone(), api_verify_sleep_micros: self.api_verify_sleep_micros }
 	}
 }
 
