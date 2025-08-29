@@ -41,6 +41,7 @@ use futures::{
 };
 pub use graph::{
 	base_pool::Limit as PoolLimit, ChainApi, Options, Pool, Transaction, ValidatedTransaction,
+	RCGroup, DefaultRCGroup,
 };
 use parking_lot::Mutex;
 use std::{
@@ -56,10 +57,7 @@ use sc_transaction_pool_api::{
 	TransactionStatusStreamFor, TxHash,
 };
 use sp_core::traits::SpawnEssentialNamed;
-use sp_runtime::{
-	generic::BlockId,
-	traits::{AtLeast32Bit, Block as BlockT, Extrinsic, Header as HeaderT, NumberFor, Zero},
-};
+use sp_runtime::{generic::BlockId, traits::{AtLeast32Bit, Block as BlockT, Extrinsic, Header as HeaderT, NumberFor, Zero}};
 use std::time::Instant;
 
 use crate::metrics::MetricsLink as PrometheusMetrics;
@@ -78,18 +76,19 @@ type ReadyIteratorFor<PoolApi> =
 type PolledIterator<PoolApi> = Pin<Box<dyn Future<Output = ReadyIteratorFor<PoolApi>> + Send>>;
 
 /// A transaction pool for a full node.
-pub type FullPool<Block, Client> = BasicPool<FullChainApi<Client, Block>, Block>;
+pub type FullPool<Block, Client, RCG> = BasicPool<FullChainApi<Client, Block>, Block, RCG>;
 
 /// Basic implementation of transaction pool that can be customized by providing PoolApi.
-pub struct BasicPool<PoolApi, Block>
+pub struct BasicPool<PoolApi, Block, RCG>
 where
 	Block: BlockT,
 	PoolApi: graph::ChainApi<Block = Block>,
+	RCG: graph::RCGroup<<Block as BlockT>::Extrinsic, Error=PoolApi::Error> + 'static,
 {
-	pool: Arc<graph::Pool<PoolApi>>,
+	pool: Arc<graph::Pool<PoolApi, RCG>>,
 	api: Arc<PoolApi>,
 	revalidation_strategy: Arc<Mutex<RevalidationStrategy<NumberFor<Block>>>>,
-	revalidation_queue: Arc<revalidation::RevalidationQueue<PoolApi>>,
+	revalidation_queue: Arc<revalidation::RevalidationQueue<PoolApi, RCG>>,
 	ready_poll: Arc<Mutex<ReadyPoll<ReadyIteratorFor<PoolApi>, Block>>>,
 	metrics: PrometheusMetrics,
 	enactment_state: Arc<Mutex<EnactmentState<Block>>>,
@@ -154,10 +153,11 @@ pub enum RevalidationType {
 	Full,
 }
 
-impl<PoolApi, Block> BasicPool<PoolApi, Block>
+impl<PoolApi, Block, RCG> BasicPool<PoolApi, Block, RCG>
 where
 	Block: BlockT,
 	PoolApi: graph::ChainApi<Block = Block> + 'static,
+	RCG: graph::RCGroup<<Block as BlockT>::Extrinsic, Error=PoolApi::Error> + 'static,
 {
 	/// Create new basic transaction pool with provided api, for tests.
 	pub fn new_test(
@@ -232,7 +232,7 @@ where
 	}
 
 	/// Gets shared reference to the underlying pool.
-	pub fn pool(&self) -> &Arc<graph::Pool<PoolApi>> {
+	pub fn pool(&self) -> &Arc<graph::Pool<PoolApi, RCG>> {
 		&self.pool
 	}
 
@@ -242,10 +242,11 @@ where
 	}
 }
 
-impl<PoolApi, Block> TransactionPool for BasicPool<PoolApi, Block>
+impl<PoolApi, Block, RCG> TransactionPool for BasicPool<PoolApi, Block, RCG>
 where
 	Block: BlockT,
 	PoolApi: 'static + graph::ChainApi<Block = Block>,
+	RCG: graph::RCGroup<<Block as BlockT>::Extrinsic, Error=PoolApi::Error> + 'static,
 {
 	type Block = PoolApi::Block;
 	type Hash = graph::ExtrinsicHash<PoolApi>;
@@ -360,7 +361,7 @@ where
 	}
 }
 
-impl<Block, Client> FullPool<Block, Client>
+impl<Block, Client, RCG> FullPool<Block, Client, RCG>
 where
 	Block: BlockT,
 	Client: sp_api::ProvideRuntimeApi<Block>
@@ -374,6 +375,7 @@ where
 		+ Sync
 		+ 'static,
 	Client::Api: sp_transaction_pool::runtime_api::TaggedTransactionQueue<Block>,
+	RCG: graph::RCGroup<<Block as BlockT>::Extrinsic, Error=<FullChainApi<Client, Block> as ChainApi>::Error>,
 {
 	/// Create new basic transaction pool for a full node with the provided api.
 	pub fn new_full(
@@ -403,8 +405,8 @@ where
 	}
 }
 
-impl<Block, Client> sc_transaction_pool_api::LocalTransactionPool
-	for BasicPool<FullChainApi<Client, Block>, Block>
+impl<Block, Client, RCG> sc_transaction_pool_api::LocalTransactionPool
+	for BasicPool<FullChainApi<Client, Block>, Block, RCG>
 where
 	Block: BlockT,
 	Client: sp_api::ProvideRuntimeApi<Block>
@@ -414,6 +416,7 @@ where
 		+ sp_blockchain::HeaderMetadata<Block, Error = sp_blockchain::Error>,
 	Client: Send + Sync + 'static,
 	Client::Api: sp_transaction_pool::runtime_api::TaggedTransactionQueue<Block>,
+	RCG: RCGroup<Block::Extrinsic, Error=<FullChainApi<Client, Block> as ChainApi>::Error> + 'static,
 {
 	type Block = Block;
 	type Hash = graph::ExtrinsicHash<FullChainApi<Client, Block>>;
@@ -444,14 +447,14 @@ where
 			.block_id_to_number(at)?
 			.ok_or_else(|| error::Error::BlockIdConversion(format!("{:?}", at)))?;
 
-		let validated = ValidatedTransaction::valid_at(
+		let validated = ValidatedTransaction::valid_at::<RCG>(
 			block_number.saturated_into::<u64>(),
 			hash,
 			TransactionSource::Local,
 			xt,
 			bytes,
 			validity,
-		);
+		)?;
 
 		self.pool.validated_pool().submit(vec![validated]).remove(0)
 	}
@@ -540,10 +543,10 @@ impl<N: Clone + Copy + AtLeast32Bit> RevalidationStatus<N> {
 }
 
 /// Prune the known txs for the given block.
-async fn prune_known_txs_for_block<Block: BlockT, Api: graph::ChainApi<Block = Block>>(
+async fn prune_known_txs_for_block<Block: BlockT, Api: graph::ChainApi<Block = Block>, RCG: graph::RCGroup<<Block as BlockT>::Extrinsic, Error=Api::Error>>(
 	block_hash: Block::Hash,
 	api: &Api,
-	pool: &graph::Pool<Api>,
+	pool: &graph::Pool<Api, RCG>,
 ) -> Vec<ExtrinsicHash<Api>> {
 	let extrinsics = api
 		.block_body(block_hash)
@@ -580,10 +583,11 @@ async fn prune_known_txs_for_block<Block: BlockT, Api: graph::ChainApi<Block = B
 	hashes
 }
 
-impl<PoolApi, Block> BasicPool<PoolApi, Block>
+impl<PoolApi, Block, RCG> BasicPool<PoolApi, Block, RCG>
 where
 	Block: BlockT,
 	PoolApi: 'static + graph::ChainApi<Block = Block>,
+	RCG: graph::RCGroup<<Block as BlockT>::Extrinsic, Error=PoolApi::Error> + 'static,
 {
 	/// Handles enactment and retraction of blocks, prunes stale transactions
 	/// (that have already been enacted) and resubmits transactions that were
@@ -718,10 +722,11 @@ where
 }
 
 #[async_trait]
-impl<PoolApi, Block> MaintainedTransactionPool for BasicPool<PoolApi, Block>
+impl<PoolApi, Block, RCG> MaintainedTransactionPool for BasicPool<PoolApi, Block, RCG>
 where
 	Block: BlockT,
 	PoolApi: 'static + graph::ChainApi<Block = Block>,
+	RCG: graph::RCGroup<<Block as BlockT>::Extrinsic, Error=PoolApi::Error> + 'static,
 {
 	async fn maintain(&self, event: ChainEvent<Self::Block>) {
 		let prev_finalized_block = self.enactment_state.lock().recent_finalized_block();

@@ -51,7 +51,7 @@ type FullGrandpaBlockImport =
 	grandpa::GrandpaBlockImport<FullBackend, Block, FullClient, FullSelectChain>;
 
 /// The transaction pool type defintion.
-pub type TransactionPool = sc_transaction_pool::FullPool<Block, FullClient>;
+pub type TransactionPool = sc_transaction_pool::FullPool<Block, FullClient, sc_transaction_pool::graph::DefaultRCGroup>;
 
 /// Fetch the nonce of the given `account` from the chain state.
 ///
@@ -136,7 +136,7 @@ pub fn new_partial(
 		FullBackend,
 		FullSelectChain,
 		sc_consensus::DefaultImportQueue<Block, FullClient>,
-		sc_transaction_pool::FullPool<Block, FullClient>,
+		sc_transaction_pool::FullPool<Block, FullClient, sc_transaction_pool::graph::DefaultRCGroup>,
 		(
 			impl Fn(
 				node_rpc::DenyUnsafe,

@@ -179,6 +179,8 @@ pub trait InPoolTransaction {
 	fn provides(&self) -> &[TransactionTag];
 	/// Return a flag indicating if the transaction should be propagated to other peers.
 	fn is_propagable(&self) -> bool;
+	/// Return special group infos.
+	fn group_info(&self) -> &[Vec<u8>];
 }
 
 /// Transaction pool interface.

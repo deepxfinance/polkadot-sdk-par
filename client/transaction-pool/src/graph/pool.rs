@@ -17,7 +17,7 @@
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 use std::{collections::HashMap, sync::Arc, time::Duration};
-
+use std::marker::PhantomData;
 use crate::LOG_TARGET;
 use futures::{channel::mpsc::Receiver, Future};
 use sc_transaction_pool_api::error;
@@ -30,7 +30,6 @@ use sp_runtime::{
 	},
 };
 use std::time::Instant;
-
 use super::{
 	base_pool as base,
 	validated_pool::{IsValidator, ValidatedPool, ValidatedTransaction},
@@ -108,6 +107,23 @@ pub trait ChainApi: Send + Sync {
 	) -> Result<TreeRoute<Self::Block>, Self::Error>;
 }
 
+/// Trait for parse extrinsic's group infos
+pub trait RCGroup<Extrinsic>: Send + Sync {
+	/// Error type.
+	type Error: From<error::Error> + error::IntoPoolError;
+
+	/// parse runtime call, return dependent data for dispatch call to groups
+	/// If return empty return, we will execute the transaction in a single thread for unknow transaction.
+	fn call_dependent_data(_extrinsic: &mut Extrinsic, _source: TransactionSource) -> Result<Vec<Vec<u8>>, Self::Error> { Ok(Vec::new()) }
+}
+
+/// Default RCGroup implementation with no group info.
+pub struct DefaultRCGroup;
+
+impl<Extrinsic> RCGroup<Extrinsic> for DefaultRCGroup {
+	type Error = crate::error::Error;
+}
+
 /// Pool configuration options.
 #[derive(Debug, Clone)]
 pub struct Options {
@@ -141,18 +157,20 @@ enum CheckBannedBeforeVerify {
 }
 
 /// Extrinsics pool that performs validation.
-pub struct Pool<B: ChainApi> {
+pub struct Pool<B: ChainApi, RCG: RCGroup<<B::Block as traits::Block>::Extrinsic, Error=B::Error>> {
 	validated_pool: Arc<ValidatedPool<B>>,
 	api_verify_sleep_micros: u64,
+	phantom: PhantomData<RCG>,
 }
 
-impl<B: ChainApi> Pool<B> {
+impl<B: ChainApi, RCG: RCGroup<<B::Block as traits::Block>::Extrinsic, Error=B::Error>> Pool<B, RCG> {
 	/// Create a new transaction pool.
 	pub fn new(options: Options, is_validator: IsValidator, api: Arc<B>) -> Self {
 		let api_verify_sleep_micros: u64 = std::env::var("POOL_API_VERIFY_SLEEP_MICROS").unwrap_or("0".into()).parse().unwrap_or(0);
 		Self {
 			validated_pool: Arc::new(ValidatedPool::new(options, is_validator, api)),
 			api_verify_sleep_micros,
+			phantom: std::marker::PhantomData,
 		}
 	}
 
@@ -429,14 +447,17 @@ impl<B: ChainApi> Pool<B> {
 				if validity.provides.is_empty() {
 					ValidatedTransaction::Invalid(hash, error::Error::NoTagsProvided.into())
 				} else {
-					ValidatedTransaction::valid_at(
+					match ValidatedTransaction::valid_at::<RCG>(
 						block_number.saturated_into::<u64>(),
 						hash,
 						source,
 						xt,
 						bytes,
 						validity,
-					)
+					) {
+						Ok(valid) => valid,
+						Err(e) => return (hash, ValidatedTransaction::Invalid(hash, e)),
+					}
 				},
 			Err(TransactionValidityError::Invalid(e)) =>
 				ValidatedTransaction::Invalid(hash, error::Error::InvalidTransaction(e).into()),
@@ -453,9 +474,9 @@ impl<B: ChainApi> Pool<B> {
 	}
 }
 
-impl<B: ChainApi> Clone for Pool<B> {
+impl<B: ChainApi, RCG: RCGroup<<B::Block as traits::Block>::Extrinsic, Error=B::Error>> Clone for Pool<B, RCG> {
 	fn clone(&self) -> Self {
-		Self { validated_pool: self.validated_pool.clone(), api_verify_sleep_micros: self.api_verify_sleep_micros }
+		Self { validated_pool: self.validated_pool.clone(), api_verify_sleep_micros: self.api_verify_sleep_micros, phantom: PhantomData }
 	}
 }
 

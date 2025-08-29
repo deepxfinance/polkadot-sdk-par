@@ -47,7 +47,7 @@ use super::{
 /// Pre-validated transaction. Validated pool only accepts transactions wrapped in this enum.
 #[derive(Debug)]
 pub enum ValidatedTransaction<Hash, Ex, Error> {
-	/// Transaction that has been validated successfully.
+	/// Transaction that has been validated successfully.(with extra group info)
 	Valid(base::Transaction<Hash, Ex>),
 	/// Transaction that is invalid.
 	Invalid(Hash, Error),
@@ -59,15 +59,16 @@ pub enum ValidatedTransaction<Hash, Ex, Error> {
 
 impl<Hash, Ex, Error> ValidatedTransaction<Hash, Ex, Error> {
 	/// Consume validity result, transaction data and produce ValidTransaction.
-	pub fn valid_at(
+	pub fn valid_at<RCG: crate::graph::RCGroup<Ex, Error=Error>>(
 		at: u64,
 		hash: Hash,
 		source: TransactionSource,
-		data: Ex,
+		mut data: Ex,
 		bytes: usize,
 		validity: ValidTransaction,
-	) -> Self {
-		Self::Valid(base::Transaction {
+	) -> Result<Self, Error> {
+		Ok(Self::Valid(base::Transaction {
+			group_info: RCG::call_dependent_data(&mut data, source)?,
 			data,
 			bytes,
 			hash,
@@ -77,7 +78,7 @@ impl<Hash, Ex, Error> ValidatedTransaction<Hash, Ex, Error> {
 			provides: validity.provides,
 			propagate: validity.propagate,
 			valid_till: at.saturated_into::<u64>().saturating_add(validity.longevity),
-		})
+		}))
 	}
 }
 

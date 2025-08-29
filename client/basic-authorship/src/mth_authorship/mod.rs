@@ -18,12 +18,6 @@ pub trait MultiThreadBlockBuilder<B, Block: BlockT, Api>: MergeChange<StorageKey
     fn copy_state(&self) -> Self;
 }
 
-pub trait RCGroup {
-    /// parse runtime call, return dependent data for dispatch call to groups
-    /// If return empty return, we will execute the transaction in a single thread for unknow transaction.
-    fn call_dependent_data(tx_data: Vec<u8>) -> Result<Vec<Vec<u8>>, String>;
-}
-
 pub fn parse_entry_value<T: codec::Decode>(entry: &OverlayedEntry<Option<StorageValue>>) -> Option<T> {
     entry.value_ref().as_ref().map(|v| Decode::decode(&mut v.as_slice()).unwrap())
 }

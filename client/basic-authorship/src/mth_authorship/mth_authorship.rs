@@ -42,12 +42,12 @@ use prometheus_endpoint::Registry as PrometheusRegistry;
 use sc_proposer_metrics::{EndProposingReason, MetricsLink as PrometheusMetrics};
 use sp_runtime::traits::One;
 use crate::DEFAULT_BLOCK_SIZE_LIMIT;
-use super::{RCGroup, MultiThreadBlockBuilder};
+use super::MultiThreadBlockBuilder;
 
 const DEFAULT_SOFT_DEADLINE_PERCENT: Percent = Percent::from_percent(50);
 
 /// [`Proposer`] factory.
-pub struct ProposerFactory<A, B, C, PR, MBH, RCG> {
+pub struct ProposerFactory<A, B, C, PR, MBH> {
     spawn_handle: Box<dyn SpawnNamed>,
     /// The client instance.
     client: Arc<C>,
@@ -75,11 +75,11 @@ pub struct ProposerFactory<A, B, C, PR, MBH, RCG> {
     telemetry: Option<TelemetryHandle>,
     /// When estimating the block size, should the proof be included?
     include_proof_in_block_size_estimation: bool,
-    /// phantom member to pin the `Backend`/`ProofRecording`/`RuntimeCallGroup` type.
-    _phantom: PhantomData<(B, PR, MBH, RCG)>,
+    /// phantom member to pin the `Backend`/`ProofRecording` type.
+    _phantom: PhantomData<(B, PR, MBH)>,
 }
 
-impl<A, B, C, MBH, RCG> ProposerFactory<A, B, C, DisableProofRecording, MBH, RCG> {
+impl<A, B, C, MBH> ProposerFactory<A, B, C, DisableProofRecording, MBH> {
     /// Create a new multi thread proposer factory.
     ///
     /// Proof recording will be disabled when using proposers built by this instance to build
@@ -128,7 +128,7 @@ impl<A, B, C, MBH, RCG> ProposerFactory<A, B, C, DisableProofRecording, MBH, RCG
     }
 }
 
-impl<A, B, C, MBH, RCG> ProposerFactory<A, B, C, EnableProofRecording, MBH, RCG> {
+impl<A, B, C, MBH> ProposerFactory<A, B, C, EnableProofRecording, MBH> {
     /// Create a new multi thread proposer factory with proof recording enabled.
     ///
     /// Each proposer created by this instance will record a proof while building a block.
@@ -163,7 +163,7 @@ impl<A, B, C, MBH, RCG> ProposerFactory<A, B, C, EnableProofRecording, MBH, RCG>
     }
 }
 
-impl<A, B, C, PR, MBH, RCG> ProposerFactory<A, B, C, PR, MBH, RCG> {
+impl<A, B, C, PR, MBH> ProposerFactory<A, B, C, PR, MBH> {
     /// Set the default block size limit in bytes.
     ///
     /// The default value for the block size limit is:
@@ -192,7 +192,7 @@ impl<A, B, C, PR, MBH, RCG> ProposerFactory<A, B, C, PR, MBH, RCG> {
     }
 }
 
-impl<B, Block, C, A, PR, MBH, RCG> ProposerFactory<A, B, C, PR, MBH, RCG>
+impl<B, Block, C, A, PR, MBH> ProposerFactory<A, B, C, PR, MBH>
 where
     A: TransactionPool<Block = Block> + 'static,
     B: backend::Backend<Block> + Send + Sync + 'static,
@@ -206,18 +206,17 @@ where
     C::Api:
     ApiExt<Block, StateBackend = backend::StateBackendFor<B, Block>> + BlockBuilderApi<Block>,
     MBH: MultiThreadBlockBuilder<B, Block, C::Api>,
-    RCG: RCGroup + Send + Sync + 'static,
 {
     fn init_with_now(
         &mut self,
         parent_header: &<Block as BlockT>::Header,
         now: Box<dyn Fn() -> time::Instant + Send + Sync>,
-    ) -> Proposer<B, Block, C, A, PR, MBH, RCG> {
+    ) -> Proposer<B, Block, C, A, PR, MBH> {
         let parent_hash = parent_header.hash();
 
         info!("🙌 Starting consensus session on top of parent {:?}", parent_hash);
 
-        let proposer = Proposer::<_, _, _, _, PR, MBH, RCG> {
+        let proposer = Proposer::<_, _, _, _, PR, MBH> {
             spawn_handle: self.spawn_handle.clone(),
             client: self.client.clone(),
             parent_hash,
@@ -238,7 +237,7 @@ where
     }
 }
 
-impl<A, B, Block, C, PR, MBH, RCG> sp_consensus::Environment<Block> for ProposerFactory<A, B, C, PR, MBH, RCG>
+impl<A, B, Block, C, PR, MBH> sp_consensus::Environment<Block> for ProposerFactory<A, B, C, PR, MBH>
 where
     A: TransactionPool<Block = Block> + 'static,
     <A as TransactionPool>::InPoolTransaction: Send + Sync + 'static,
@@ -255,9 +254,8 @@ where
     ApiExt<Block, StateBackend = backend::StateBackendFor<B, Block>> + BlockBuilderApi<Block>,
     PR: ProofRecording,
     MBH: MultiThreadBlockBuilder<B, Block, C::Api> + Send + Sync + 'static,
-    RCG: RCGroup + Send + Sync + 'static,
 {
-    type Proposer = Proposer<B, Block, C, A, PR, MBH, RCG>;
+    type Proposer = Proposer<B, Block, C, A, PR, MBH>;
     type CreateProposer = future::Ready<Result<Self::Proposer, Self::Error>>;
     type Error = sp_blockchain::Error;
 
@@ -267,7 +265,7 @@ where
 }
 
 /// The proposer logic.
-pub struct Proposer<B, Block: BlockT, C: ProvideRuntimeApi<Block>, A: TransactionPool, PR, MBH: MultiThreadBlockBuilder<B, Block, C::Api>, RCG> {
+pub struct Proposer<B, Block: BlockT, C: ProvideRuntimeApi<Block>, A: TransactionPool, PR, MBH: MultiThreadBlockBuilder<B, Block, C::Api>> {
     spawn_handle: Box<dyn SpawnNamed>,
     client: Arc<C>,
     parent_hash: Block::Hash,
@@ -281,10 +279,10 @@ pub struct Proposer<B, Block: BlockT, C: ProvideRuntimeApi<Block>, A: Transactio
     pool_deadline_percent: Percent,
     merge_deadline_percent: Percent,
     telemetry: Option<TelemetryHandle>,
-    _phantom: PhantomData<(B, PR, MBH, RCG)>,
+    _phantom: PhantomData<(B, PR, MBH)>,
 }
 
-impl<A, B, Block, C, PR, MBH, RCG> sp_consensus::Proposer<Block> for Proposer<B, Block, C, A, PR, MBH, RCG>
+impl<A, B, Block, C, PR, MBH> sp_consensus::Proposer<Block> for Proposer<B, Block, C, A, PR, MBH>
 where
     A: TransactionPool<Block = Block> + 'static,
     <A as TransactionPool>::InPoolTransaction: Send + Sync + 'static,
@@ -301,7 +299,6 @@ where
     ApiExt<Block, StateBackend = backend::StateBackendFor<B, Block>> + BlockBuilderApi<Block>,
     PR: ProofRecording,
     MBH: MultiThreadBlockBuilder<B, Block, C::Api> + Send + Sync + 'static,
-    RCG: RCGroup + Send + Sync + 'static,
 {
     type Error = sp_blockchain::Error;
     type Transaction = backend::TransactionFor<B, Block>;
@@ -346,7 +343,7 @@ where
 const MAX_SKIPPED_TRANSACTIONS: usize = 8;
 type MergeType<A, B> = (Vec<usize>, OverlayedChanges, Option<ProofRecorder<B>>, Vec<<B as BlockT>::Extrinsic>, Vec<<A as TransactionPool>::Hash>, EndProposingReason);
 
-impl<A, B, Block, C, PR, MBH, RCG> Proposer<B, Block, C, A, PR, MBH, RCG>
+impl<A, B, Block, C, PR, MBH> Proposer<B, Block, C, A, PR, MBH>
 where
     A: TransactionPool<Block = Block>,
     <A as TransactionPool>::InPoolTransaction: Send + Sync + 'static,
@@ -362,7 +359,6 @@ where
     ApiExt<Block, StateBackend = backend::StateBackendFor<B, Block>> + BlockBuilderApi<Block>,
     PR: ProofRecording,
     MBH: MultiThreadBlockBuilder<B, Block, C::Api> + Send + Sync + 'static,
-    RCG: RCGroup + Send + Sync + 'static,
 {
     async fn propose_with(
         self,
@@ -610,88 +606,47 @@ where
         // TODO Better limit for pool(e.g. weight).
         let left_micros: u64 = deadline.saturating_duration_since(pool_timer).as_micros().saturated_into();
         let pool_time = time::Duration::from_micros(pool_deadline_percent.mul_floor(left_micros));
-        let get_pool_deadline = time::Instant::now() + pool_time / 2;
-        let mut pool_finish = futures_timer::Delay::new(pool_time).fuse();
+        let pool_deadline = time::Instant::now() + pool_time;
         let mut skipped = 0;
-        // channel support max 2^16 rcg parse results.
-        let (rcg_tx, mut rcg_rx) = mpsc::channel(65536);
-        self.spawn_handle.spawn_blocking(
-            "mth-authorship-proposer",
-            None,
-            Box::pin(async move {
-                let pool = futures::executor::ThreadPool::new().expect("Failed to build rcg parse pool");
-                let mut pool_extrinsic_count = 0usize;
-                let start = time::Instant::now();
-                // loop for
-                // 1. get enough transaction from pool.
-                // 2. spawn mission for every transaction:
-                //      parse transaction runtime call group info and return by channel.
-                loop {
-                    if time::Instant::now() > get_pool_deadline {
-                        debug!(target: "mth_authorship", "[GroupTx Block {block}] Reach get_deadline {}/{} ms (total {pool_extrinsic_count}, block size: {}/{block_size_limit})", start.elapsed().as_millis(), pool_time.as_millis(), block_size + proof_size);
-                        break;
-                    }
-                    let pending_tx = if let Some(pending_tx) = pending_iterator.next() {
-                        pending_tx
-                    } else {
-                        debug!(target: "mth_authorship", "[GroupTx Block {block}] Out of transactions({} ms, total {pool_extrinsic_count}, block size: {}/{block_size_limit})", start.elapsed().as_millis(), block_size + proof_size);
-                        break;
-                    };
-
-                    let pending_tx_data = pending_tx.data().clone();
-                    if block_size + pending_tx_data.encoded_size() + proof_size > block_size_limit {
-                        if skipped < MAX_SKIPPED_TRANSACTIONS {
-                            skipped += 1;
-                            debug!(
-                                "[GroupTx Block {block}] Transaction would overflow the block size limit, but will try {} more transactions before quitting.",
-                                MAX_SKIPPED_TRANSACTIONS - skipped,
-                            );
-                            continue
-                        } else {
-                            debug!(target: "mth_authorship", "[GroupTx Block {block}] Reached block size limit({}/{block_size_limit}) with extrinsic: {pool_extrinsic_count} in {} ms. start execute transactions.", block_size + proof_size, start.elapsed().as_millis());
-                            break;
-                        }
-                    }
-                    block_size += pending_tx.data().encoded_size();
-                    let mut rcg_tx_i = rcg_tx.clone();
-                    pool.spawn(async move {
-                        let rcg_info = RCG::call_dependent_data(pending_tx.data().encode());
-                        let _ = rcg_tx_i.start_send((pool_extrinsic_count, pending_tx, rcg_info));
-                    })
-                        .unwrap();
-                    // TODO update proof_size with new extrinsic. This is hard since we do not actually execute the extrinsic.
-                    proof_size += 0;
-                    pool_extrinsic_count += 1;
-                }
-            })
-        );
+        let mut pool_extrinsic_count = 0usize;
+        let start = time::Instant::now();
         // collect transactions' group info and dispatch to different groups.
         let mut grouper = ConflictGroup::new();
+        // loop for
+        // 1. get enough transaction from pool.
+        // 2. spawn mission for every transaction:
+        //      parse transaction runtime call group info and return by channel.
         loop {
-            select! {
-                res = rcg_rx.next() => {
-                    match res {
-                        Some((tx_index, pending_tx, result)) => {
-                            let call_group_data = match result {
-                                Ok(data) => data,
-                                Err(e) => {
-                                    warn!(target: "mth_authorship", "[GroupTx Block {block}] Parse RuntimeCallGroup for transaction {:?} failed for {e:?}", pending_tx.hash());
-                                    continue;
-                                }
-                            };
-                            grouper.insert(call_group_data, (tx_index, pending_tx));
-                        },
-                        None => {
-                            // finished
-                            break;
-                        },
-                    };
-                }
-                _ = pool_finish => {
-                    // finished
+            if time::Instant::now() > pool_deadline {
+                debug!(target: "mth_authorship", "[GroupTx Block {block}] Reach deadline {}/{} ms (total {pool_extrinsic_count}, block size: {}/{block_size_limit})", start.elapsed().as_millis(), pool_time.as_millis(), block_size + proof_size);
+                break;
+            }
+            let pending_tx = if let Some(pending_tx) = pending_iterator.next() {
+                pending_tx
+            } else {
+                debug!(target: "mth_authorship", "[GroupTx Block {block}] Out of transactions({} ms, total {pool_extrinsic_count}, block size: {}/{block_size_limit})", start.elapsed().as_millis(), block_size + proof_size);
+                break;
+            };
+
+            let pending_tx_data = pending_tx.data().clone();
+            if block_size + pending_tx_data.encoded_size() + proof_size > block_size_limit {
+                if skipped < MAX_SKIPPED_TRANSACTIONS {
+                    skipped += 1;
+                    debug!(
+                        "[GroupTx Block {block}] Transaction would overflow the block size limit, but will try {} more transactions before quitting.",
+                        MAX_SKIPPED_TRANSACTIONS - skipped,
+                    );
+                    continue
+                } else {
+                    debug!(target: "mth_authorship", "[GroupTx Block {block}] Reached block size limit({}/{block_size_limit}) with extrinsic: {pool_extrinsic_count} in {} ms. start execute transactions.", block_size + proof_size, start.elapsed().as_millis());
                     break;
                 }
             }
+            block_size += pending_tx.data().encoded_size();
+            grouper.insert(pending_tx.group_info().to_vec(), (pool_extrinsic_count, pending_tx));
+            // TODO update proof_size with new extrinsic. This is hard since we do not actually execute the extrinsic.
+            proof_size += 0;
+            pool_extrinsic_count += 1;
         }
         let mut group_txs: Vec<_> = grouper.group().into_values().collect();
         let mut single_group: Vec<_> = grouper.single_group();

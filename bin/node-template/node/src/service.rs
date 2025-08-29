@@ -9,6 +9,7 @@ use sc_service::{error::Error as ServiceError, Configuration, TaskManager, WarpS
 use sc_telemetry::{Telemetry, TelemetryWorker};
 use sp_consensus_aura::sr25519::AuthorityPair as AuraPair;
 use std::{sync::Arc, time::Duration};
+use sc_transaction_pool::FullPool;
 use crate::merge_handler::MergeHandler;
 use crate::transaction_group::DefaultRCGroup;
 
@@ -45,7 +46,7 @@ pub fn new_partial(
 		FullBackend,
 		FullSelectChain,
 		sc_consensus::DefaultImportQueue<Block, FullClient>,
-		sc_transaction_pool::FullPool<Block, FullClient>,
+		sc_transaction_pool::FullPool<Block, FullClient, DefaultRCGroup>,
 		(
 			sc_consensus_grandpa::GrandpaBlockImport<
 				FullBackend,
@@ -86,7 +87,7 @@ pub fn new_partial(
 
 	let select_chain = sc_consensus::LongestChain::new(backend.clone());
 
-	let transaction_pool = sc_transaction_pool::BasicPool::new_full(
+	let transaction_pool: Arc<FullPool<_, _, DefaultRCGroup>> = sc_transaction_pool::BasicPool::new_full(
 		config.transaction_pool.clone(),
 		config.role.is_authority().into(),
 		config.prometheus_registry(),
@@ -222,7 +223,7 @@ pub fn new_full(config: Configuration) -> Result<TaskManager, ServiceError> {
 	})?;
 
 	if role.is_authority() {
-		let proposer_factory: sc_basic_authorship::MTHProposerFactory<_, _, _, _, MergeHandler, DefaultRCGroup> =
+		let proposer_factory: sc_basic_authorship::MTHProposerFactory<_, _, _, _, MergeHandler> =
 			sc_basic_authorship::MTHProposerFactory::new(
 				task_manager.spawn_handle(),
 				client.clone(),

@@ -214,6 +214,10 @@ impl sc_transaction_pool_api::InPoolTransaction for PoolTransaction {
 	fn is_propagable(&self) -> bool {
 		unimplemented!()
 	}
+
+	fn group_info(&self) -> &[Vec<u8>] {
+		unimplemented!()
+	}
 }
 
 #[derive(Clone, Debug)]
