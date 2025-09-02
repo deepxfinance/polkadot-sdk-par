@@ -44,7 +44,7 @@ use sp_runtime::traits::One;
 use crate::DEFAULT_BLOCK_SIZE_LIMIT;
 use super::MultiThreadBlockBuilder;
 
-const DEFAULT_SOFT_DEADLINE_PERCENT: Percent = Percent::from_percent(50);
+const DEFAULT_SOFT_DEADLINE_PERCENT: Percent = Percent::from_percent(70);
 
 /// [`Proposer`] factory.
 pub struct ProposerFactory<A, B, C, PR, MBH> {
@@ -72,6 +72,10 @@ pub struct ProposerFactory<A, B, C, PR, MBH> {
     pool_deadline_percent: Percent,
     /// Merge execute result percentage of hard deadline.
     merge_deadline_percent: Percent,
+    /// Parallel threads limit for execution(not greater thran physical cpu threads).
+    thread_limit: usize,
+    /// Thread transaction number per millis.
+    millis_tx_rate: usize,
     telemetry: Option<TelemetryHandle>,
     /// When estimating the block size, should the proof be included?
     include_proof_in_block_size_estimation: bool,
@@ -101,16 +105,25 @@ impl<A, B, C, MBH> ProposerFactory<A, B, C, DisableProofRecording, MBH> {
         if soft_deadline_percent.deconstruct() > 100 {
             panic!("`soft_deadline_percent` should not be greater than 100%");
         }
-        let pool_deadline_percent: u8 = std::env::var("MTH_POOL_DEADLINE_PERCENT").unwrap_or("20".into()).parse().unwrap_or(20);
+        let pool_deadline_percent: u8 = std::env::var("MTH_POOL_DEADLINE_PERCENT").unwrap_or("10".into()).parse().unwrap_or(10);
         let pool_deadline_percent = Percent::from_percent(pool_deadline_percent);
-        let merge_deadline_percent: u8 = std::env::var("MTH_MERGE_DEADLINE_PERCENT").unwrap_or("5".into()).parse().unwrap_or(5);
+        let merge_deadline_percent: u8 = std::env::var("MTH_MERGE_DEADLINE_PERCENT").unwrap_or("10".into()).parse().unwrap_or(10);
         let merge_deadline_percent = Percent::from_percent(merge_deadline_percent);
         if merge_deadline_percent.deconstruct() + pool_deadline_percent.deconstruct() >= soft_deadline_percent.deconstruct() {
             panic!("`pool_deadline_percent` + `merge_deadline_percent` should not be greater equal than `soft_deadline_percent`");
         }
+        let mut thread_limit: usize = match std::env::var("MTH_THREAD_LIMIT") {
+            Ok(limit) => limit.parse().expect("`MTH_THREAD_LIMIT` should be a usize"),
+            Err(_) => num_cpus::get(),
+        };
+        thread_limit = thread_limit.min(num_cpus::get());
+        let millis_tx_rate: usize = match std::env::var("MTH_MILLIS_TX_RATE") {
+            Ok(rate) => rate.parse().expect("`MTH_MILLIS_TX_RATE` should be a usize"),
+            Err(_) => 5,
+        };
         info!(
             target: "mth_authorship",
-            "ProposerFactory init soft_deadline_percent: {soft_deadline_percent:?}, pool_deadline_percent: {pool_deadline_percent:?}, merge_deadline_percent: {merge_deadline_percent:?}",
+            "ProposerFactory init soft_deadline_percent: {soft_deadline_percent:?}, pool_deadline_percent: {pool_deadline_percent:?}, merge_deadline_percent: {merge_deadline_percent:?}, thread_limit: {thread_limit}, millis_tx_rate: {millis_tx_rate:?}",
         );
         ProposerFactory {
             spawn_handle: Box::new(spawn_handle),
@@ -120,6 +133,8 @@ impl<A, B, C, MBH> ProposerFactory<A, B, C, DisableProofRecording, MBH> {
             soft_deadline_percent,
             pool_deadline_percent,
             merge_deadline_percent,
+            thread_limit,
+            millis_tx_rate,
             telemetry,
             client,
             include_proof_in_block_size_estimation: false,
@@ -228,6 +243,8 @@ where
             soft_deadline_percent: self.soft_deadline_percent,
             pool_deadline_percent: self.pool_deadline_percent,
             merge_deadline_percent: self.merge_deadline_percent,
+            thread_limit: self.thread_limit,
+            millis_tx_rate: self.millis_tx_rate,
             telemetry: self.telemetry.clone(),
             _phantom: PhantomData,
             include_proof_in_block_size_estimation: self.include_proof_in_block_size_estimation,
@@ -278,6 +295,8 @@ pub struct Proposer<B, Block: BlockT, C: ProvideRuntimeApi<Block>, A: Transactio
     soft_deadline_percent: Percent,
     pool_deadline_percent: Percent,
     merge_deadline_percent: Percent,
+    thread_limit: usize,
+    millis_tx_rate: usize,
     telemetry: Option<TelemetryHandle>,
     _phantom: PhantomData<(B, PR, MBH)>,
 }
@@ -407,9 +426,8 @@ where
         }
         // 3. prepare transactions by group.
         let block_size_limit = block_size_limit.unwrap_or(self.default_block_size_limit);
-        let (extrinsic_group, single_group, pool_time) = self.group_transactions_from_pool(
+        let (extrinsic_group, single_group, raw_groups, pool_time) = self.group_transactions_from_pool(
             deadline.clone(),
-            self.pool_deadline_percent,
             block_size_limit,
             block_builder.estimated_header_size + block_builder.extrinsics.encoded_size(),
             if self.include_proof_in_block_size_estimation {
@@ -443,9 +461,11 @@ where
         let thread_number = extrinsic_group.len();
         debug!(
             target: "mth_authorship",
-            "[Execute Block {}] GroupTx use {} ms({} threads, {} txs), execute limit mth_exe_time {} ms, mth_merge_time {} ms, oth_time {} ms, soft_deadline {} ms({:?})",
+            "[Execute Block {}] GroupTx use {} ms({} micros)({} -> {} groups, {} txs), execute limit mth_exe_time {} ms, mth_merge_time {} ms, oth_time {} ms, soft_deadline {} ms({:?})",
             self.parent_number + One::one(),
+            pool_time.2,
             pool_time.1,
+            raw_groups,
             thread_number,
             extrinsic_count - inherents.len(),
             mth_execute_time.as_millis(),
@@ -553,7 +573,7 @@ where
 			block.header().number(),
 			propose_with_start.elapsed().as_millis(),
             max_duration.as_millis(),
-            pool_time.1,
+            pool_time.2,
             pool_time.0,
 			<Block as BlockT>::Hash::from(block.header().hash()),
 			block.header().parent_hash(),
@@ -584,11 +604,10 @@ where
     async fn group_transactions_from_pool(
         &self,
         deadline: time::Instant,
-        pool_deadline_percent: Percent,
         block_size_limit: usize,
         mut block_size: usize,
         mut proof_size: usize,
-    ) -> Result<(Vec<Vec<(usize, Arc<<A as TransactionPool>::InPoolTransaction>)>>, Vec<(usize, Arc<<A as TransactionPool>::InPoolTransaction>)>, (u128, u128)), String> {
+    ) -> Result<(Vec<Vec<(usize, Arc<<A as TransactionPool>::InPoolTransaction>)>>, Vec<(usize, Arc<<A as TransactionPool>::InPoolTransaction>)>, usize, (u128, u128, u128)), String> {
         let pool_timer = time::Instant::now();
         let block = self.parent_number + One::one();
         let mut t1 = self.transaction_pool.ready_at(self.parent_number).fuse();
@@ -605,8 +624,13 @@ where
 
         // TODO Better limit for pool(e.g. weight).
         let left_micros: u64 = deadline.saturating_duration_since(pool_timer).as_micros().saturated_into();
-        let pool_time = time::Duration::from_micros(pool_deadline_percent.mul_floor(left_micros));
+        let execute_percent = self.soft_deadline_percent.saturating_sub(self.pool_deadline_percent).saturating_sub(self.merge_deadline_percent);
+        let execute_time = execute_percent.mul_floor(left_micros) / 1000;
+        let thread_tx_limit = execute_time as usize * self.millis_tx_rate;
+        let tx_limit = thread_tx_limit * self.thread_limit;
+        let pool_time = time::Duration::from_micros(self.pool_deadline_percent.mul_floor(left_micros));
         let pool_deadline = time::Instant::now() + pool_time;
+
         let mut skipped = 0;
         let mut pool_extrinsic_count = 0usize;
         let start = time::Instant::now();
@@ -617,6 +641,10 @@ where
         // 2. spawn mission for every transaction:
         //      parse transaction runtime call group info and return by channel.
         loop {
+            if pool_extrinsic_count >= tx_limit {
+                debug!(target: "mth_authorship", "[GroupTx Block {block}] Reach tx_limit {}/{} ms (total {pool_extrinsic_count}, block size: {}/{block_size_limit})", start.elapsed().as_millis(), pool_time.as_millis(), block_size + proof_size);
+                break;
+            }
             if time::Instant::now() > pool_deadline {
                 debug!(target: "mth_authorship", "[GroupTx Block {block}] Reach deadline {}/{} ms (total {pool_extrinsic_count}, block size: {}/{block_size_limit})", start.elapsed().as_millis(), pool_time.as_millis(), block_size + proof_size);
                 break;
@@ -648,13 +676,13 @@ where
             proof_size += 0;
             pool_extrinsic_count += 1;
         }
-        let mut group_txs: Vec<_> = grouper.group().into_values().collect();
+        let (mut group_txs, raw_groups, sort_time) = grouper.group(self.thread_limit);
         let mut single_group: Vec<_> = grouper.single_group();
         if group_txs.len() == 1 {
             single_group = [group_txs.pop().unwrap(), single_group].concat();
         }
         let pool_total_time = pool_timer.elapsed().as_millis();
-        Ok((group_txs, single_group, (get_pool_time, pool_total_time)))
+        Ok((group_txs, single_group, raw_groups, (get_pool_time, sort_time, pool_total_time)))
     }
 
     fn spawn_execute_groups(
@@ -1166,8 +1194,21 @@ impl<K: PartialEq + Eq + Hash + Clone, V> ConflictGroup<K, V>  {
         }
     }
 
-    pub fn group(&mut self) -> HashMap<usize, Vec<V>> {
-        std::mem::take(&mut self.group)
+    pub fn group(&mut self, limit: usize) -> (Vec<Vec<V>>, usize, u128) {
+        let mut groups = core::mem::take(&mut self.group).into_values().collect::<Vec<_>>();
+        let groups_len = groups.len();
+        if groups_len <= limit {
+            return (groups, groups_len, 0);
+        }
+        let sort_start = time::Instant::now();
+        groups.sort_by(|a, b| a.len().cmp(&b.len()));
+        let mut results = groups.split_off(groups_len - limit);
+        groups.truncate(groups_len - limit);
+        for group in groups {
+            results[0].extend(group);
+            results.sort_by(|a, b| a.len().cmp(&b.len()));
+        }
+        (results, groups_len, sort_start.elapsed().as_micros())
     }
 
     pub fn single_group(&mut self) -> Vec<V> {
