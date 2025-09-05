@@ -543,7 +543,7 @@ where
             let main_storage_changes = storage_changes.main_storage_changes.clone();
             let child_storage_changes = storage_changes.child_storage_changes.clone();
             let proof = proof.clone();
-            self.spawn_handle.spawn_blocking(
+            self.spawn_handle.spawn(
                 "mth-authorship-proposer",
                 None,
                 Box::pin(async move {
@@ -695,10 +695,6 @@ where
     ) where
         C: CloneForExecution,
     {
-        let pool = futures::executor::ThreadPoolBuilder::new()
-            .pool_size(cmp::min(extrinsic_group.len(), num_cpus::get()))
-            .create()
-            .expect("Failed to build groups execution pool");
         let (init_changes, _, init_recorder) = block_builder.api.take_all_changes();
         for (i, pending_txs) in extrinsic_group.into_iter().enumerate() {
             let thread_inherents = inherents.clone();
@@ -710,35 +706,38 @@ where
             let thread_client = self.client.clone_for_execution();
             let block = self.parent_number + One::one();
             let mut res_tx = merge_tx.clone();
-            pool.spawn(async move {
-                let mut thread_builder = match thread_client.new_with_other(parent_hash, estimated_header_size) {
-                    Ok(mut builder) => {
-                        builder.extrinsics = extrinsics;
-                        builder.api.set_changes(init_changes);
-                        builder.api.set_recorder(init_recorder);
-                        builder
-                    },
-                    Err(e) => {
-                        error!("Could not create block builder for thread {} for error: {e:?}", i + 1);
-                        return;
-                    }
-                };
-                let (applied_extrinsics, unqueue_invalid, end_reason) = Self::execute_one_thread_txs(
-                    block,
-                    mth_execute_deadline,
-                    &mut thread_builder,
-                    thread_inherents,
-                    pending_txs,
-                    i + 1
-                );
+            self.spawn_handle.spawn_blocking(
+                "mth-authorship-proposer",
+                None,
+                Box::pin(async move {
+                    let mut thread_builder = match thread_client.new_with_other(parent_hash, estimated_header_size) {
+                        Ok(mut builder) => {
+                            builder.extrinsics = extrinsics;
+                            builder.api.set_changes(init_changes);
+                            builder.api.set_recorder(init_recorder);
+                            builder
+                        },
+                        Err(e) => {
+                            error!("Could not create block builder for thread {} for error: {e:?}", i + 1);
+                            return;
+                        }
+                    };
+                    let (applied_extrinsics, unqueue_invalid, end_reason) = Self::execute_one_thread_txs(
+                        block,
+                        mth_execute_deadline,
+                        &mut thread_builder,
+                        thread_inherents,
+                        pending_txs,
+                        i + 1,
+                    );
 
-                let (overlay, _, recorder) = thread_builder.api.take_all_changes();
-                let changes = (vec![i + 1], overlay, recorder, applied_extrinsics, unqueue_invalid, end_reason);
-                if res_tx.start_send((changes, false)).is_err() {
-                    trace!("Could not send block production result to proposer!");
-                }
-            })
-                .expect("Failed to spawn execute thread");
+                    let (overlay, _, recorder) = thread_builder.api.take_all_changes();
+                    let changes = (vec![i + 1], overlay, recorder, applied_extrinsics, unqueue_invalid, end_reason);
+                    if res_tx.start_send((changes, false)).is_err() {
+                        trace!("Could not send block production result to proposer!");
+                    }
+                }),
+            );
         }
     }
 
