@@ -763,71 +763,121 @@ where
                 block_builder.push(inherent).unwrap();
             }
         }
-        let mut skipped = 0usize;
         let mut unqueue_invalid = Vec::new();
         let total_tx = pending_txs.len();
         // thread txs should be same order with pool.
         pending_txs.sort_by(|a, b| a.0.cmp(&b.0));
-        let mut pending_iterator = pending_txs.into_iter();
-        let end_reason = loop {
-            let pending_tx = if let Some((_, pending_tx)) = pending_iterator.next() {
-                pending_tx
+        let mut tx_number = (thread_time.as_millis() as usize * 2).min(pending_txs.len());
+        let mut round_execute_collect = Vec::new();
+        let mut should_break = None;
+        let (end_reason, reason) = loop {
+            if pending_txs.is_empty() {
+                break (EndProposingReason::NoMoreTransactions, "NoMoreTransactions")
+            }
+            if time::Instant::now() > thread_deadline {
+                break (EndProposingReason::HitDeadline, "HitThreadDeadline")
+            }
+            let mut execute_txs = pending_txs[..tx_number].to_vec();
+            pending_txs = pending_txs[tx_number..].to_vec();
+            let batch_txs = execute_txs.iter().map(|(_, e)| e.data().clone()).collect();
+            let batch_start = time::Instant::now();
+            let timeout = thread_deadline.duration_since(batch_start);
+            let (results, rollback) = block_builder.push_batch(batch_txs, timeout);
+            let batch_time = batch_start.elapsed().as_micros();
+            let mut executed = 0usize;
+            if let Some((index, e)) = rollback {
+                let pending_tx_hash = execute_txs[index].1.hash().clone();
+                trace!("[{:?}] Invalid transaction: {}", pending_tx_hash, e);
+                unqueue_invalid.push(pending_tx_hash);
+                // drop this rollback extrinsic
+                execute_txs.remove(index);
             } else {
-                debug!(
-                    target: "mth_authorship",
-                    "[Execute Block {block}] Thread {thread_name} finished({}/{} ms) {}/{}/{total_tx} executed.",
-                    thread_start.elapsed().as_millis(),
-                    thread_time.as_millis(),
-                    block_builder.extrinsics.len() - inherents.len(),
-                    unqueue_invalid.len(),
-                );
-                break EndProposingReason::NoMoreTransactions
-            };
-
-            let now = time::Instant::now();
-            if now > thread_deadline {
-                debug!(
-                    target: "mth_authorship",
-                    "[Execute Block {block}] Thread {thread_name} reached ThreadDeadline({}/{} ms) {}/{}/{total_tx} executed.",
-                    thread_start.elapsed().as_millis(),
-                    thread_time.as_millis(),
-                    block_builder.extrinsics.len() - inherents.len(),
-                    unqueue_invalid.len(),
-                );
-                break EndProposingReason::HitDeadline
-            }
-
-            let pending_tx_data = pending_tx.data().clone();
-            let pending_tx_hash = pending_tx.hash().clone();
-
-            trace!("[{:?}] Pushing to the Block {block}.", pending_tx_hash);
-            match BlockBuilder::push(block_builder, pending_tx_data.clone()) {
-                Ok(()) => (),
-                Err(ApplyExtrinsicFailed(Validity(e))) if e.exhausted_resources() => {
-                    if skipped < MAX_SKIPPED_TRANSACTIONS {
-                        skipped += 1;
-                        trace!(
-                            "[Execute Block {block}] Thread {thread_name} block seems full, but will try {} more transactions before quitting.",
-                            MAX_SKIPPED_TRANSACTIONS - skipped,
-                        );
-                    } else if time::Instant::now() < thread_deadline {
-                        trace!(
-                            target: "mth_authorship",
-                            "[Execute Block {block}] Thread {thread_name} block seems full, but we still have time before the thread deadline, \
-                                so we will try a bit more before quitting."
-                        );
-                    } else {
-                        debug!(target: "mth_authorship", "[Execute Block {block}] Thread {thread_name} reached block weight limit, proceeding with proposing.");
-                        break EndProposingReason::HitBlockWeightLimit
+                executed = results.len();
+                for (_, result) in results.into_iter().enumerate() {
+                    match result {
+                        Ok(()) => (),
+                        Err(ApplyExtrinsicFailed(Validity(e))) if e.exhausted_resources() => {
+                            should_break = Some(EndProposingReason::HitBlockWeightLimit);
+                        },
+                        Err(e) => panic!("Err({e:?}) should Rollback"),
                     }
-                },
-                Err(e) => {
-                    trace!(target: "mth_authorship", "[{:?}] Invalid transaction: {}", pending_tx_hash, e);
-                    unqueue_invalid.push(pending_tx_hash);
-                },
+                }
             }
+            round_execute_collect.push(executed);
+            // push unexecuted extrinsic back to `pending_txs`
+            if execute_txs.len() > executed {
+                pending_txs = [execute_txs[executed..].to_vec(), pending_txs].concat();
+            }
+            if let Some(break_reason) = should_break {
+                break (break_reason, "HitBlockWeightLimit");
+            }
+            let average_micros =  batch_time / (executed as u128).max(1);
+            let remain_micros = thread_deadline.saturating_duration_since(time::Instant::now()).as_micros();
+            tx_number = ((remain_micros / average_micros) as usize / 2)
+                .max(1)
+                .min(pending_txs.len());
         };
+        Self::thread_finish_log(block, &thread_name, thread_start, thread_time, reason, &block_builder, total_tx, inherents.len(), unqueue_invalid.len(), round_execute_collect);
         (block_builder.extrinsics.clone(), unqueue_invalid, end_reason)
+    }
+
+    fn thread_finish_log(
+        block: <<Block as BlockT>::Header as HeaderT>::Number,
+        thread_name: &String,
+        thread_start: time::Instant,
+        thread_time: time::Duration,
+        reason: &str,
+        block_builder: &BlockBuilder<Block, C, B>,
+        total_tx: usize,
+        inherents_len: usize,
+        invalid: usize,
+        round_execute_collect: Vec<usize>,
+    ) {
+        let times = |block_builder: &BlockBuilder<Block, C, B>, _thread: &String| -> (Vec<[u128; 4]>, Vec<(String, [u128; 4], usize)>, u128, u128, u128) {
+            let mut execute_map: HashMap<String, ([u128; 4], usize)> = HashMap::new();
+            let mut execute_time_count = 0u128;
+            let mut round_times = Vec::new();
+            let (execute_times, (commit_time, rollback_time)) = block_builder.api.execute_times();
+            for (method, times) in execute_times {
+                let method = String::from_utf8(method).unwrap_or("unknown".to_string());
+                // trace!(target: "mth_authorship", "Thread {_thread}, method: {method:?}, exe/read/read_backend/write: {times:?} nanos");
+                if method.as_str() == "BlockBuilder_apply_extrinsics" {
+                    execute_time_count += times[0];
+                    round_times.push(times.clone());
+                }
+                if let Some((total_t, count)) = execute_map.get_mut(&method) {
+                    total_t[0] += times[0];
+                    total_t[1] += times[1];
+                    total_t[2] += times[2];
+                    total_t[3] += times[3];
+                    *count += 1;
+                } else {
+                    execute_map.insert(method, (times, 1usize));
+                }
+            }
+            let mut times: Vec<_> = execute_map.into_iter().map(|(k, (v, count))| (k, v, count)).collect();
+            times.sort_by(|a, b| b.1[0].cmp(&a.1[0]));
+            (round_times, times, execute_time_count, commit_time, rollback_time)
+        };
+        let (round_times, times, execute_time, commit_time, rollback_time) = times(&block_builder, &thread_name);
+        let extra = thread_start.elapsed().as_nanos().saturating_sub(execute_time);
+        let round_with_times = round_execute_collect.iter().zip(round_times.into_iter()).map(|(txs, time)| {
+            let tx_num = (*txs).max(1);
+            let io_time = time[1] + time[3];
+            let avg = time[0] as usize / tx_num;
+            let avg_io = io_time as usize / tx_num;
+            let avg_rb = time[2] as usize / tx_num;
+            (*txs, avg, avg.saturating_sub(avg_io), avg_io, avg_rb)
+        }).collect::<Vec<_>>();
+        trace!(target: "mth_authorship", "[Execute Block {block}] Thread {thread_name} extra: {extra}({commit_time}/{rollback_time}) nanos, times(min/avg/max/count): {times:?}");
+        debug!(
+            target: "mth_authorship",
+            "[Execute Block {block}] Thread {thread_name} {reason}({}/{} ms) {}/{invalid}/{total_tx} executed in {} rounds([(num, avg, avg_exe, avg_io, avg_rb)]: {round_with_times:?}).",
+            thread_start.elapsed().as_millis(),
+            thread_time.as_millis(),
+            block_builder.extrinsics.len() - inherents_len,
+            round_execute_collect.len(),
+        );
     }
 
     async fn merge_threads_result<'a>(

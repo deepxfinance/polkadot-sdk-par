@@ -514,6 +514,10 @@ impl_runtime_apis! {
 			Executive::apply_extrinsic(extrinsic)
 		}
 
+		fn apply_extrinsics(extrinsics: Vec<<Block as BlockT>::Extrinsic>, timeout: u128) -> sp_std::vec::Vec<ApplyExtrinsicResult> {
+			Executive::apply_extrinsics(extrinsics, timeout)
+		}
+
 		fn finalize_block() -> <Block as BlockT>::Header {
 			log::trace!(target: LOG_TARGET, "finalize_block");
 			Executive::finalize_block()

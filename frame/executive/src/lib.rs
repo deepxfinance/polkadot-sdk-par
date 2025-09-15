@@ -135,6 +135,7 @@ use sp_runtime::{
 	transaction_validity::{TransactionSource, TransactionValidity},
 	ApplyExtrinsicResult,
 };
+use sp_runtime::transaction_validity::TransactionValidityError;
 use sp_std::{marker::PhantomData, prelude::*};
 
 #[cfg(feature = "try-runtime")]
@@ -577,6 +578,29 @@ where
 		<frame_system::Pallet<System>>::note_applied_extrinsic(&r, dispatch_info);
 
 		Ok(r.map(|_| ()).map_err(|e| e.error))
+	}
+
+	pub fn apply_extrinsics(extrinsics: Vec<Block::Extrinsic>, _timeout: u128) -> Vec<ApplyExtrinsicResult> {
+		#[cfg(feature = "std")]
+		let timeout = std::time::Duration::from_nanos(_timeout as u64);
+		#[cfg(feature = "std")]
+		let start = std::time::Instant::now();
+		let mut result = Vec::new();
+		for ext in extrinsics {
+			let res = Self::apply_extrinsic(ext);
+			if let Err(TransactionValidityError::Invalid(e)) = &res {
+				if e.exhausted_resources() {
+					result.push(res);
+					break;
+				}
+			}
+			result.push(res);
+			#[cfg(feature = "std")]
+			if start.elapsed() >= timeout {
+				break;
+			}
+		}
+		result
 	}
 
 	fn final_checks(header: &System::Header) {

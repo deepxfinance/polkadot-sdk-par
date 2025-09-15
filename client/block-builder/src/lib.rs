@@ -41,6 +41,7 @@ use sp_runtime::{
 
 use sc_client_api::backend;
 pub use sp_block_builder::BlockBuilder as BlockBuilderApi;
+use sp_blockchain::ApplyExtrinsicFailed::Validity;
 
 /// Used as parameter to [`BlockBuilderProvider`] to express if proof recording should be enabled.
 ///
@@ -267,6 +268,95 @@ where
 				)),
 				Err(e) => TransactionOutcome::Rollback(Err(Error::from(e))),
 			}
+		})
+	}
+
+	/// Push onto the block's list of extrinsics.
+	pub fn push_batch(&mut self, xts: Vec<<Block as BlockT>::Extrinsic>, timeout: std::time::Duration) -> (Vec<Result<(), Error>>, Option<(usize, Error)>) {
+		let parent_hash = self.parent_hash;
+		let extrinsics = &mut self.extrinsics;
+		let version = self.version;
+        let mut rollback = None;
+        let mut batch_results = Vec::with_capacity(xts.len());
+
+		self.api.execute_in_transaction(|api| {
+			let (res, roll_back) = if version < 6 {
+				let start = std::time::Instant::now();
+				for (i, xt) in xts.clone().into_iter().enumerate() {
+					#[allow(deprecated)]
+					match api.apply_extrinsic_before_version_6_with_context(
+						parent_hash,
+						ExecutionContext::BlockConstruction,
+						xt.clone(),
+					)
+						.map(legacy::byte_sized_error::convert_to_latest) {
+						Ok(result) => {
+                            match result {
+                                Ok(r) => batch_results.push(Ok(r)),
+                                Err(e) => {
+                                    if !e.exhausted_resources() {
+                                        rollback = Some((i, ApplyExtrinsicFailed::Validity(e).into()));
+                                        break;
+                                    } else {
+                                        batch_results.push(Err(ApplyExtrinsicFailed::Validity(e).into()));
+                                    }
+                                }
+                            }
+                        },
+						Err(e) => {
+                            rollback = Some((i, Error::from(e)));
+							break;
+						},
+					}
+					if start.elapsed() >= timeout {
+						break;
+					}
+				}
+				(batch_results, rollback)
+			} else {
+				match api.apply_extrinsics_with_context(
+					parent_hash,
+					ExecutionContext::BlockConstruction,
+					xts.clone(),
+					timeout.as_nanos(),
+				) {
+					Ok(results) => {
+                        for (i, result) in results.into_iter().enumerate() {
+                            match result {
+                                Ok(r) => batch_results.push(Ok(r)),
+                                Err(e) => {
+                                    // for multi threads execution, exhausted_resources does not matter.
+                                    if !e.exhausted_resources() {
+                                        // if meat other error, should roll back.
+                                        // record first roll back index.
+                                        if rollback.is_none() {
+                                            rollback= Some((i, ApplyExtrinsicFailed::Validity(e).into()));
+                                        }
+                                    }
+									batch_results.push(Err(ApplyExtrinsicFailed::Validity(e).into()))
+                                }
+                            }
+                        }
+                        (batch_results, rollback)
+					},
+					Err(e) => (vec![], Some((0, Error::from(e)))),
+				}
+			};
+            if roll_back.is_none() {
+                let mut results = Vec::new();
+                for (res, xt) in res.into_iter().zip(xts.into_iter()) {
+                    results.push(match res {
+                        Ok(_) => {
+                            extrinsics.push(xt.clone());
+                            Ok(())
+                        },
+                        Err(e) => Err(e),
+                    });
+                }
+                TransactionOutcome::Commit((results, roll_back))
+            } else {
+                TransactionOutcome::Rollback((Vec::new(), roll_back))
+            }
 		})
 	}
 

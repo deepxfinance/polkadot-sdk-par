@@ -326,6 +326,16 @@ fn generate_runtime_api_base_structures() -> Result<TokenStream> {
 				// format!("storage_transaction_cache: {:?}\nrecorder: {:#?}", std::cell::RefCell::borrow(&self.storage_transaction_cache).transaction_storage_root, self.recorder.clone().map(|r| r.to_storage_proof()))
 			}
 
+			fn execute_times(&self) -> (Vec<(Vec<u8>, [u128; 4])>, (u128, u128))
+			where
+				Self: Sized
+			{
+				(
+					std::cell::RefCell::borrow(&self.changes).get_execute_times(),
+					std::cell::RefCell::borrow(&self.changes).commit_rollback_time(),
+				)
+			}
+
 			fn take_all_changes(&mut self) -> (
 				#crate_::OverlayedChanges,
 				#crate_::StorageTransactionCache<Block, C::StateBackend>,
@@ -340,7 +350,7 @@ fn generate_runtime_api_base_structures() -> Result<TokenStream> {
 				(changes, storage_transaction_cache, recorder)
 			}
 			
-			fn set_changes(&mut self, changes: #crate_::OverlayedChanges) {
+			fn set_changes(&mut self, mut changes: #crate_::OverlayedChanges) {
 				self.changes = core::cell::RefCell::new(changes);
 			}
 			

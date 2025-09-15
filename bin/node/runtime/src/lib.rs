@@ -73,7 +73,7 @@ use sp_runtime::{
 		self, BlakeTwo256, Block as BlockT, Bounded, ConvertInto, NumberFor, OpaqueKeys,
 		SaturatedConversion, StaticLookup,
 	},
-	transaction_validity::{TransactionPriority, TransactionSource, TransactionValidity},
+	transaction_validity::{TransactionPriority, TransactionSource, TransactionValidity, InvalidTransaction, TransactionValidityError},
 	ApplyExtrinsicResult, FixedPointNumber, FixedU128, Perbill, Percent, Permill, Perquintill,
 };
 use sp_std::prelude::*;
@@ -2044,6 +2044,10 @@ impl_runtime_apis! {
 	impl sp_block_builder::BlockBuilder<Block> for Runtime {
 		fn apply_extrinsic(extrinsic: <Block as BlockT>::Extrinsic) -> ApplyExtrinsicResult {
 			Executive::apply_extrinsic(extrinsic)
+		}
+
+		fn apply_extrinsics(extrinsics: Vec<<Block as BlockT>::Extrinsic>, timeout: u128) -> sp_std::vec::Vec<ApplyExtrinsicResult> {
+			Executive::apply_extrinsics(extrinsics, timeout)
 		}
 
 		fn finalize_block() -> <Block as BlockT>::Header {

@@ -32,6 +32,12 @@ sp_api::decl_runtime_apis! {
 		/// this block or not.
 		fn apply_extrinsic(extrinsic: <Block as BlockT>::Extrinsic) -> ApplyExtrinsicResult;
 
+		/// Apply the given extrinsic.
+		///
+		/// Returns an inclusion outcome which specifies if this extrinsic is included in
+		/// this block or not.
+		fn apply_extrinsics(extrinsics: sp_std::vec::Vec<<Block as BlockT>::Extrinsic>, _timeout: u128) -> sp_std::vec::Vec<ApplyExtrinsicResult>;
+
 		#[changed_in(6)]
 		fn apply_extrinsic(
 			extrinsic: <Block as BlockT>::Extrinsic,

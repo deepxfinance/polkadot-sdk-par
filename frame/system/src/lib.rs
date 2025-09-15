@@ -1331,6 +1331,8 @@ impl<T: Config> Pallet<T> {
 	/// Remove temporary "environment" entries in storage, compute the storage root and return the
 	/// resulting header for this block.
 	pub fn finalize() -> T::Header {
+		#[cfg(feature = "std")]
+		let finalize_start = std::time::Instant::now();
 		log::debug!(
 			target: LOG_TARGET,
 			"[{:?}] {} extrinsics, length: {} (normal {}%, op: {}%, mandatory {}%) / normal weight:\
@@ -1384,10 +1386,14 @@ impl<T: Config> Pallet<T> {
 		let parent_hash = <ParentHash<T>>::get();
 		let digest = <Digest<T>>::get();
 
+		#[cfg(feature = "std")]
+		let extrinsics_root_start = std::time::Instant::now();
 		let extrinsics = (0..ExtrinsicCount::<T>::take().unwrap_or_default())
 			.map(ExtrinsicData::<T>::take)
 			.collect();
 		let extrinsics_root = extrinsics_data_root::<T::Hashing>(extrinsics);
+		#[cfg(feature = "std")]
+		let extrinsics_root_time = extrinsics_root_start.elapsed().as_micros();
 
 		// move block hash pruning window by one block
 		let block_hash_count = T::BlockHashCount::get();
@@ -1399,9 +1405,18 @@ impl<T: Config> Pallet<T> {
 		}
 
 		let version = T::Version::get().state_version();
+		#[cfg(feature = "std")]
+		let storage_root_start = std::time::Instant::now();
 		let storage_root = T::Hash::decode(&mut &sp_io::storage::root(version)[..])
 			.expect("Node is configured to use the same hash; qed");
-
+		#[cfg(feature = "std")]
+		let storage_root_time = storage_root_start.elapsed().as_micros();
+		#[cfg(feature = "std")]
+		log::debug!(
+			target: "mth_authorship",
+			"finalize block {} micros(extrinsic_root: {extrinsics_root_time} micros, storage_root: {storage_root_time} micros)",
+			finalize_start.elapsed().as_micros(),
+		);
 		<T::Header as traits::Header>::new(
 			number,
 			extrinsics_root,

@@ -647,13 +647,14 @@ impl<D: NativeExecutionDispatch + 'static> CodeExecutor for NativeElseWasmExecut
 			ext,
 			heap_alloc_strategy,
 			|_, mut instance, onchain_version, mut ext| {
+				let exe_start = std::time::Instant::now();
 				let onchain_version =
 					onchain_version.ok_or_else(|| Error::ApiError("Unknown version".into()))?;
 
 				let can_call_with =
 					onchain_version.can_call_with(&self.native_version.runtime_version);
 
-				if use_native && can_call_with {
+				let res = if use_native && can_call_with {
 					tracing::trace!(
 						target: "executor",
 						native = %self.native_version.runtime_version,
@@ -675,7 +676,11 @@ impl<D: NativeExecutionDispatch + 'static> CodeExecutor for NativeElseWasmExecut
 					}
 
 					with_externalities_safe(&mut **ext, move || instance.call_export(method, data))
-				}
+				};
+				let exe_time = exe_start.elapsed().as_nanos();
+				let (r, r_b, w) = ext.io_time();
+				ext.0.execute_time(method, [exe_time, r, r_b, w]);
+				res
 			},
 		);
 		(result, used_native)
