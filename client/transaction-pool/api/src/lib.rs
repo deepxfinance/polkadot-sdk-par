@@ -205,6 +205,7 @@ pub trait TransactionPool: Send + Sync {
 		at: &BlockId<Self::Block>,
 		source: TransactionSource,
 		xts: Vec<TransactionFor<Self>>,
+		multi: bool,
 	) -> PoolFuture<Vec<Result<TxHash<Self>, Self::Error>>, Self::Error>;
 
 	/// Returns a future that imports one unverified transaction to the pool.
@@ -214,6 +215,13 @@ pub trait TransactionPool: Send + Sync {
 		source: TransactionSource,
 		xt: TransactionFor<Self>,
 	) -> PoolFuture<TxHash<Self>, Self::Error>;
+
+	fn submit_multi(
+		&self,
+		at: &BlockId<Self::Block>,
+		source: TransactionSource,
+		xts: Vec<TransactionFor<Self>>,
+	) -> PoolFuture<Vec<TxHash<Self>>, Self::Error>;
 
 	/// Returns a future that import a single transaction and starts to watch their progress in the
 	/// pool.

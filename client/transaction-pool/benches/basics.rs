@@ -57,6 +57,7 @@ impl ChainApi for TestApi {
 	type Block = Block;
 	type Error = sc_transaction_pool_api::error::Error;
 	type ValidationFuture = Ready<sc_transaction_pool_api::error::Result<TransactionValidity>>;
+	type ValidationsFuture = Ready<sc_transaction_pool_api::error::Result<Vec<TransactionValidity>>>;
 	type BodyFuture = Ready<sc_transaction_pool_api::error::Result<Option<Vec<Extrinsic>>>>;
 
 	fn validate_transaction(
@@ -86,6 +87,14 @@ impl ChainApi for TestApi {
 			longevity: 10,
 			propagate: true,
 		})))
+	}
+
+	fn validate_transactions(
+		&self,
+		_at: &BlockId<Self::Block>,
+		_uxts: Vec<(TransactionSource, <Self::Block as BlockT>::Extrinsic)>,
+	) -> Self::ValidationsFuture {
+		unimplemented!()
 	}
 
 	fn block_id_to_number(

@@ -592,7 +592,7 @@ mod tests {
 			client.clone(),
 		);
 
-		block_on(txpool.submit_at(&BlockId::number(0), SOURCE, vec![extrinsic(0), extrinsic(1)]))
+		block_on(txpool.submit_at(&BlockId::number(0), SOURCE, vec![extrinsic(0), extrinsic(1)], false))
 			.unwrap();
 
 		block_on(
@@ -686,7 +686,7 @@ mod tests {
 
 		let genesis_hash = client.info().best_hash;
 
-		block_on(txpool.submit_at(&BlockId::number(0), SOURCE, vec![extrinsic(0)])).unwrap();
+		block_on(txpool.submit_at(&BlockId::number(0), SOURCE, vec![extrinsic(0)], false)).unwrap();
 
 		block_on(
 			txpool.maintain(chain_event(
@@ -753,6 +753,7 @@ mod tests {
 			&BlockId::number(0),
 			SOURCE,
 			vec![medium(0), medium(1), huge(2), medium(3), huge(4), medium(5), medium(6)],
+			false,
 		))
 		.unwrap();
 
@@ -872,7 +873,7 @@ mod tests {
 				.sum::<usize>() +
 			Vec::<Extrinsic>::new().encoded_size();
 
-		block_on(txpool.submit_at(&BlockId::number(0), SOURCE, extrinsics.clone())).unwrap();
+		block_on(txpool.submit_at(&BlockId::number(0), SOURCE, extrinsics.clone(), false)).unwrap();
 
 		block_on(txpool.maintain(chain_event(genesis_header.clone())));
 
@@ -970,6 +971,7 @@ mod tests {
 					// and some transactions that are okay.
 					.chain((0..MAX_SKIPPED_TRANSACTIONS as u64).into_iter().map(tiny))
 					.collect(),
+				false,
 			),
 		)
 		.unwrap();
@@ -1044,6 +1046,7 @@ mod tests {
 					// and some transactions that are okay.
 					.chain((0..MAX_SKIPPED_TRANSACTIONS + 2).into_iter().map(tiny))
 					.collect(),
+				false,
 			),
 		)
 		.unwrap();

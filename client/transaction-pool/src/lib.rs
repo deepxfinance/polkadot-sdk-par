@@ -258,6 +258,7 @@ where
 		at: &BlockId<Self::Block>,
 		source: TransactionSource,
 		xts: Vec<TransactionFor<Self>>,
+		multi: bool,
 	) -> PoolFuture<Vec<Result<TxHash<Self>, Self::Error>>, Self::Error> {
 		let pool = self.pool.clone();
 		let at = *at;
@@ -265,7 +266,7 @@ where
 		self.metrics
 			.report(|metrics| metrics.submitted_transactions.inc_by(xts.len() as u64));
 
-		async move { pool.submit_at(&at, source, xts).await }.boxed()
+		async move { pool.submit_at(&at, source, xts, multi).await }.boxed()
 	}
 
 	fn submit_one(
@@ -280,6 +281,20 @@ where
 		self.metrics.report(|metrics| metrics.submitted_transactions.inc());
 
 		async move { pool.submit_one(&at, source, xt).await }.boxed()
+	}
+
+	fn submit_multi(
+		&self,
+		at: &BlockId<Self::Block>,
+		source: TransactionSource,
+		xts: Vec<TransactionFor<Self>>,
+	) -> PoolFuture<Vec<TxHash<Self>>, Self::Error> {
+		let pool = self.pool.clone();
+		let at = *at;
+
+		self.metrics.report(|metrics| metrics.submitted_transactions.inc());
+
+		async move { pool.submit_multi(&at, source, xts).await }.boxed()
 	}
 
 	fn submit_and_watch(

@@ -673,6 +673,50 @@ where
 			xt.validate::<UnsignedValidator>(source, &dispatch_info, encoded_len)
 		}
 	}
+	
+	pub fn validate_transactions(
+		uxts: Vec<(TransactionSource, Block::Extrinsic)>,
+		block_hash: Block::Hash,
+	) -> Vec<TransactionValidity> {
+		sp_io::init_tracing();
+		use sp_tracing::{enter_span, within_span};
+
+		<frame_system::Pallet<System>>::initialize(
+			&(frame_system::Pallet::<System>::block_number() + One::one()),
+			&block_hash,
+			&Default::default(),
+		);
+
+		enter_span! { sp_tracing::Level::TRACE, "validate_transactions" };
+		let mut result = Vec::with_capacity(uxts.len());
+		for (source, uxt) in uxts {
+			let encoded_len = within_span! { sp_tracing::Level::TRACE, "using_encoded";
+				uxt.using_encoded(|d| d.len())
+			};
+	
+			let res= match within_span! { sp_tracing::Level::TRACE, "check";
+				uxt.check(&Default::default())
+			} {
+				Ok(xt) => {
+					let dispatch_info = within_span! { sp_tracing::Level::TRACE, "dispatch_info";
+						xt.get_dispatch_info()
+					};
+
+					if dispatch_info.class == DispatchClass::Mandatory {
+						Err(InvalidTransaction::MandatoryValidation.into())
+					} else {
+						within_span! {
+							sp_tracing::Level::TRACE, "validate";
+							xt.validate::<UnsignedValidator>(source, &dispatch_info, encoded_len)
+						}
+					}
+				},
+				Err(e) => Err(e),
+			};
+			result.push(res);
+		}
+		result
+	}
 
 	/// Start an offchain worker and generate extrinsics.
 	pub fn offchain_worker(header: &System::Header) {

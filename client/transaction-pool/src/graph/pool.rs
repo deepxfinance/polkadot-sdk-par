@@ -61,6 +61,8 @@ pub trait ChainApi: Send + Sync {
 	type Error: From<error::Error> + error::IntoPoolError;
 	/// Validate transaction future.
 	type ValidationFuture: Future<Output = Result<TransactionValidity, Self::Error>> + Send + Unpin;
+	/// Validate transactions future.
+	type ValidationsFuture: Future<Output = Result<Vec<TransactionValidity>, Self::Error>> + Send + Unpin;
 	/// Body future (since block body might be remote)
 	type BodyFuture: Future<Output = Result<Option<Vec<<Self::Block as traits::Block>::Extrinsic>>, Self::Error>>
 		+ Unpin
@@ -74,6 +76,13 @@ pub trait ChainApi: Send + Sync {
 		source: TransactionSource,
 		uxt: ExtrinsicFor<Self>,
 	) -> Self::ValidationFuture;
+
+	/// Verify extrinsics at given block.
+	fn validate_transactions(
+		&self,
+		at: &BlockId<Self::Block>,
+		uxts: Vec<(TransactionSource, ExtrinsicFor<Self>)>,
+	) -> Self::ValidationsFuture;
 
 	/// Returns a block number given the block id.
 	fn block_id_to_number(
@@ -180,9 +189,10 @@ impl<B: ChainApi, RCG: RCGroup<<B::Block as traits::Block>::Extrinsic, Error=B::
 		at: &BlockId<B::Block>,
 		source: TransactionSource,
 		xts: impl IntoIterator<Item = ExtrinsicFor<B>>,
+		multi: bool,
 	) -> Result<Vec<Result<ExtrinsicHash<B>, B::Error>>, B::Error> {
 		let xts = xts.into_iter().map(|xt| (source, xt));
-		let validated_transactions = self.verify(at, xts, CheckBannedBeforeVerify::Yes, self.api_verify_sleep_micros).await?;
+		let validated_transactions = self.verify(at, xts, CheckBannedBeforeVerify::Yes, self.api_verify_sleep_micros, multi).await?;
 		Ok(self.validated_pool.submit(validated_transactions.into_values()))
 	}
 
@@ -196,7 +206,7 @@ impl<B: ChainApi, RCG: RCGroup<<B::Block as traits::Block>::Extrinsic, Error=B::
 		xts: impl IntoIterator<Item = ExtrinsicFor<B>>,
 	) -> Result<Vec<Result<ExtrinsicHash<B>, B::Error>>, B::Error> {
 		let xts = xts.into_iter().map(|xt| (source, xt));
-		let validated_transactions = self.verify(at, xts, CheckBannedBeforeVerify::No, self.api_verify_sleep_micros).await?;
+		let validated_transactions = self.verify(at, xts, CheckBannedBeforeVerify::No, self.api_verify_sleep_micros, false).await?;
 		Ok(self.validated_pool.submit(validated_transactions.into_values()))
 	}
 
@@ -207,8 +217,23 @@ impl<B: ChainApi, RCG: RCGroup<<B::Block as traits::Block>::Extrinsic, Error=B::
 		source: TransactionSource,
 		xt: ExtrinsicFor<B>,
 	) -> Result<ExtrinsicHash<B>, B::Error> {
-		let res = self.submit_at(at, source, std::iter::once(xt)).await?.pop();
+		let res = self.submit_at(at, source, std::iter::once(xt), false).await?.pop();
 		res.expect("One extrinsic passed; one result returned; qed")
+	}
+
+	/// Imports multi unverified extrinsics to the pool
+	pub async fn submit_multi(
+		&self,
+		at: &BlockId<B::Block>,
+		source: TransactionSource,
+		xts: Vec<ExtrinsicFor<B>>,
+	) -> Result<Vec<ExtrinsicHash<B>>, B::Error> {
+		let results = self.submit_at(at, source, xts, true).await?;
+		let mut hashes = Vec::with_capacity(results.len());
+		for result in results {
+			hashes.push(result?);
+		}
+		Ok(hashes)
 	}
 
 	/// Import a single extrinsic and starts to watch its progress in the pool.
@@ -368,7 +393,7 @@ impl<B: ChainApi, RCG: RCGroup<<B::Block as traits::Block>::Extrinsic, Error=B::
 			prune_status.pruned.into_iter().map(|tx| (tx.source, tx.data.clone()));
 
 		let reverified_transactions =
-			self.verify(at, pruned_transactions, CheckBannedBeforeVerify::Yes, 0).await?;
+			self.verify(at, pruned_transactions, CheckBannedBeforeVerify::Yes, 0, false).await?;
 
 		log::trace!(target: LOG_TARGET, "Pruning at {:?}. Resubmitting transactions.", at);
 		// And finally - submit reverified transactions back to the pool
@@ -400,17 +425,22 @@ impl<B: ChainApi, RCG: RCGroup<<B::Block as traits::Block>::Extrinsic, Error=B::
 		xts: impl IntoIterator<Item = (TransactionSource, ExtrinsicFor<B>)>,
 		check: CheckBannedBeforeVerify,
 		sleep_micros: u64,
+		multi: bool,
 	) -> Result<HashMap<ExtrinsicHash<B>, ValidatedTransactionFor<B>>, B::Error> {
 		// we need a block number to compute tx validity
 		let block_number = self.resolve_block_number(at)?;
 		std::thread::sleep(Duration::from_micros(sleep_micros));
-		let res = futures::future::join_all(
-			xts.into_iter()
-				.map(|(source, xt)| self.verify_one(at, block_number, source, xt, check)),
-		)
-		.await
-		.into_iter()
-		.collect::<HashMap<_, _>>();
+		let res = if !multi {
+			futures::future::join_all(
+				xts.into_iter()
+					.map(|(source, xt)| self.verify_one(at, block_number, source, xt, check)),
+			)
+				.await
+				.into_iter()
+				.collect::<HashMap<_, _>>()
+		} else {
+			self.verify_multi(at, block_number, xts.into_iter().collect(), check).await?.into_iter().collect::<HashMap<_, _>>()
+		};
 
 		Ok(res)
 	}
@@ -466,6 +496,76 @@ impl<B: ChainApi, RCG: RCGroup<<B::Block as traits::Block>::Extrinsic, Error=B::
 		};
 
 		(hash, validity)
+	}
+
+	/// Returns future that validates single transaction at given block.
+	async fn verify_multi(
+		&self,
+		block_id: &BlockId<B::Block>,
+		block_number: NumberFor<B>,
+		xts: Vec<(TransactionSource, ExtrinsicFor<B>)>,
+		check: CheckBannedBeforeVerify,
+	) -> Result<Vec<(ExtrinsicHash<B>, ValidatedTransactionFor<B>)>, B::Error> {
+		let ignore_banned = matches!(check, CheckBannedBeforeVerify::No);
+		let mut banned_xts = Vec::new();
+		let mut verify_xts = Vec::new();
+		let mut validate_xts = Vec::new();
+		for (i, (source, xt)) in xts.into_iter().enumerate() {
+			let (hash, bytes) = self.validated_pool.api().hash_and_length(&xt);
+			if let Err(err) = self.validated_pool.check_is_known(&hash, ignore_banned) {
+				banned_xts.push((i, (hash, ValidatedTransaction::Invalid(hash, err))));
+			} else {
+				validate_xts.push((source.clone(), xt.clone()));
+				verify_xts.push((i, source, xt, hash, bytes));
+			}
+		}
+		let validation_results = self
+			.validated_pool
+			.api()
+			.validate_transactions(block_id, validate_xts)
+			.await?;
+		// {
+		// 	Ok(results) => results,
+		// 	Err(e) => verify_xts
+		// 		.iter()
+		// 		.map(|(_, _, _, hash, _)| (hash, ValidatedTransaction::Invalid(hash, e.clone())))
+		// 		.collect(),
+		// };
+		let mut result: Vec<_> = validation_results
+			.into_iter()
+			.zip(verify_xts.into_iter())
+			.map(|(validation_result, (i, source, xt, hash, bytes))| {
+				let validated = match validation_result {
+					Ok(validity) =>
+						if validity.provides.is_empty() {
+							ValidatedTransaction::Invalid(hash, error::Error::NoTagsProvided.into())
+						} else {
+							match ValidatedTransaction::valid_at::<RCG>(
+								block_number.saturated_into::<u64>(),
+								hash,
+								source,
+								xt,
+								bytes,
+								validity,
+							) {
+								Ok(valid) => valid,
+								Err(e) => ValidatedTransaction::Invalid(hash, e),
+							}
+						},
+					Err(TransactionValidityError::Invalid(e)) =>
+						ValidatedTransaction::Invalid(hash, error::Error::InvalidTransaction(e).into()),
+					Err(TransactionValidityError::Unknown(e)) =>
+						ValidatedTransaction::Unknown(hash, error::Error::UnknownTransaction(e).into()),
+				};
+				(i, (hash, validated))
+			})
+				.collect();
+		if !banned_xts.is_empty() {
+			result.extend(banned_xts);
+			result.sort_by(|a, b| a.0.cmp(&b.0));
+		}
+		let res = result.into_iter().map(|(_, r)| r).collect();
+		Ok(res)
 	}
 
 	/// get a reference to the underlying validated pool.

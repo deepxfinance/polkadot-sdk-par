@@ -403,6 +403,12 @@ impl_runtime_apis! {
 		) -> TransactionValidity {
 			Executive::validate_transaction(source, tx, block_hash)
 		}
+		fn validate_transactions(
+			txs: Vec<(TransactionSource, <Block as BlockT>::Extrinsic)>,
+			block_hash: <Block as BlockT>::Hash,
+		) -> Vec<TransactionValidity> {
+			Executive::validate_transactions(txs, block_hash)
+		}
 	}
 
 	impl sp_offchain::OffchainWorkerApi<Block> for Runtime {

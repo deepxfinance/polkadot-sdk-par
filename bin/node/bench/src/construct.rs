@@ -248,6 +248,7 @@ impl sc_transaction_pool_api::TransactionPool for Transactions {
 		_at: &BlockId<Self::Block>,
 		_source: TransactionSource,
 		_xts: Vec<TransactionFor<Self>>,
+		_multi: bool,
 	) -> PoolFuture<Vec<Result<node_primitives::Hash, Self::Error>>, Self::Error> {
 		unimplemented!()
 	}
@@ -259,6 +260,15 @@ impl sc_transaction_pool_api::TransactionPool for Transactions {
 		_source: TransactionSource,
 		_xt: TransactionFor<Self>,
 	) -> PoolFuture<TxHash<Self>, Self::Error> {
+		unimplemented!()
+	}
+
+	fn submit_multi(
+		&self,
+		_at: &BlockId<Self::Block>,
+		_source: TransactionSource,
+		_xts: Vec<TransactionFor<Self>>,
+	) -> PoolFuture<Vec<TxHash<Self>>, Self::Error> {
 		unimplemented!()
 	}
 
