@@ -76,6 +76,8 @@ pub struct ProposerFactory<A, B, C, PR, MBH> {
     thread_limit: usize,
     /// Thread transaction number per millis.
     millis_tx_rate: usize,
+    /// Thread default initialize round execute tx_number.
+    default_round_tx: usize,
     telemetry: Option<TelemetryHandle>,
     /// When estimating the block size, should the proof be included?
     include_proof_in_block_size_estimation: bool,
@@ -121,9 +123,13 @@ impl<A, B, C, MBH> ProposerFactory<A, B, C, DisableProofRecording, MBH> {
             Ok(rate) => rate.parse().expect("`MTH_MILLIS_TX_RATE` should be a usize"),
             Err(_) => 5,
         };
+        let default_round_tx: usize = match std::env::var("MTH_DEFAULT_ROUND_TX") {
+            Ok(tx) => tx.parse().expect("`MTH_DEFAULT_ROUND_TX` should be a usize"),
+            Err(_) => 0,
+        };
         info!(
             target: "mth_authorship",
-            "ProposerFactory init soft_deadline_percent: {soft_deadline_percent:?}, pool_deadline_percent: {pool_deadline_percent:?}, merge_deadline_percent: {merge_deadline_percent:?}, thread_limit: {thread_limit}, millis_tx_rate: {millis_tx_rate:?}",
+            "ProposerFactory init soft_deadline_percent: {soft_deadline_percent:?}, pool_deadline_percent: {pool_deadline_percent:?}, merge_deadline_percent: {merge_deadline_percent:?}, thread_limit: {thread_limit}, millis_tx_rate: {millis_tx_rate:?}, default_round_tx: {default_round_tx}",
         );
         ProposerFactory {
             spawn_handle: Box::new(spawn_handle),
@@ -135,6 +141,7 @@ impl<A, B, C, MBH> ProposerFactory<A, B, C, DisableProofRecording, MBH> {
             merge_deadline_percent,
             thread_limit,
             millis_tx_rate,
+            default_round_tx,
             telemetry,
             client,
             include_proof_in_block_size_estimation: false,
@@ -245,6 +252,7 @@ where
             merge_deadline_percent: self.merge_deadline_percent,
             thread_limit: self.thread_limit,
             millis_tx_rate: self.millis_tx_rate,
+            default_round_tx: self.default_round_tx,
             telemetry: self.telemetry.clone(),
             _phantom: PhantomData,
             include_proof_in_block_size_estimation: self.include_proof_in_block_size_estimation,
@@ -297,6 +305,7 @@ pub struct Proposer<B, Block: BlockT, C: ProvideRuntimeApi<Block>, A: Transactio
     merge_deadline_percent: Percent,
     thread_limit: usize,
     millis_tx_rate: usize,
+    default_round_tx: usize,
     telemetry: Option<TelemetryHandle>,
     _phantom: PhantomData<(B, PR, MBH)>,
 }
@@ -516,6 +525,8 @@ where
             inherents,
             single_group,
             thread_number,
+            self.default_round_tx,
+            self.millis_tx_rate,
         );
         let single_exe_time = single_exe_start.elapsed().as_millis();
         self.transaction_pool.remove_invalid(&single_unqueue_invalid);
@@ -704,6 +715,8 @@ where
             let init_changes = init_changes.clone();
             let init_recorder = init_recorder.clone();
             let thread_client = self.client.clone_for_execution();
+            let default_round_tx = self.default_round_tx;
+            let millis_tx_rate = self.millis_tx_rate;
             let block = self.parent_number + One::one();
             let mut res_tx = merge_tx.clone();
             self.spawn_handle.spawn_blocking(
@@ -729,6 +742,8 @@ where
                         thread_inherents,
                         pending_txs,
                         i + 1,
+                        default_round_tx,
+                        millis_tx_rate,
                     );
 
                     let (overlay, _, recorder) = thread_builder.api.take_all_changes();
@@ -748,6 +763,8 @@ where
         inherents: Vec<<Block as BlockT>::Extrinsic>,
         mut pending_txs: Vec<(usize, Arc<<A as TransactionPool>::InPoolTransaction>)>,
         thread: usize,
+        default_round_tx: usize,
+        millis_tx_rate: usize,
     ) -> (Vec<<Block as BlockT>::Extrinsic>, Vec<<A as TransactionPool>::Hash>, EndProposingReason) {
         if pending_txs.is_empty() {
             return (Vec::new(), Vec::new(), EndProposingReason::NoMoreTransactions);
@@ -767,7 +784,11 @@ where
         let total_tx = pending_txs.len();
         // thread txs should be same order with pool.
         pending_txs.sort_by(|a, b| a.0.cmp(&b.0));
-        let mut tx_number = (thread_time.as_millis() as usize * 2).min(pending_txs.len());
+        let mut tx_number = if default_round_tx > 0 {
+            default_round_tx.min(pending_txs.len())
+        } else {
+            (thread_time.as_millis() as usize * millis_tx_rate).min(pending_txs.len())
+        };
         let mut round_execute_collect = Vec::new();
         let mut should_break = None;
         let (end_reason, reason) = loop {
@@ -785,13 +806,7 @@ where
             let (results, rollback) = block_builder.push_batch(batch_txs, timeout);
             let batch_time = batch_start.elapsed().as_micros();
             let mut executed = 0usize;
-            if let Some((index, e)) = rollback {
-                let pending_tx_hash = execute_txs[index].1.hash().clone();
-                trace!("[{:?}] Invalid transaction: {}", pending_tx_hash, e);
-                unqueue_invalid.push(pending_tx_hash);
-                // drop this rollback extrinsic
-                execute_txs.remove(index);
-            } else {
+            if rollback.is_empty() {
                 executed = results.len();
                 for (_, result) in results.into_iter().enumerate() {
                     match result {
@@ -802,6 +817,24 @@ where
                         Err(e) => panic!("Err({e:?}) should Rollback"),
                     }
                 }
+            } else {
+                let mut remove_indexes = Vec::with_capacity(rollback.len());
+                for (index, e) in rollback {
+                    let pending_tx_hash = execute_txs[index].1.hash().clone();
+                    trace!("[{:?}] Invalid transaction: {}", pending_tx_hash, e);
+                    remove_indexes.push(index);
+                    unqueue_invalid.push(pending_tx_hash);
+                }
+                // drop this rollback extrinsic
+                execute_txs = execute_txs
+                    .into_iter()
+                    .enumerate()
+                    .filter_map(|(i, tx)| if remove_indexes.contains(&i) {
+                        None
+                    } else {
+                        Some(tx)
+                    })
+                    .collect();
             }
             round_execute_collect.push(executed);
             // push unexecuted extrinsic back to `pending_txs`
@@ -846,10 +879,9 @@ where
                     round_times.push(times.clone());
                 }
                 if let Some((total_t, count)) = execute_map.get_mut(&method) {
-                    total_t[0] += times[0];
-                    total_t[1] += times[1];
-                    total_t[2] += times[2];
-                    total_t[3] += times[3];
+                    for i in 0..4 {
+                        total_t[i] += times[i];
+                    }
                     *count += 1;
                 } else {
                     execute_map.insert(method, (times, 1usize));
@@ -867,12 +899,13 @@ where
             let avg = time[0] as usize / tx_num;
             let avg_io = io_time as usize / tx_num;
             let avg_rb = time[2] as usize / tx_num;
-            (*txs, avg, avg.saturating_sub(avg_io), avg_io, avg_rb)
+            let avg_w = time[3] as usize / tx_num;
+            (*txs, avg, avg.saturating_sub(avg_io), avg_io, avg_rb, avg_w)
         }).collect::<Vec<_>>();
         trace!(target: "mth_authorship", "[Execute Block {block}] Thread {thread_name} extra: {extra}({commit_time}/{rollback_time}) nanos, times(min/avg/max/count): {times:?}");
         debug!(
             target: "mth_authorship",
-            "[Execute Block {block}] Thread {thread_name} {reason}({}/{} ms) {}/{invalid}/{total_tx} executed in {} rounds([(num, avg, avg_exe, avg_io, avg_rb)]: {round_with_times:?}).",
+            "[Execute Block {block}] Thread {thread_name} {reason}({}/{} ms) {}/{invalid}/{total_tx} executed in {} rounds([(num, avg, avg_exe, avg_io, avg_rb, avg_w)]: {round_with_times:?}).",
             thread_start.elapsed().as_millis(),
             thread_time.as_millis(),
             block_builder.extrinsics.len() - inherents_len,

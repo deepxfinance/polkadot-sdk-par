@@ -272,11 +272,11 @@ where
 	}
 
 	/// Push onto the block's list of extrinsics.
-	pub fn push_batch(&mut self, xts: Vec<<Block as BlockT>::Extrinsic>, timeout: std::time::Duration) -> (Vec<Result<(), Error>>, Option<(usize, Error)>) {
+	pub fn push_batch(&mut self, xts: Vec<<Block as BlockT>::Extrinsic>, timeout: std::time::Duration) -> (Vec<Result<(), Error>>, Vec<(usize, Error)>) {
 		let parent_hash = self.parent_hash;
 		let extrinsics = &mut self.extrinsics;
 		let version = self.version;
-        let mut rollback = None;
+        let mut rollback = Vec::new();
         let mut batch_results = Vec::with_capacity(xts.len());
 
 		self.api.execute_in_transaction(|api| {
@@ -295,7 +295,7 @@ where
                                 Ok(r) => batch_results.push(Ok(r)),
                                 Err(e) => {
                                     if !e.exhausted_resources() {
-                                        rollback = Some((i, ApplyExtrinsicFailed::Validity(e).into()));
+                                        rollback.push((i, ApplyExtrinsicFailed::Validity(e).into()));
                                         break;
                                     } else {
                                         batch_results.push(Err(ApplyExtrinsicFailed::Validity(e).into()));
@@ -304,7 +304,7 @@ where
                             }
                         },
 						Err(e) => {
-                            rollback = Some((i, Error::from(e)));
+                            rollback.push((i, Error::from(e)));
 							break;
 						},
 					}
@@ -328,10 +328,8 @@ where
                                     // for multi threads execution, exhausted_resources does not matter.
                                     if !e.exhausted_resources() {
                                         // if meat other error, should roll back.
-                                        // record first roll back index.
-                                        if rollback.is_none() {
-                                            rollback= Some((i, ApplyExtrinsicFailed::Validity(e).into()));
-                                        }
+                                        // record roll back index.
+										rollback.push((i, ApplyExtrinsicFailed::Validity(e).into()));
                                     }
 									batch_results.push(Err(ApplyExtrinsicFailed::Validity(e).into()))
                                 }
@@ -339,10 +337,10 @@ where
                         }
                         (batch_results, rollback)
 					},
-					Err(e) => (vec![], Some((0, Error::from(e)))),
+					Err(e) => (vec![], vec![(0, Error::from(e))]),
 				}
 			};
-            if roll_back.is_none() {
+            if roll_back.is_empty() {
                 let mut results = Vec::new();
                 for (res, xt) in res.into_iter().zip(xts.into_iter()) {
                     results.push(match res {

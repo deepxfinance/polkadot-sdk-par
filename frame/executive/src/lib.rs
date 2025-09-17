@@ -148,6 +148,17 @@ pub type CheckedOf<E, C> = <E as Checkable<C>>::Checked;
 pub type CallOf<E, C> = <CheckedOf<E, C> as Applyable>::Call;
 pub type OriginOf<E, C> = <CallOf<E, C> as Dispatchable>::RuntimeOrigin;
 
+#[derive(Clone, Debug, Default, PartialEq)]
+pub enum BatchStrategy {
+	/// Execute all batch transactions(when time enough).
+	#[default]
+	All,
+	/// Exit if any transaction execution return error(except exhausted_resources).
+	ExitOnNoneResourceError,
+	/// Exit if any transaction execution return error.
+	ExitOnAnyError,
+}
+
 /// Main entry point for certain runtime actions as e.g. `execute_block`.
 ///
 /// Generic parameters:
@@ -580,25 +591,33 @@ where
 		Ok(r.map(|_| ()).map_err(|e| e.error))
 	}
 
-	pub fn apply_extrinsics(extrinsics: Vec<Block::Extrinsic>, _timeout: u128) -> Vec<ApplyExtrinsicResult> {
+	pub fn apply_extrinsics(extrinsics: Vec<Block::Extrinsic>, _timeout: u128, strategy: Option<BatchStrategy>) -> Vec<ApplyExtrinsicResult> {
 		#[cfg(feature = "std")]
 		let timeout = std::time::Duration::from_nanos(_timeout as u64);
 		#[cfg(feature = "std")]
 		let start = std::time::Instant::now();
+		let strategy = strategy.unwrap_or_default();
 		let mut result = Vec::new();
 		for ext in extrinsics {
-			let res = Self::apply_extrinsic(ext);
-			if let Err(TransactionValidityError::Invalid(e)) = &res {
-				if e.exhausted_resources() {
-					result.push(res);
-					break;
-				}
-			}
-			result.push(res);
 			#[cfg(feature = "std")]
 			if start.elapsed() >= timeout {
 				break;
 			}
+			let res = Self::apply_extrinsic(ext);
+			match &res {
+				Ok(_) => (),
+				Err(TransactionValidityError::Invalid(e)) if e.exhausted_resources() => {
+					if strategy == BatchStrategy::ExitOnAnyError {
+						result.push(res);
+						break;
+					}
+				},
+				Err(_) => if strategy != BatchStrategy::All {
+					result.push(res);
+					break;
+				},
+			}
+			result.push(res);
 		}
 		result
 	}

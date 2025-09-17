@@ -376,7 +376,7 @@ impl_runtime_apis! {
 		}
 
 		fn apply_extrinsics(extrinsics: Vec<<Block as BlockT>::Extrinsic>, timeout: u128) -> sp_std::vec::Vec<ApplyExtrinsicResult> {
-			Executive::apply_extrinsics(extrinsics, timeout)
+			Executive::apply_extrinsics(extrinsics, timeout, None)
 		}
 
 		fn finalize_block() -> <Block as BlockT>::Header {
