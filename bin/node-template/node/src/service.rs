@@ -230,6 +230,7 @@ pub fn new_full(config: Configuration) -> Result<TaskManager, ServiceError> {
 				transaction_pool,
 				prometheus_registry.as_ref(),
 				telemetry.as_ref().map(|x| x.handle()),
+				<ExecutorDispatch as sc_executor::NativeExecutionDispatch>::native_version(),
 			);
 
 		let slot_duration = sc_consensus_aura::slot_duration(&*client)?;

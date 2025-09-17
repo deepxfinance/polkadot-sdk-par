@@ -8832,6 +8832,7 @@ dependencies = [
  "sp-runtime",
  "sp-state-machine",
  "sp-std",
+ "sp-version",
  "substrate-prometheus-endpoint",
  "substrate-test-runtime-client",
 ]

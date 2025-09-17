@@ -32,6 +32,7 @@ sp-io = { version = "7.0.0", path = "../../primitives/io" }
 sp-inherents = { version = "4.0.0-dev", path = "../../primitives/inherents" }
 sp-runtime = { version = "7.0.0", path = "../../primitives/runtime" }
 sp-state-machine = { version = "0.13.0", path = "../../primitives/state-machine" }
+sp-version = { version = "5.0.0", path = "../../primitives/version" }
 
 [dev-dependencies]
 env_logger = "0.11.8"

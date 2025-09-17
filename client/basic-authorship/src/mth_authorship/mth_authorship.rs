@@ -27,7 +27,7 @@ use sc_block_builder::{BlockBuilder, BlockBuilderApi, BlockBuilderProvider};
 use sc_client_api::{backend, CloneForExecution};
 use sc_telemetry::{telemetry, TelemetryHandle, CONSENSUS_INFO};
 use sc_transaction_pool_api::{InPoolTransaction, TransactionPool};
-use sp_api::{ApiExt, MergeErr, OverlayedChanges, ProofRecorder, ProvideRuntimeApi, StorageKey, StorageProof, StorageValue};
+use sp_api::{ApiExt, CallApiAt, MergeErr, OverlayedChanges, ProofRecorder, ProvideRuntimeApi, StorageKey, StorageProof, StorageValue};
 use sp_blockchain::{ApplyExtrinsicFailed::Validity, Error::ApplyExtrinsicFailed, HeaderBackend};
 use sp_consensus::{DisableProofRecording, EnableProofRecording, ProofRecording, Proposal};
 use sp_core::traits::SpawnNamed;
@@ -53,6 +53,8 @@ pub struct ProposerFactory<A, B, C, PR, MBH> {
     client: Arc<C>,
     /// The transaction pool.
     transaction_pool: Arc<A>,
+    /// Native version,
+    native_version: sp_version::NativeVersion,
     /// Prometheus Link,
     metrics: PrometheusMetrics,
     /// The default block size limit.
@@ -96,6 +98,7 @@ impl<A, B, C, MBH> ProposerFactory<A, B, C, DisableProofRecording, MBH> {
         transaction_pool: Arc<A>,
         prometheus: Option<&PrometheusRegistry>,
         telemetry: Option<TelemetryHandle>,
+        native_version: sp_version::NativeVersion,
     ) -> Self {
         let soft_deadline_percent = match std::env::var("MTH_SOFT_DEADLINE_PERCENT") {
             Ok(percent) => match percent.parse() {
@@ -134,6 +137,7 @@ impl<A, B, C, MBH> ProposerFactory<A, B, C, DisableProofRecording, MBH> {
         ProposerFactory {
             spawn_handle: Box::new(spawn_handle),
             transaction_pool,
+            native_version,
             metrics: PrometheusMetrics::new(prometheus),
             default_block_size_limit: DEFAULT_BLOCK_SIZE_LIMIT,
             soft_deadline_percent,
@@ -222,6 +226,7 @@ where
     C: BlockBuilderProvider<B, Block, C>
     + HeaderBackend<Block>
     + ProvideRuntimeApi<Block>
+    + CallApiAt<Block>
     + Send
     + Sync
     + 'static,
@@ -244,6 +249,10 @@ where
             parent_hash,
             parent_number: *parent_header.number(),
             transaction_pool: self.transaction_pool.clone(),
+            native_version: sp_version::NativeVersion {
+                runtime_version: self.native_version.runtime_version.clone(),
+                can_author_with: self.native_version.can_author_with.clone(),
+            },
             now,
             metrics: self.metrics.clone(),
             default_block_size_limit: self.default_block_size_limit,
@@ -271,6 +280,7 @@ where
     C: BlockBuilderProvider<B, Block, C>
     + HeaderBackend<Block>
     + ProvideRuntimeApi<Block>
+    + CallApiAt<Block>
     + CloneForExecution
     + Send
     + Sync
@@ -296,6 +306,7 @@ pub struct Proposer<B, Block: BlockT, C: ProvideRuntimeApi<Block>, A: Transactio
     parent_hash: Block::Hash,
     parent_number: <<Block as BlockT>::Header as HeaderT>::Number,
     transaction_pool: Arc<A>,
+    native_version: sp_version::NativeVersion,
     now: Box<dyn Fn() -> time::Instant + Send + Sync>,
     metrics: PrometheusMetrics,
     default_block_size_limit: usize,
@@ -319,6 +330,7 @@ where
     C: BlockBuilderProvider<B, Block, C>
     + HeaderBackend<Block>
     + ProvideRuntimeApi<Block>
+    + CallApiAt<Block>
     + CloneForExecution
     + Send
     + Sync
@@ -380,6 +392,7 @@ where
     C: BlockBuilderProvider<B, Block, C>
     + HeaderBackend<Block>
     + ProvideRuntimeApi<Block>
+    + CallApiAt<Block>
     + Send
     + Sync
     + 'static,
@@ -401,6 +414,15 @@ where
     {
         let propose_with_start = time::Instant::now();
         let deadline = (self.now)() + max_duration;
+        let mut thread_limit = self.thread_limit;
+        let mut native = true;
+        // if native version not latest, we can only execute in single thread.
+        let onchain_version = CallApiAt::runtime_version_at(&*self.client, self.parent_hash)
+            .map_err(|e| sp_blockchain::Error::RuntimeApiError(e))?;
+        if !onchain_version.can_call_with(&self.native_version.runtime_version) {
+            thread_limit = 1;
+            native = false;
+        }
         // 1. initialize main thread
         let mut block_builder =
             self.client.new_block_at(self.parent_hash.clone(), inherent_digests.clone(), PR::ENABLED)?;
@@ -444,6 +466,7 @@ where
             } else {
                 0
             },
+            thread_limit,
         )
             .await
             .unwrap();
@@ -580,7 +603,7 @@ where
 
         info!(
 			"🎁 Prepared block for proposing at {} [{}/{} ms ({}({}) {mth_time}({extra_merge_time}) {single_exe_time} {finalize_exe_time})ms] \
-			[hash: {:?}; parent_hash: {}; extrinsics [({mth_applied}/{mth_invalid})/({}/{})/{extrinsic_count}], threads {thread_number}]",
+			[hash: {:?}; parent_hash: {}; native: {native}; extrinsics [({mth_applied}/{mth_invalid})/({}/{})/{extrinsic_count}], threads {thread_number}]",
 			block.header().number(),
 			propose_with_start.elapsed().as_millis(),
             max_duration.as_millis(),
@@ -618,6 +641,7 @@ where
         block_size_limit: usize,
         mut block_size: usize,
         mut proof_size: usize,
+        thread_limit: usize,
     ) -> Result<(Vec<Vec<(usize, Arc<<A as TransactionPool>::InPoolTransaction>)>>, Vec<(usize, Arc<<A as TransactionPool>::InPoolTransaction>)>, usize, (u128, u128, u128)), String> {
         let pool_timer = time::Instant::now();
         let block = self.parent_number + One::one();
@@ -638,7 +662,7 @@ where
         let execute_percent = self.soft_deadline_percent.saturating_sub(self.pool_deadline_percent).saturating_sub(self.merge_deadline_percent);
         let execute_time = execute_percent.mul_floor(left_micros) / 1000;
         let thread_tx_limit = execute_time as usize * self.millis_tx_rate;
-        let tx_limit = thread_tx_limit * self.thread_limit;
+        let tx_limit = thread_tx_limit * thread_limit;
         let pool_time = time::Duration::from_micros(self.pool_deadline_percent.mul_floor(left_micros));
         let pool_deadline = time::Instant::now() + pool_time;
 
@@ -687,7 +711,7 @@ where
             proof_size += 0;
             pool_extrinsic_count += 1;
         }
-        let (mut group_txs, raw_groups, sort_time) = grouper.group(self.thread_limit);
+        let (mut group_txs, raw_groups, sort_time) = grouper.group(thread_limit);
         let mut single_group: Vec<_> = grouper.single_group();
         if group_txs.len() == 1 {
             single_group = [group_txs.pop().unwrap(), single_group].concat();
