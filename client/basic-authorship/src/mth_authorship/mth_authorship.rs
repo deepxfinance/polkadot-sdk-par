@@ -899,14 +899,15 @@ where
         let total_tx = pending_txs.len();
         // thread txs should be same order with pool.
         pending_txs.sort_by(|a, b| a.0.cmp(&b.0));
-        let mut tx_number = if default_round_tx > 0 {
-            default_round_tx.min(pending_txs.len())
-        } else {
-            (thread_time.as_millis() as usize * millis_tx_rate).min(pending_txs.len())
-        };
         let mut round_execute_collect = Vec::new();
         let mut should_break = None;
+        let mut tx_number = if default_round_tx > 0 {
+            default_round_tx
+        } else {
+            thread_time.as_millis() as usize * millis_tx_rate
+        };
         let (end_reason, reason) = loop {
+            tx_number = tx_number.min(pending_txs.len());
             if pending_txs.is_empty() {
                 break (EndProposingReason::NoMoreTransactions, "NoMoreTransactions")
             }
@@ -919,7 +920,6 @@ where
             let batch_start = time::Instant::now();
             let timeout = thread_deadline.duration_since(batch_start);
             let (results, rollback) = block_builder.push_batch(batch_txs, timeout);
-            let batch_time = batch_start.elapsed().as_micros();
             let mut executed = 0usize;
             if rollback.is_empty() {
                 executed = results.len();
@@ -953,11 +953,6 @@ where
             if let Some(break_reason) = should_break {
                 break (break_reason, "HitBlockWeightLimit");
             }
-            let average_micros =  batch_time / (executed as u128).max(1);
-            let remain_micros = thread_deadline.saturating_duration_since(time::Instant::now()).as_micros();
-            tx_number = ((remain_micros / average_micros) as usize / 2)
-                .max(1)
-                .min(pending_txs.len());
         };
         Self::thread_finish_log(block, &thread_name, thread_start, thread_time, reason, &block_builder, total_tx, inherents.len(), unqueue_invalid.len(), round_execute_collect);
         (block_builder.extrinsics.clone(), unqueue_invalid, end_reason)
