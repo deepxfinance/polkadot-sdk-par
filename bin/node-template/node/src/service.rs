@@ -10,6 +10,7 @@ use sc_telemetry::{Telemetry, TelemetryWorker};
 use sp_consensus_aura::sr25519::AuthorityPair as AuraPair;
 use std::{sync::Arc, time::Duration};
 use sc_transaction_pool::FullPool;
+use crate::extend_extrinsic::ExtendTx;
 use crate::merge_handler::MergeHandler;
 use crate::transaction_group::DefaultRCGroup;
 
@@ -223,7 +224,7 @@ pub fn new_full(config: Configuration) -> Result<TaskManager, ServiceError> {
 	})?;
 
 	if role.is_authority() {
-		let proposer_factory: sc_basic_authorship::MTHProposerFactory<_, _, _, _, MergeHandler> =
+		let proposer_factory: sc_basic_authorship::MTHProposerFactory<_, _, _, _, MergeHandler, ExtendTx> =
 			sc_basic_authorship::MTHProposerFactory::new(
 				task_manager.spawn_handle(),
 				client.clone(),
