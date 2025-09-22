@@ -11304,6 +11304,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "sp-spot-api"
+version = "4.0.0-dev"
+dependencies = [
+ "sp-api",
+ "sp-runtime",
+ "sp-std",
+]
+
+[[package]]
 name = "sp-staking"
 version = "4.0.0-dev"
 dependencies = [
