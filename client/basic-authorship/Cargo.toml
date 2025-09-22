@@ -25,6 +25,7 @@ sc-proposer-metrics = { version = "0.10.0-dev", path = "../proposer-metrics" }
 sc-telemetry = { version = "4.0.0-dev", path = "../telemetry" }
 sc-transaction-pool-api = { version = "4.0.0-dev", path = "../../client/transaction-pool/api" }
 sp-api = { version = "4.0.0-dev", path = "../../primitives/api" }
+sp-spot-api = { version = "4.0.0-dev", path = "../../primitives/spot-api" }
 sp-blockchain = { version = "4.0.0-dev", path = "../../primitives/blockchain" }
 sp-consensus = { version = "0.10.0-dev", path = "../../primitives/consensus/common" }
 sp-core = { version = "7.0.0", path = "../../primitives/core" }

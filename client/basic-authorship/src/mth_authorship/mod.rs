@@ -4,6 +4,7 @@ pub mod merge_system;
 use std::collections::BTreeMap;
 use codec::Decode;
 use sp_api::ApiExt;
+use sp_spot_api::SpotRuntimeApi;
 use sp_runtime::traits::Block as BlockT;
 use sp_state_machine::{MergeChange, OverlayedEntry, StorageKey, StorageValue};
 pub use merge_system::*;
@@ -22,7 +23,7 @@ pub trait MultiThreadBlockBuilder<B, Block: BlockT, Api>: MergeChange<StorageKey
 pub trait ExtendExtrinsic<Extrinsic: codec::Encode> {
     /// Input runtime api with latest state.
     /// Return extrinsic with group_info
-    fn extend_extrinsic<Block: BlockT, Api: ApiExt<Block>>(api: &Api) -> Vec<(Extrinsic, Vec<Vec<u8>>)>;
+    fn extend_extrinsic<Block: BlockT, Api: ApiExt<Block> + SpotRuntimeApi<Block>>(api: &Api, hash: <Block as BlockT>::Hash) -> Vec<(Extrinsic, Vec<Vec<u8>>)>;
 }
 
 pub fn parse_entry_value<T: codec::Decode>(entry: &OverlayedEntry<Option<StorageValue>>) -> Option<T> {

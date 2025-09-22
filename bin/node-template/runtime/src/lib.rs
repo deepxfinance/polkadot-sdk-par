@@ -18,6 +18,7 @@ use sp_runtime::{
 	transaction_validity::{TransactionSource, TransactionValidity},
 	ApplyExtrinsicResult, MultiSignature,
 };
+use sp_core::{U256, H256, H160};
 use sp_std::prelude::*;
 #[cfg(feature = "std")]
 use sp_version::NativeVersion;
@@ -353,6 +354,12 @@ impl_runtime_apis! {
 
 		fn initialize_block(header: &<Block as BlockT>::Header) {
 			Executive::initialize_block(header)
+		}
+	}
+
+	impl sp_spot_api::SpotRuntimeApi<Block> for Runtime {
+		fn match_spot_orders_for(pair: Option<H256>) -> Vec<(H256, Vec<((H160, U256), Vec<(H160, U256)>)>, Vec<((H160, U256), Vec<(H160, U256)>)>)> {
+			Vec::new()
 		}
 	}
 

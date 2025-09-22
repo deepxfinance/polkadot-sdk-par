@@ -28,6 +28,7 @@ use sc_client_api::{backend, CloneForExecution};
 use sc_telemetry::{telemetry, TelemetryHandle, CONSENSUS_INFO};
 use sc_transaction_pool_api::{InPoolTransaction, TransactionPool};
 use sp_api::{ApiExt, CallApiAt, MergeErr, OverlayedChanges, ProofRecorder, ProvideRuntimeApi, StorageKey, StorageProof, StorageValue};
+use sp_spot_api::SpotRuntimeApi;
 use sp_blockchain::{ApplyExtrinsicFailed::Validity, Error::ApplyExtrinsicFailed, HeaderBackend};
 use sp_consensus::{DisableProofRecording, EnableProofRecording, ProofRecording, Proposal};
 use sp_core::traits::SpawnNamed;
@@ -253,7 +254,7 @@ where
     + Sync
     + 'static,
     C::Api:
-    ApiExt<Block, StateBackend = backend::StateBackendFor<B, Block>> + BlockBuilderApi<Block>,
+    ApiExt<Block, StateBackend = backend::StateBackendFor<B, Block>> + BlockBuilderApi<Block> + SpotRuntimeApi<Block>,
     MBH: MultiThreadBlockBuilder<B, Block, C::Api>,
     E: ExtendExtrinsic<Block::Extrinsic> + Send + Sync + 'static,
 {
@@ -311,7 +312,7 @@ where
     + Sync
     + 'static,
     C::Api:
-    ApiExt<Block, StateBackend = backend::StateBackendFor<B, Block>> + BlockBuilderApi<Block>,
+    ApiExt<Block, StateBackend = backend::StateBackendFor<B, Block>> + BlockBuilderApi<Block> + SpotRuntimeApi<Block>,
     PR: ProofRecording,
     MBH: MultiThreadBlockBuilder<B, Block, C::Api> + Send + Sync + 'static,
     E: ExtendExtrinsic<Block::Extrinsic> + Send + Sync + 'static,
@@ -364,7 +365,7 @@ where
     + Sync
     + 'static,
     C::Api:
-    ApiExt<Block, StateBackend = backend::StateBackendFor<B, Block>> + BlockBuilderApi<Block>,
+    ApiExt<Block, StateBackend = backend::StateBackendFor<B, Block>> + BlockBuilderApi<Block> + SpotRuntimeApi<Block>,
     PR: ProofRecording,
     MBH: MultiThreadBlockBuilder<B, Block, C::Api> + Send + Sync + 'static,
     E: ExtendExtrinsic<Block::Extrinsic> + Send + Sync + 'static,
@@ -426,7 +427,7 @@ where
     + Sync
     + 'static,
     C::Api:
-    ApiExt<Block, StateBackend = backend::StateBackendFor<B, Block>> + BlockBuilderApi<Block>,
+    ApiExt<Block, StateBackend = backend::StateBackendFor<B, Block>> + BlockBuilderApi<Block> + SpotRuntimeApi<Block>,
     PR: ProofRecording,
     MBH: MultiThreadBlockBuilder<B, Block, C::Api> + Send + Sync + 'static,
     E: ExtendExtrinsic<Block::Extrinsic> + Send + Sync + 'static,
@@ -513,7 +514,6 @@ where
             self.parent_number + One::one(),
             &mut block_builder,
             self.soft_deadline_percent.mul_floor(max_duration.as_micros()),
-            &self.soft_deadline_percent,
             &self.merge_deadline_percent,
             extrinsic_group
                 .into_iter()
@@ -535,7 +535,6 @@ where
             (self.soft_deadline_percent + self.extend_deadline_percent)
                 .mul_floor(max_duration.as_micros())
                 .saturating_sub(propose_with_start.elapsed().as_micros()),
-            &self.extend_deadline_percent,
             &self.extend_merge_deadline_percent,
             extend_extrinsic_group
                 .into_iter()
@@ -718,8 +717,7 @@ where
         &self,
         block: <<Block as BlockT>::Header as HeaderT>::Number,
         block_builder: &mut BlockBuilder<'a, Block, C, B>,
-        hard_deadline_micros: u128,
-        execute_deadline_percent: &Percent,
+        multi_single_micros: u128,
         merge_deadline_percent: &Percent,
         multi_groups: Vec<Vec<(usize, Option<<A as TransactionPool>::Hash>, Block::Extrinsic)>>,
         single_group: Vec<(usize, Option<<A as TransactionPool>::Hash>, Block::Extrinsic)>,
@@ -735,7 +733,6 @@ where
         let mut max_mth_length = 0u32;
         multi_groups.iter().for_each(|g| max_mth_length = max_mth_length.max(g.len() as u32));
 
-        let multi_single_micros = execute_deadline_percent.mul_floor(hard_deadline_micros);
         let merge_deadline_time = merge_deadline_percent.mul_floor(multi_single_micros);
         let execute_time: u64 = multi_single_micros.saturating_sub(merge_deadline_time).saturated_into();
 
@@ -751,7 +748,7 @@ where
         let thread_number = multi_groups.len();
         debug!(
             target: "mth_authorship",
-            "[Execute Block {block}] ExecuteLimits: threads {thread_number}, mth_exe(mth_merge) {}({}) ms, single_exe {} ms, total execute_deadline {} ms({execute_deadline_percent:?})",
+            "[Execute Block {block}] ExecuteLimits: threads {thread_number}, mth_exe(mth_merge) {}({}) ms, single_exe {} ms, total execute_deadline {} ms",
             mth_execute_time.as_millis(),
             mth_merge_time.as_millis(),
             single_time.as_millis(),
@@ -890,12 +887,14 @@ where
         }
         let thread_start = time::Instant::now();
         let thread_time = thread_deadline.saturating_duration_since(thread_start);
+        debug!(target: "mth_authorship", "[Execute Block {block}] Thread {thread_name} start with time limit {} micros", thread_time.as_micros());
         if block_builder.extrinsics.is_empty() {
             for inherent in inherents.clone() {
                 block_builder.push(inherent).unwrap();
             }
         }
         let mut unqueue_invalid = Vec::new();
+        let initial_applied = block_builder.extrinsics.len();
         let total_tx = pending_txs.len();
         // thread txs should be same order with pool.
         pending_txs.sort_by(|a, b| a.0.cmp(&b.0));
@@ -954,7 +953,8 @@ where
                 break (break_reason, "HitBlockWeightLimit");
             }
         };
-        Self::thread_finish_log(block, &thread_name, thread_start, thread_time, reason, &block_builder, total_tx, inherents.len(), unqueue_invalid.len(), round_execute_collect);
+        let applied = block_builder.extrinsics.len() - initial_applied;
+        Self::thread_finish_log(block, &thread_name, thread_start, thread_time, reason, &block_builder, applied, unqueue_invalid.len(), total_tx, round_execute_collect);
         (block_builder.extrinsics.clone(), unqueue_invalid, end_reason)
     }
 
@@ -965,9 +965,9 @@ where
         thread_time: time::Duration,
         reason: &str,
         block_builder: &BlockBuilder<Block, C, B>,
-        total_tx: usize,
-        inherents_len: usize,
+        applied: usize,
         invalid: usize,
+        total_tx: usize,
         round_execute_collect: Vec<usize>,
     ) {
         let times = |block_builder: &BlockBuilder<Block, C, B>, _thread: &String| -> (Vec<[u128; 4]>, Vec<(String, [u128; 4], usize)>, u128, u128, u128) {
@@ -1009,10 +1009,9 @@ where
         trace!(target: "mth_authorship", "[Execute Block {block}] Thread {thread_name} extra: {extra}({commit_time}/{rollback_time}) nanos, times(min/avg/max/count): {times:?}");
         debug!(
             target: "mth_authorship",
-            "[Execute Block {block}] Thread {thread_name} {reason}({}/{} ms) {}/{invalid}/{total_tx} executed in {} rounds([(num, avg, avg_exe, avg_io, avg_rb, avg_w)]: {round_with_times:?}).",
+            "[Execute Block {block}] Thread {thread_name} {reason}({}/{} ms) {applied}/{invalid}/{total_tx} executed in {} rounds([(num, avg, avg_exe, avg_io, avg_rb, avg_w)]: {round_with_times:?}).",
             thread_start.elapsed().as_millis(),
             thread_time.as_millis(),
-            block_builder.extrinsics.len() - inherents_len,
             round_execute_collect.len(),
         );
     }
@@ -1188,7 +1187,7 @@ where
         thread_limit: usize,
     ) -> (Vec<Vec<(usize, Block::Extrinsic)>>, Vec<(usize, Block::Extrinsic)>, usize, (u128, u128)) {
         let extra_timer = time::Instant::now();
-        let extrinsics = E::extend_extrinsic(&*block_builder.api);
+        let extrinsics = E::extend_extrinsic(&*block_builder.api, block_builder.parent_hash);
         let mut grouper = ConflictGroup::new();
         for (index, (extrinsic, group_info)) in extrinsics.into_iter().enumerate() {
             grouper.insert(group_info, (index, extrinsic));
