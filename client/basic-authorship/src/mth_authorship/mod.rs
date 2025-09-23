@@ -23,7 +23,7 @@ pub trait MultiThreadBlockBuilder<B, Block: BlockT, Api>: MergeChange<StorageKey
 pub trait ExtendExtrinsic<Extrinsic: codec::Encode> {
     /// Input runtime api with latest state.
     /// Return extrinsic with group_info
-    fn extend_extrinsic<Block: BlockT, Api: ApiExt<Block> + SpotRuntimeApi<Block>>(api: &Api, hash: <Block as BlockT>::Hash) -> Vec<(Extrinsic, Vec<Vec<u8>>)>;
+    fn extend_extrinsic<Block: BlockT, Api: ApiExt<Block> + SpotRuntimeApi<Block>>(api: &Api, hash: <Block as BlockT>::Hash) -> Vec<Extrinsic>;
 }
 
 pub fn parse_entry_value<T: codec::Decode>(entry: &OverlayedEntry<Option<StorageValue>>) -> Option<T> {

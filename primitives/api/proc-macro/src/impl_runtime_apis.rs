@@ -362,6 +362,13 @@ fn generate_runtime_api_base_structures() -> Result<TokenStream> {
 				self.storage_transaction_cache = core::cell::RefCell::new(storage_transaction_cache);
 			}
 
+			fn top_keys_by_prefix(&self, prefix: &#crate_::StorageKey) -> Vec<#crate_::StorageKey>
+			where
+				Self: Sized
+			{
+				std::cell::RefCell::borrow(&self.changes).top_keys_by_prefix(prefix)
+			}
+
 			fn get_top_change(&self, key: &#crate_::StorageKey) -> std::option::Option<std::option::Option<#crate_::StorageValue>>
 			where
 				Self: Sized

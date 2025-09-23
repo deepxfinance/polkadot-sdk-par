@@ -597,6 +597,10 @@ pub trait ApiExt<Block: BlockT> {
 	fn execute_times(&self) -> (Vec<(Vec<u8>, [u128; 4])>, (u128, u128))
 	where
 		Self: Sized;
+
+	fn top_keys_by_prefix(&self, prefix: &StorageKey) -> Vec<StorageKey>
+	where
+		Self: Sized;
 	
 	fn get_top_change(&self, key: &StorageKey) -> Option<Option<StorageValue>>
 	where

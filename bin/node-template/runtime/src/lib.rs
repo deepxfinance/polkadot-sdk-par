@@ -358,7 +358,7 @@ impl_runtime_apis! {
 	}
 
 	impl sp_spot_api::SpotRuntimeApi<Block> for Runtime {
-		fn match_spot_orders_for(pair: Option<H256>) -> Vec<(H256, Vec<((H160, U256), Vec<(H160, U256)>)>, Vec<((H160, U256), Vec<(H160, U256)>)>)> {
+		fn match_spot_orders_for(_pair: Option<H256>) -> Vec<(H256, Vec<((H160, U256), Vec<(H160, U256)>)>, Vec<((H160, U256), Vec<(H160, U256)>)>)> {
 			Vec::new()
 		}
 	}

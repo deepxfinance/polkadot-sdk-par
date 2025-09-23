@@ -76,10 +76,6 @@ pub struct ProposerFactory<A, B, C, PR, MBH, E> {
     pool_deadline_percent: Percent,
     /// Merge execute result percentage of soft_deadline_percent.
     merge_deadline_percent: Percent,
-    /// Extra time percent after soft_deadline_percent.
-    extend_deadline_percent: Percent,
-    /// Merge execute result percentage of extend_deadline_percent.
-    extend_merge_deadline_percent: Percent,
     /// Parallel threads limit for execution(not greater thran physical cpu threads).
     thread_limit: usize,
     /// Thread transaction number per millis.
@@ -123,21 +119,6 @@ impl<A, B, C, MBH, E> ProposerFactory<A, B, C, DisableProofRecording, MBH, E> {
         if merge_deadline_percent.mul(soft_deadline_percent).deconstruct() + pool_deadline_percent.deconstruct() >= soft_deadline_percent.deconstruct() {
             panic!("`pool_deadline_percent` + `merge_deadline_percent` * `soft_deadline_percent` should not be greater equal than `soft_deadline_percent`");
         }
-        let extend_deadline_percent = match std::env::var("MTH_EXTEND_DEADLINE_PERCENT") {
-            Ok(percent) => match percent.parse() {
-                Ok(percent) => Percent::from_percent(percent),
-                Err(_) => (Percent::one() - soft_deadline_percent) / 2,
-            },
-            Err(_) => (Percent::one() - soft_deadline_percent) / 2,
-        };
-        if extend_deadline_percent.deconstruct() + soft_deadline_percent.deconstruct() >= 100 {
-            panic!("`soft_deadline_percent` + `extend_deadline_percent` should not be greater equal than 100%");
-        }
-        let extend_merge_deadline_percent: u8 = match std::env::var("MTH_EXTEND_MERGE_DEADLINE_PERCENT") {
-            Ok(percent) => percent.parse().unwrap_or(merge_deadline_percent.deconstruct()),
-            Err(_) => merge_deadline_percent.deconstruct(),
-        };
-        let extend_merge_deadline_percent = Percent::from_percent(extend_merge_deadline_percent);
         let mut thread_limit: usize = match std::env::var("MTH_THREAD_LIMIT") {
             Ok(limit) => limit.parse().expect("`MTH_THREAD_LIMIT` should be a usize"),
             Err(_) => num_cpus::get(),
@@ -153,7 +134,7 @@ impl<A, B, C, MBH, E> ProposerFactory<A, B, C, DisableProofRecording, MBH, E> {
         };
         info!(
             target: "mth_authorship",
-            "ProposerFactory init soft_deadline_percent: {soft_deadline_percent:?}, pool_deadline_percent: {pool_deadline_percent:?}, merge_deadline_percent: {merge_deadline_percent:?}, extend_deadline_percent: {extend_deadline_percent:?}, thread_limit: {thread_limit}, millis_tx_rate: {millis_tx_rate:?}, default_round_tx: {default_round_tx}",
+            "ProposerFactory init soft_deadline_percent: {soft_deadline_percent:?}, pool_deadline_percent: {pool_deadline_percent:?}, merge_deadline_percent: {merge_deadline_percent:?}, thread_limit: {thread_limit}, millis_tx_rate: {millis_tx_rate:?}, default_round_tx: {default_round_tx}",
         );
         ProposerFactory {
             spawn_handle: Box::new(spawn_handle),
@@ -164,8 +145,6 @@ impl<A, B, C, MBH, E> ProposerFactory<A, B, C, DisableProofRecording, MBH, E> {
             soft_deadline_percent,
             pool_deadline_percent,
             merge_deadline_percent,
-            extend_merge_deadline_percent,
-            extend_deadline_percent,
             thread_limit,
             millis_tx_rate,
             default_round_tx,
@@ -283,8 +262,6 @@ where
             soft_deadline_percent: self.soft_deadline_percent,
             pool_deadline_percent: self.pool_deadline_percent,
             merge_deadline_percent: self.merge_deadline_percent,
-            extend_deadline_percent: self.extend_deadline_percent,
-            extend_merge_deadline_percent: self.extend_merge_deadline_percent,
             thread_limit: self.thread_limit,
             millis_tx_rate: self.millis_tx_rate,
             default_round_tx: self.default_round_tx,
@@ -341,8 +318,6 @@ pub struct Proposer<B, Block: BlockT, C: ProvideRuntimeApi<Block>, A: Transactio
     soft_deadline_percent: Percent,
     pool_deadline_percent: Percent,
     merge_deadline_percent: Percent,
-    extend_deadline_percent: Percent,
-    extend_merge_deadline_percent: Percent,
     thread_limit: usize,
     millis_tx_rate: usize,
     default_round_tx: usize,
@@ -513,6 +488,7 @@ where
         let (thread_number, mth_time, mth_applied, mth_invalid, extra_merge_time, single_exe_time, single_applied, single_invalid, final_end_reason) = self.multi_single_process(
             self.parent_number + One::one(),
             &mut block_builder,
+            deadline,
             self.soft_deadline_percent.mul_floor(max_duration.as_micros()),
             &self.merge_deadline_percent,
             extrinsic_group
@@ -525,28 +501,7 @@ where
         self.transaction_pool.remove_invalid(&mth_invalid);
         self.transaction_pool.remove_invalid(&single_invalid);
 
-        // 5. Run extend extrinsic
-        let (extend_extrinsic_group, single_group, _raw_groups, extend_time) = Self::extend_extrinsics(&block_builder, thread_limit);
-        let mut extend_extrinsic_count = single_group.len();
-        extend_extrinsic_count += extend_extrinsic_group.iter().map(|g| g.len()).sum::<usize>();
-        let (_, ex_mth_time, ex_mth_applied, ex_mth_invalid, ex_extra_merge_time, ex_single_exe_time, ex_single_applied, ex_single_invalid, _) = self.multi_single_process(
-            self.parent_number + One::one(),
-            &mut block_builder,
-            (self.soft_deadline_percent + self.extend_deadline_percent)
-                .mul_floor(max_duration.as_micros())
-                .saturating_sub(propose_with_start.elapsed().as_micros()),
-            &self.extend_merge_deadline_percent,
-            extend_extrinsic_group
-                .into_iter()
-                .map(|g| g.into_iter().map(|(i, tx)| (i, None, tx)).collect())
-                .collect(),
-            single_group.into_iter().map(|(i, tx)| (i, None, tx)).collect(),
-            inherents.clone(),
-        ).await?;
-        self.transaction_pool.remove_invalid(&ex_mth_invalid);
-        self.transaction_pool.remove_invalid(&ex_single_invalid);
-
-        // 6. build block by finalize block.
+        // 5. build block by finalize block.
         let block_size =
             block_builder.estimate_block_size(self.include_proof_in_block_size_estimation);
         if block_size > block_size_limit && block_builder.extrinsics.is_empty() {
@@ -556,7 +511,7 @@ where
         let (block, storage_changes, proof) = block_builder.build()?.into_inner();
         let finalize_exe_time = finalize_exe_start.elapsed().as_millis();
 
-        // 7. spawn a single execution check if env `MTH_CHECK` is true, this is just an extra check, weill not block main block build.
+        // 6. spawn a single execution check if env `MTH_CHECK` is true, this is just an extra check, weill not block main block build.
         let single_thread_check = std::env::var("MTH_CHECK").unwrap_or("false".into()).parse().unwrap_or(false);
         if single_thread_check && thread_number > 0 {
             let client = self.client.clone_for_execution();
@@ -590,22 +545,18 @@ where
         });
 
         info!(
-			"🎁 Prepared block for proposing at {} [{}/{} ms (main: {}({}) {mth_time}({extra_merge_time}) {single_exe_time}, extend: {}({}) {ex_mth_time}({ex_extra_merge_time}) {ex_single_exe_time}, finalize: {finalize_exe_time})ms] \
-			[hash: {:?}; parent_hash: {}; native: {native}; extrinsics [({mth_applied}/{})/({single_applied}/{})/({ex_mth_applied}/{})/({ex_single_applied}/{})/{}], threads {thread_number}]",
+			"🎁 Prepared block for proposing at {} [{}/{} ms ({}({}) {mth_time}({extra_merge_time}) {single_exe_time} {finalize_exe_time})ms] \
+			[hash: {:?}; parent_hash: {}; native: {native}; extrinsics [({mth_applied}/{})/({single_applied}/{})/{}], threads {thread_number}]",
 			block.header().number(),
 			propose_with_start.elapsed().as_millis(),
             max_duration.as_millis(),
             pool_time.2,
             pool_time.0,
-            extend_time.1,
-            extend_time.0,
 			<Block as BlockT>::Hash::from(block.header().hash()),
 			block.header().parent_hash(),
             mth_invalid.len(),
             single_invalid.len(),
-            ex_mth_invalid.len(),
-            ex_single_invalid.len(),
-            extrinsic_count + extend_extrinsic_count + inherent_length,
+            extrinsic_count + inherent_length,
 		);
         telemetry!(
 			self.telemetry;
@@ -717,6 +668,7 @@ where
         &self,
         block: <<Block as BlockT>::Header as HeaderT>::Number,
         block_builder: &mut BlockBuilder<'a, Block, C, B>,
+        block_deadline: time::Instant,
         multi_single_micros: u128,
         merge_deadline_percent: &Percent,
         multi_groups: Vec<Vec<(usize, Option<<A as TransactionPool>::Hash>, Block::Extrinsic)>>,
@@ -763,6 +715,7 @@ where
             // 4. execute group transaction by threads.
             self.spawn_execute_groups(
                 block_builder,
+                block_deadline.clone(),
                 mth_execute_deadline.clone(),
                 inherents.clone(),
                 multi_groups,
@@ -789,8 +742,9 @@ where
 
         // 6. execute all single thread transactions.
         let single_exe_start = time::Instant::now();
-        let (total_extrinsics, single_invalid, end_reason) = Self::execute_one_thread_txs(
+        let (single_invalid, end_reason) = Self::execute_one_thread_txs(
             self.parent_number + One::one(),
+            block_deadline,
             single_deadline,
             block_builder,
             inherents.clone(),
@@ -798,12 +752,13 @@ where
             thread_number,
             self.default_round_tx,
             self.millis_tx_rate,
+            false,
         );
         let single_exe_time = single_exe_start.elapsed().as_millis();
-        if !total_extrinsics.is_empty() || !single_invalid.is_empty() {
+        if !block_builder.extrinsics.is_empty() || !single_invalid.is_empty() {
             final_end_reason = end_reason;
         }
-        let single_applied = total_extrinsics.len().saturating_sub(mth_applied);
+        let single_applied = block_builder.extrinsics.len().saturating_sub(mth_applied).saturating_sub(inherents.len());
 
         Ok((thread_number, mth_time, mth_applied, mth_invalid_hash, extra_merge_time, single_exe_time, single_applied, single_invalid, final_end_reason))
     }
@@ -811,6 +766,7 @@ where
     fn spawn_execute_groups(
         &self,
         block_builder: &mut BlockBuilder<Block, C, B>,
+        block_deadline: time::Instant,
         mth_execute_deadline: time::Instant,
         inherents: Vec<<Block as BlockT>::Extrinsic>,
         extrinsic_group: Vec<Vec<(usize, Option<<A as TransactionPool>::Hash>, Block::Extrinsic)>>,
@@ -847,19 +803,21 @@ where
                             return;
                         }
                     };
-                    let (applied_extrinsics, unqueue_invalid, end_reason) = Self::execute_one_thread_txs(
-                        block,
+                    let (unqueue_invalid, end_reason) = Self::execute_one_thread_txs(
+                        block.clone(),
+                        block_deadline,
                         mth_execute_deadline,
                         &mut thread_builder,
-                        thread_inherents,
+                        thread_inherents.clone(),
                         pending_txs,
                         i + 1,
                         default_round_tx,
                         millis_tx_rate,
+                        false,
                     );
 
                     let (overlay, _, recorder) = thread_builder.api.take_all_changes();
-                    let changes = (vec![i + 1], overlay, recorder, applied_extrinsics, unqueue_invalid, end_reason);
+                    let changes = (vec![i + 1], overlay, recorder, thread_builder.extrinsics.clone(), unqueue_invalid, end_reason);
                     if res_tx.start_send((changes, false)).is_err() {
                         trace!("Could not send block production result to proposer!");
                     }
@@ -870,6 +828,7 @@ where
 
     fn execute_one_thread_txs(
         block: <<Block as BlockT>::Header as HeaderT>::Number,
+        block_deadline: time::Instant,
         thread_deadline: time::Instant,
         block_builder: &mut BlockBuilder<Block, C, B>,
         inherents: Vec<<Block as BlockT>::Extrinsic>,
@@ -877,9 +836,10 @@ where
         thread: usize,
         default_round_tx: usize,
         millis_tx_rate: usize,
-    ) -> (Vec<<Block as BlockT>::Extrinsic>, Vec<<A as TransactionPool>::Hash>, EndProposingReason) {
+        extend: bool,
+    ) -> (Vec<<A as TransactionPool>::Hash>, EndProposingReason) {
         if pending_txs.is_empty() {
-            return (Vec::new(), Vec::new(), EndProposingReason::NoMoreTransactions);
+            return (Vec::new(), EndProposingReason::NoMoreTransactions);
         }
         let mut thread_name = "single".to_string();
         if thread > 0 {
@@ -887,7 +847,6 @@ where
         }
         let thread_start = time::Instant::now();
         let thread_time = thread_deadline.saturating_duration_since(thread_start);
-        debug!(target: "mth_authorship", "[Execute Block {block}] Thread {thread_name} start with time limit {} micros", thread_time.as_micros());
         if block_builder.extrinsics.is_empty() {
             for inherent in inherents.clone() {
                 block_builder.push(inherent).unwrap();
@@ -954,11 +913,31 @@ where
             }
         };
         let applied = block_builder.extrinsics.len() - initial_applied;
-        Self::thread_finish_log(block, &thread_name, thread_start, thread_time, reason, &block_builder, applied, unqueue_invalid.len(), total_tx, round_execute_collect);
-        (block_builder.extrinsics.clone(), unqueue_invalid, end_reason)
+        Self::thread_finish_log(extend, block, &thread_name, thread_start, thread_time, reason, &block_builder, applied, unqueue_invalid.len(), total_tx, round_execute_collect);
+
+        // execute extend extrinsics which must execute finish.
+        if !extend {
+            let extend_extrinsics = E::extend_extrinsic(&*block_builder.api, block_builder.parent_hash);
+            let round_tx_number = extend_extrinsics.len();
+            let (_extend_unqueue_invalid, _extend_end_reason) = Self::execute_one_thread_txs(
+                block,
+                block_deadline,
+                block_deadline,
+                block_builder,
+                inherents,
+                extend_extrinsics.into_iter().enumerate().map(|(i, tx)| (i, None, tx)).collect(),
+                thread,
+                round_tx_number,
+                millis_tx_rate,
+                true,
+            );
+        }
+
+        (unqueue_invalid, end_reason)
     }
 
     fn thread_finish_log(
+        extend: bool,
         block: <<Block as BlockT>::Header as HeaderT>::Number,
         thread_name: &String,
         thread_start: time::Instant,
@@ -995,6 +974,7 @@ where
             times.sort_by(|a, b| b.1[0].cmp(&a.1[0]));
             (round_times, times, execute_time_count, commit_time, rollback_time)
         };
+        let thread_name = if extend { format!("{thread_name}-extend") } else { thread_name.clone() };
         let (round_times, times, execute_time, commit_time, rollback_time) = times(&block_builder, &thread_name);
         let extra = thread_start.elapsed().as_nanos().saturating_sub(execute_time);
         let round_with_times = round_execute_collect.iter().zip(round_times.into_iter()).map(|(txs, time)| {
@@ -1180,25 +1160,6 @@ where
         to.4.extend(from.4.clone());
         to.5 = from.5;
         Ok((to, to_threads, from.0))
-    }
-
-    fn extend_extrinsics(
-        block_builder: &BlockBuilder<Block, C, B>,
-        thread_limit: usize,
-    ) -> (Vec<Vec<(usize, Block::Extrinsic)>>, Vec<(usize, Block::Extrinsic)>, usize, (u128, u128)) {
-        let extra_timer = time::Instant::now();
-        let extrinsics = E::extend_extrinsic(&*block_builder.api, block_builder.parent_hash);
-        let mut grouper = ConflictGroup::new();
-        for (index, (extrinsic, group_info)) in extrinsics.into_iter().enumerate() {
-            grouper.insert(group_info, (index, extrinsic));
-        }
-        let (mut group_txs, raw_groups, sort_time) = grouper.group(thread_limit);
-        let mut single_group: Vec<_> = grouper.single_group();
-        if group_txs.len() == 1 {
-            single_group = [group_txs.pop().unwrap(), single_group].concat();
-        }
-        let extra_time = extra_timer.elapsed().as_micros();
-        (group_txs, single_group, raw_groups, (sort_time, extra_time))
     }
 
     async fn one_thread_build_check(

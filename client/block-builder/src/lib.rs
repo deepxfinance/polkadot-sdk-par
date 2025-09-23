@@ -146,6 +146,7 @@ pub struct BlockBuilder<'a, Block: BlockT, A: ProvideRuntimeApi<Block>, B> {
 	pub extrinsics: Vec<Block::Extrinsic>,
 	/// Runtime api env.
 	pub api: ApiRef<'a, A::Api>,
+	/// api_version.
 	pub version: u32,
 	/// parent hash
 	pub parent_hash: Block::Hash,
@@ -212,13 +213,14 @@ where
 		})
 	}
 
+	/// Create new BlockBuilder with other state.
 	pub fn new_with_other(
 		api: &'a A,
 		parent_hash: Block::Hash,
 		estimated_header_size: usize,
 		backend: &'a B,
 	) -> Result<Self, Error> {
-		let mut api = api.runtime_api();
+		let api = api.runtime_api();
 		let version = api
 			.api_version::<dyn BlockBuilderApi<Block>>(parent_hash)?
 			.ok_or_else(|| Error::VersionInvalid("BlockBuilderApi".to_string()))?;

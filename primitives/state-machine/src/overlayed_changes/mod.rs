@@ -170,11 +170,31 @@ impl OverlayedChanges {
 		Vec::new()
 	}
 
+	// get all top changes' key which start with prefix.
+	pub fn top_keys_by_prefix(&self, prefix: &StorageKey) -> Vec<StorageKey> {
+		let mut previous_key = prefix.clone();
+		let mut keys = Vec::new();
+		loop {
+			match self.top
+				.changes_after(&previous_key)
+				.find_map(|(k, v)| v.value().map(|_| k.to_vec()))
+				.filter(|n| n.starts_with(prefix))
+			{
+				Some(key) => {
+					previous_key = key.clone();
+					keys.push(key);
+				}
+				None => break,
+			}
+		}
+		keys
+	}
+
 	/// get keys for top changes.
 	pub fn top_keys(&self) -> Vec<StorageKey> {
 		self.top.changes().map(|(k, _)| k.clone()).collect()
 	}
-	
+
 	/// get top change for some key
 	pub fn top_change(&self, key: &StorageKey) -> Option<Option<StorageValue>> {
 		self.top.get(key).map(|e| e.value_ref().clone())
