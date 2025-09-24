@@ -26,6 +26,7 @@
 
 #![warn(missing_docs)]
 
+use std::sync::Arc;
 use codec::Encode;
 
 use sp_api::{
@@ -151,7 +152,7 @@ pub struct BlockBuilder<'a, Block: BlockT, A: ProvideRuntimeApi<Block>, B> {
 	/// parent hash
 	pub parent_hash: Block::Hash,
 	/// backend
-	pub backend: &'a B,
+	pub backend: &'a Arc<B>,
 	/// The estimated size of the block header.
 	pub estimated_header_size: usize,
 }
@@ -175,7 +176,7 @@ where
 		parent_number: NumberFor<Block>,
 		record_proof: RecordProof,
 		inherent_digests: Digest,
-		backend: &'a B,
+		backend: &'a Arc<B>,
 	) -> Result<Self, Error> {
 		let header = <<Block as BlockT>::Header as HeaderT>::new(
 			parent_number + One::one(),
@@ -218,7 +219,7 @@ where
 		api: &'a A,
 		parent_hash: Block::Hash,
 		estimated_header_size: usize,
-		backend: &'a B,
+		backend: &'a Arc<B>,
 	) -> Result<Self, Error> {
 		let api = api.runtime_api();
 		let version = api

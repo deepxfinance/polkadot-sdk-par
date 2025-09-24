@@ -2,6 +2,7 @@ pub mod mth_authorship;
 pub mod merge_system;
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 use codec::Decode;
 use sp_api::ApiExt;
 use sp_spot_api::SpotRuntimeApi;
@@ -13,7 +14,7 @@ pub use mth_authorship::*;
 /// Extended merge help trat for better handle state merge.
 pub trait MultiThreadBlockBuilder<B, Block: BlockT, Api>: MergeChange<StorageKey, Option<StorageValue>> + Default {
     /// Pre handle the state for future [MergeChange::merge_changes]
-    fn prepare(&mut self, _backend: &B, _parent: &Block::Hash, _api: &Api) {}
+    fn prepare(&mut self, _backend: &Arc<B>, _parent: &Block::Hash, _api: &Api) {}
 
     /// Copy a new Self for another spawn merge work.
     fn copy_state(&self) -> Self;

@@ -1,36 +1,54 @@
 use std::collections::BTreeMap;
+use std::marker::PhantomData;
+use std::sync::Arc;
 use node_template_runtime::RuntimeEvent;
 use sc_basic_authorship::{MergeSystem, MultiThreadBlockBuilder};
 use sc_client_api::Backend;
 use sp_api::{ApiExt, MergeChange, OverlayedEntry, StorageKey, StorageValue};
 use sp_runtime::traits::Block as BlockT;
+use crate::merge_backend::MergeBackend;
 use crate::merge_balances::MergeBalances;
 
-#[derive(Default)]
-pub struct MergeHandler {
+pub struct MergeHandler<B, Block: BlockT> {
     pub balances: MergeBalances,
     pub system: MergeSystem<RuntimeEvent>,
+    pub backend: MergeBackend<B, Block>,
+    phantom: PhantomData<Block>,
 }
 
-impl<B, Block, Api: ApiExt<Block>> MultiThreadBlockBuilder<B, Block, Api> for MergeHandler
+impl<B, Block: BlockT> Default for MergeHandler<B, Block> {
+    fn default() -> Self {
+        Self {
+            balances: MergeBalances::default(),
+            system: MergeSystem::default(),
+            backend: MergeBackend::default(),
+            phantom: PhantomData,
+        }
+    }
+}
+
+impl<B, Block, Api: ApiExt<Block>> MultiThreadBlockBuilder<B, Block, Api> for MergeHandler<B, Block>
 where
     B: Backend<Block>,
     Block: BlockT,
 {
-    fn prepare(&mut self, backend: &B, parent: &Block::Hash, api: &Api) {
+    fn prepare(&mut self, backend: &Arc<B>, parent: &Block::Hash, api: &Api) {
         <MergeBalances as MultiThreadBlockBuilder<B, Block, Api>>::prepare(&mut self.balances, backend, parent, api);
         <MergeSystem<RuntimeEvent> as MultiThreadBlockBuilder<B, Block, Api>>::prepare(&mut self.system, backend, parent, api);
+        <MergeBackend<B, Block> as MultiThreadBlockBuilder<B, Block, Api>>::prepare(&mut self.backend, backend, parent, api);
     }
 
     fn copy_state(&self) -> Self {
         Self {
             balances: <MergeBalances as MultiThreadBlockBuilder<B, Block, Api>>::copy_state(&self.balances),
             system: <MergeSystem<RuntimeEvent> as MultiThreadBlockBuilder<B, Block, Api>>::copy_state(&self.system),
+            backend: <MergeBackend<B, Block> as MultiThreadBlockBuilder<B, Block, Api>>::copy_state(&self.backend),
+            phantom: PhantomData,
         }
     }
 }
 
-impl MergeChange<StorageKey, Option<StorageValue>> for MergeHandler {
+impl<B: Backend<Block>, Block: BlockT> MergeChange<StorageKey, Option<StorageValue>> for MergeHandler<B, Block> {
     fn merge_changes(
         &self,
         local: &mut BTreeMap<StorageKey, OverlayedEntry<Option<StorageValue>>>,
@@ -50,6 +68,7 @@ impl MergeChange<StorageKey, Option<StorageValue>> for MergeHandler {
     fn merge_weight(changes: &BTreeMap<StorageKey, OverlayedEntry<Option<StorageValue>>>) -> u32 {
         let balances_weight = <MergeBalances as MergeChange<StorageKey, Option<StorageValue>>>::merge_weight(changes);
         let system_weight = <MergeSystem<RuntimeEvent> as MergeChange<StorageKey, Option<StorageValue>>>::merge_weight(changes);
+        // let backend_weight = <MergeBackend<B, Block> as MergeChange<StorageKey, Option<StorageValue>>>::merge_weight(changes);
         balances_weight + system_weight
     }
 }

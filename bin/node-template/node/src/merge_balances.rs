@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::sync::Arc;
 use codec::{Encode, Decode};
 use frame_benchmarking::log;
 use sc_basic_authorship::{get_map_value, parse_entry_value, MultiThreadBlockBuilder};
@@ -19,7 +20,7 @@ where
     B: Backend<Block>,
     Block: BlockT,
 {
-    fn prepare(&mut self, backend: &B, parent: &Block::Hash, _api: &Api) {
+    fn prepare(&mut self, backend: &Arc<B>, parent: &Block::Hash, _api: &Api) {
         let parent_state = backend.state_at(*parent).unwrap();
         self.init_total_issuance =  parent_state
             .storage(&BALANCE_TOTAL_ISSUANCE.to_vec())
