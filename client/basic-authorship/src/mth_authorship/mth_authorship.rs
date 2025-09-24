@@ -855,6 +855,7 @@ where
         let mut unqueue_invalid = Vec::new();
         let initial_applied = block_builder.extrinsics.len();
         let total_tx = pending_txs.len();
+        let mut total_nonce_err_tx = 0usize;
         // thread txs should be same order with pool.
         pending_txs.sort_by(|a, b| a.0.cmp(&b.0));
         let mut round_execute_collect = Vec::new();
@@ -877,33 +878,38 @@ where
             let batch_txs = execute_txs.iter().map(|(_, _, e)| e.clone()).collect();
             let batch_start = time::Instant::now();
             let timeout = thread_deadline.duration_since(batch_start);
-            let (results, rollback) = block_builder.push_batch(batch_txs, timeout);
-            let mut executed = 0usize;
+            let (results, rollback, stale_or_futures) = block_builder.push_batch(batch_txs, timeout);
+            let invalid_nonce_length = stale_or_futures.len();
+            total_nonce_err_tx += invalid_nonce_length;
+            let mut executed = results.len();
+            round_execute_collect.push(executed - invalid_nonce_length);
             if rollback.is_empty() {
-                executed = results.len();
                 for (_, result) in results.into_iter().enumerate() {
                     match result {
                         Ok(()) => (),
                         Err(ApplyExtrinsicFailed(Validity(e))) if e.exhausted_resources() => {
                             should_break = Some(EndProposingReason::HitBlockWeightLimit);
-                        },
+                        }
+                        Err(ApplyExtrinsicFailed(Validity(e))) if e.stale_or_future() => (),
                         Err(e) => panic!("Err({e:?}) should Rollback"),
                     }
                 }
             } else {
-                let mut remove_offset = 0usize;
-                for (index, e) in rollback {
-                    let pending_tx_hash = execute_txs[index - remove_offset].1.clone();
-                    if let Some(invalid_hash) = pending_tx_hash {
-                        trace!("[{invalid_hash:?}] Invalid transaction: {e}");
-                        unqueue_invalid.push(invalid_hash);
-                    }
-                    // drop this rollback extrinsic
-                    execute_txs.remove(index - remove_offset);
-                    remove_offset += 1;
-                }
+                executed = 0;
             }
-            round_execute_collect.push(executed);
+            // clear invalid extrinsic.
+            let mut invalid: Vec<_> = [rollback, stale_or_futures].into_iter().flatten().collect();
+            invalid.sort_by(|a, b| a.0.cmp(&b.0));
+            let mut remove_offset = 0usize;
+            for (index, e) in invalid {
+                if let Some(invalid_hash) = &execute_txs[index - remove_offset].1 {
+                    trace!("[{invalid_hash:?}] Invalid transaction: {e}");
+                    unqueue_invalid.push(invalid_hash.clone());
+                }
+                // drop this rollback extrinsic
+                execute_txs.remove(index - remove_offset);
+                remove_offset += 1;
+            }
             // push unexecuted extrinsic back to `pending_txs`
             if execute_txs.len() > executed {
                 pending_txs = [execute_txs[executed..].to_vec(), pending_txs].concat();
@@ -913,7 +919,7 @@ where
             }
         };
         let applied = block_builder.extrinsics.len() - initial_applied;
-        Self::thread_finish_log(extend, block, &thread_name, thread_start, thread_time, reason, &block_builder, applied, unqueue_invalid.len(), total_tx, round_execute_collect);
+        Self::thread_finish_log(extend, block, &thread_name, thread_start, thread_time, reason, &block_builder, applied, unqueue_invalid.len(), total_nonce_err_tx, total_tx, round_execute_collect);
 
         // execute extend extrinsics which must execute finish.
         if !extend {
@@ -946,6 +952,7 @@ where
         block_builder: &BlockBuilder<Block, C, B>,
         applied: usize,
         invalid: usize,
+        total_nonce_err_tx: usize,
         total_tx: usize,
         round_execute_collect: Vec<usize>,
     ) {
@@ -989,9 +996,10 @@ where
         trace!(target: "mth_authorship", "[Execute Block {block}] Thread {thread_name} extra: {extra}({commit_time}/{rollback_time}) nanos, times(min/avg/max/count): {times:?}");
         debug!(
             target: "mth_authorship",
-            "[Execute Block {block}] Thread {thread_name} {reason}({}/{} ms) {applied}/{invalid}/{total_tx} executed in {} rounds([(num, avg, avg_exe, avg_io, avg_rb, avg_w)]: {round_with_times:?}).",
+            "[Execute Block {block}] Thread {thread_name} {reason}({}/{} ms) {applied}/{}/{total_nonce_err_tx}/{total_tx} executed in {} rounds([(num, avg, avg_exe, avg_io, avg_rb, avg_w)]: {round_with_times:?}).",
             thread_start.elapsed().as_millis(),
             thread_time.as_millis(),
+            invalid.saturating_sub(total_nonce_err_tx),
             round_execute_collect.len(),
         );
     }

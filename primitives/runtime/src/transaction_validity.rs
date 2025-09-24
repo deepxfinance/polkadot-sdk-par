@@ -90,6 +90,10 @@ impl InvalidTransaction {
 		matches!(self, Self::ExhaustsResources)
 	}
 
+	pub fn stale_or_future(&self) -> bool {
+		matches!(self, Self::Future | Self::Stale)
+	}
+
 	/// Returns if the reason for the invalidity was a mandatory call failing.
 	pub fn was_mandatory(&self) -> bool {
 		matches!(self, Self::BadMandatory)
@@ -156,6 +160,13 @@ impl TransactionValidityError {
 	pub fn exhausted_resources(&self) -> bool {
 		match self {
 			Self::Invalid(e) => e.exhausted_resources(),
+			Self::Unknown(_) => false,
+		}
+	}
+
+	pub fn stale_or_future(&self) -> bool {
+		match self {
+			Self::Invalid(e) => e.stale_or_future(),
 			Self::Unknown(_) => false,
 		}
 	}
