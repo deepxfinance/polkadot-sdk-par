@@ -21,10 +21,18 @@ pub trait MultiThreadBlockBuilder<B, Block: BlockT, Api>: MergeChange<StorageKey
 }
 
 /// Special trait for mth authorship used to generate extend extrinsic before finalize.
-pub trait ExtendExtrinsic<Extrinsic: codec::Encode> {
+pub trait ExtendExtrinsic {
     /// Input runtime api with latest state.
     /// Return extrinsic with group_info
-    fn extend_extrinsic<Block: BlockT, Api: ApiExt<Block> + SpotRuntimeApi<Block>>(api: &Api, hash: <Block as BlockT>::Hash) -> Vec<Extrinsic>;
+    fn extend_extrinsic<Block: BlockT, Api: ApiExt<Block> + SpotRuntimeApi<Block>>(api: &Api, hash: <Block as BlockT>::Hash) -> Vec<Block::Extrinsic>;
+}
+
+pub struct EmptyExtendTx;
+
+impl ExtendExtrinsic for EmptyExtendTx {
+    fn extend_extrinsic<Block: BlockT, Api: ApiExt<Block> + SpotRuntimeApi<Block>>(_api: &Api, _hash: <Block as BlockT>::Hash) -> Vec<Block::Extrinsic> {
+        Vec::new()
+    }
 }
 
 pub fn parse_entry_value<T: codec::Decode>(entry: &OverlayedEntry<Option<StorageValue>>) -> Option<T> {

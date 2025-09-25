@@ -235,7 +235,7 @@ where
     C::Api:
     ApiExt<Block, StateBackend = backend::StateBackendFor<B, Block>> + BlockBuilderApi<Block> + SpotRuntimeApi<Block>,
     MBH: MultiThreadBlockBuilder<B, Block, C::Api>,
-    E: ExtendExtrinsic<Block::Extrinsic> + Send + Sync + 'static,
+    E: ExtendExtrinsic + Send + Sync + 'static,
 {
     fn init_with_now(
         &mut self,
@@ -292,7 +292,7 @@ where
     ApiExt<Block, StateBackend = backend::StateBackendFor<B, Block>> + BlockBuilderApi<Block> + SpotRuntimeApi<Block>,
     PR: ProofRecording,
     MBH: MultiThreadBlockBuilder<B, Block, C::Api> + Send + Sync + 'static,
-    E: ExtendExtrinsic<Block::Extrinsic> + Send + Sync + 'static,
+    E: ExtendExtrinsic + Send + Sync + 'static,
 {
     type Proposer = Proposer<B, Block, C, A, PR, MBH, E>;
     type CreateProposer = future::Ready<Result<Self::Proposer, Self::Error>>;
@@ -304,7 +304,7 @@ where
 }
 
 /// The proposer logic.
-pub struct Proposer<B, Block: BlockT, C: ProvideRuntimeApi<Block>, A: TransactionPool, PR, MBH: MultiThreadBlockBuilder<B, Block, C::Api>, E: ExtendExtrinsic<Block::Extrinsic>> {
+pub struct Proposer<B, Block: BlockT, C: ProvideRuntimeApi<Block>, A: TransactionPool, PR, MBH: MultiThreadBlockBuilder<B, Block, C::Api>, E: ExtendExtrinsic> {
     spawn_handle: Box<dyn SpawnNamed>,
     client: Arc<C>,
     parent_hash: Block::Hash,
@@ -343,7 +343,7 @@ where
     ApiExt<Block, StateBackend = backend::StateBackendFor<B, Block>> + BlockBuilderApi<Block> + SpotRuntimeApi<Block>,
     PR: ProofRecording,
     MBH: MultiThreadBlockBuilder<B, Block, C::Api> + Send + Sync + 'static,
-    E: ExtendExtrinsic<Block::Extrinsic> + Send + Sync + 'static,
+    E: ExtendExtrinsic + Send + Sync + 'static,
 {
     type Error = sp_blockchain::Error;
     type Transaction = backend::TransactionFor<B, Block>;
@@ -405,7 +405,7 @@ where
     ApiExt<Block, StateBackend = backend::StateBackendFor<B, Block>> + BlockBuilderApi<Block> + SpotRuntimeApi<Block>,
     PR: ProofRecording,
     MBH: MultiThreadBlockBuilder<B, Block, C::Api> + Send + Sync + 'static,
-    E: ExtendExtrinsic<Block::Extrinsic> + Send + Sync + 'static,
+    E: ExtendExtrinsic + Send + Sync + 'static,
 {
     async fn propose_with(
         self,
