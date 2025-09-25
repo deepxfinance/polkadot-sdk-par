@@ -888,7 +888,9 @@ where
                     match result {
                         Ok(()) => (),
                         Err(ApplyExtrinsicFailed(Validity(e))) if e.exhausted_resources() => {
-                            should_break = Some(EndProposingReason::HitBlockWeightLimit);
+                            if !extend {
+                                should_break = Some(EndProposingReason::HitBlockWeightLimit);
+                            }
                         }
                         Err(ApplyExtrinsicFailed(Validity(e))) if e.stale_or_future() => (),
                         Err(e) => panic!("Err({e:?}) should Rollback"),
