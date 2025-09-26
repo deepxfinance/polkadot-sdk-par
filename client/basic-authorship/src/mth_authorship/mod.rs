@@ -6,6 +6,7 @@ use std::sync::Arc;
 use codec::Decode;
 use sp_api::ApiExt;
 use sp_spot_api::SpotRuntimeApi;
+use sp_perp_api::PerpRuntimeApi;
 use sp_runtime::traits::Block as BlockT;
 use sp_state_machine::{MergeChange, OverlayedEntry, StorageKey, StorageValue};
 pub use merge_system::*;
@@ -24,13 +25,13 @@ pub trait MultiThreadBlockBuilder<B, Block: BlockT, Api>: MergeChange<StorageKey
 pub trait ExtendExtrinsic {
     /// Input runtime api with latest state.
     /// Return extrinsic with group_info
-    fn extend_extrinsic<Block: BlockT, Api: ApiExt<Block> + SpotRuntimeApi<Block>>(api: &Api, hash: <Block as BlockT>::Hash) -> Vec<Block::Extrinsic>;
+    fn extend_extrinsic<Block: BlockT, Api: ApiExt<Block> + SpotRuntimeApi<Block> + PerpRuntimeApi<Block>>(api: &Api, hash: <Block as BlockT>::Hash) -> Vec<Block::Extrinsic>;
 }
 
 pub struct EmptyExtendTx;
 
 impl ExtendExtrinsic for EmptyExtendTx {
-    fn extend_extrinsic<Block: BlockT, Api: ApiExt<Block> + SpotRuntimeApi<Block>>(_api: &Api, _hash: <Block as BlockT>::Hash) -> Vec<Block::Extrinsic> {
+    fn extend_extrinsic<Block: BlockT, Api: ApiExt<Block> + SpotRuntimeApi<Block> + PerpRuntimeApi<Block>>(_api: &Api, _hash: <Block as BlockT>::Hash) -> Vec<Block::Extrinsic> {
         Vec::new()
     }
 }

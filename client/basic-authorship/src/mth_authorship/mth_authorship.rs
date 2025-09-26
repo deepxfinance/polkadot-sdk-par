@@ -29,6 +29,7 @@ use sc_telemetry::{telemetry, TelemetryHandle, CONSENSUS_INFO};
 use sc_transaction_pool_api::{InPoolTransaction, TransactionPool};
 use sp_api::{ApiExt, CallApiAt, MergeErr, OverlayedChanges, ProofRecorder, ProvideRuntimeApi, StorageKey, StorageProof, StorageValue};
 use sp_spot_api::SpotRuntimeApi;
+use sp_perp_api::PerpRuntimeApi;
 use sp_blockchain::{ApplyExtrinsicFailed::Validity, Error::ApplyExtrinsicFailed, HeaderBackend};
 use sp_consensus::{DisableProofRecording, EnableProofRecording, ProofRecording, Proposal};
 use sp_core::traits::SpawnNamed;
@@ -233,7 +234,7 @@ where
     + Sync
     + 'static,
     C::Api:
-    ApiExt<Block, StateBackend = backend::StateBackendFor<B, Block>> + BlockBuilderApi<Block> + SpotRuntimeApi<Block>,
+    ApiExt<Block, StateBackend = backend::StateBackendFor<B, Block>> + BlockBuilderApi<Block> + SpotRuntimeApi<Block> + PerpRuntimeApi<Block>,
     MBH: MultiThreadBlockBuilder<B, Block, C::Api>,
     E: ExtendExtrinsic + Send + Sync + 'static,
 {
@@ -289,7 +290,7 @@ where
     + Sync
     + 'static,
     C::Api:
-    ApiExt<Block, StateBackend = backend::StateBackendFor<B, Block>> + BlockBuilderApi<Block> + SpotRuntimeApi<Block>,
+    ApiExt<Block, StateBackend = backend::StateBackendFor<B, Block>> + BlockBuilderApi<Block> + SpotRuntimeApi<Block> + PerpRuntimeApi<Block>,
     PR: ProofRecording,
     MBH: MultiThreadBlockBuilder<B, Block, C::Api> + Send + Sync + 'static,
     E: ExtendExtrinsic + Send + Sync + 'static,
@@ -340,7 +341,7 @@ where
     + Sync
     + 'static,
     C::Api:
-    ApiExt<Block, StateBackend = backend::StateBackendFor<B, Block>> + BlockBuilderApi<Block> + SpotRuntimeApi<Block>,
+    ApiExt<Block, StateBackend = backend::StateBackendFor<B, Block>> + BlockBuilderApi<Block> + SpotRuntimeApi<Block> + PerpRuntimeApi<Block>,
     PR: ProofRecording,
     MBH: MultiThreadBlockBuilder<B, Block, C::Api> + Send + Sync + 'static,
     E: ExtendExtrinsic + Send + Sync + 'static,
@@ -402,7 +403,7 @@ where
     + Sync
     + 'static,
     C::Api:
-    ApiExt<Block, StateBackend = backend::StateBackendFor<B, Block>> + BlockBuilderApi<Block> + SpotRuntimeApi<Block>,
+    ApiExt<Block, StateBackend = backend::StateBackendFor<B, Block>> + BlockBuilderApi<Block> + SpotRuntimeApi<Block> + PerpRuntimeApi<Block>,
     PR: ProofRecording,
     MBH: MultiThreadBlockBuilder<B, Block, C::Api> + Send + Sync + 'static,
     E: ExtendExtrinsic + Send + Sync + 'static,

@@ -28,6 +28,7 @@ pallet-transaction-payment = { version = "4.0.0-dev", default-features = false, 
 frame-executive = { version = "4.0.0-dev", default-features = false, path = "../../../frame/executive" }
 sp-api = { version = "4.0.0-dev", default-features = false, path = "../../../primitives/api" }
 sp-spot-api = { version = "4.0.0-dev", default-features = false, path = "../../../primitives/spot-api" }
+sp-perp-api = { version = "4.0.0-dev", default-features = false, path = "../../../primitives/perp-api" }
 sp-block-builder = { version = "4.0.0-dev", default-features = false, path = "../../../primitives/block-builder"}
 sp-consensus-aura = { version = "0.10.0-dev", default-features = false, path = "../../../primitives/consensus/aura" }
 sp-consensus-grandpa = { version = "4.0.0-dev", default-features = false, path = "../../../primitives/consensus/grandpa" }
@@ -77,6 +78,7 @@ std = [
 	"pallet-transaction-payment/std",
 	"sp-api/std",
 	"sp-spot-api/std",
+	"sp-perp-api/std",
 	"sp-block-builder/std",
 	"sp-consensus-aura/std",
 	"sp-consensus-grandpa/std",

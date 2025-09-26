@@ -5522,6 +5522,7 @@ dependencies = [
  "sp-inherents",
  "sp-io",
  "sp-keyring",
+ "sp-perp-api",
  "sp-runtime",
  "sp-spot-api",
  "sp-timestamp",
@@ -5573,6 +5574,7 @@ dependencies = [
  "sp-core",
  "sp-inherents",
  "sp-offchain",
+ "sp-perp-api",
  "sp-runtime",
  "sp-session",
  "sp-spot-api",
@@ -8831,6 +8833,7 @@ dependencies = [
  "sp-core",
  "sp-inherents",
  "sp-io",
+ "sp-perp-api",
  "sp-runtime",
  "sp-spot-api",
  "sp-state-machine",
@@ -11181,6 +11184,15 @@ dependencies = [
  "backtrace",
  "lazy_static",
  "regex",
+]
+
+[[package]]
+name = "sp-perp-api"
+version = "4.0.0-dev"
+dependencies = [
+ "sp-api",
+ "sp-runtime",
+ "sp-std",
 ]
 
 [[package]]

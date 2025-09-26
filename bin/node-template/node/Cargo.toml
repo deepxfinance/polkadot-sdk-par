@@ -51,6 +51,7 @@ jsonrpsee = { version = "0.16.2", features = ["server"] }
 sc-rpc = { version = "4.0.0-dev", path = "../../../client/rpc" }
 sp-api = { version = "4.0.0-dev", path = "../../../primitives/api" }
 sp-spot-api = { version = "4.0.0-dev", path = "../../../primitives/spot-api" }
+sp-perp-api = { version = "4.0.0-dev", path = "../../../primitives/perp-api" }
 sc-rpc-api = { version = "0.10.0-dev", path = "../../../client/rpc-api" }
 sp-blockchain = { version = "4.0.0-dev", path = "../../../primitives/blockchain" }
 sp-block-builder = { version = "4.0.0-dev", path = "../../../primitives/block-builder" }

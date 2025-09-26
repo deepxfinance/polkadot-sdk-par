@@ -363,6 +363,12 @@ impl_runtime_apis! {
 		}
 	}
 
+	impl sp_perp_api::PerpRuntimeApi<Block> for Runtime {
+		fn match_perp_orders_for(market_id: u16) -> Vec<(Vec<(H160, u32)>, Vec<(H160, u32)>, Vec<(H160, u32)>, Vec<(H160, u32)>)> {
+			Vec::new()
+		}
+	}
+
 	impl sp_api::Metadata<Block> for Runtime {
 		fn metadata() -> OpaqueMetadata {
 			OpaqueMetadata::new(Runtime::metadata().into())
