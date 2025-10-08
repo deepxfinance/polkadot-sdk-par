@@ -76,5 +76,6 @@ mod mth_authorship;
 pub use crate::mth_authorship::{
     Proposer as MTHProposer, ProposerFactory as MTHProposerFactory, MultiThreadBlockBuilder,
     MergeSystem, get_map_value, get_top_value, parse_entry_value, ExtendExtrinsic, EmptyExtendTx,
+    StepBlockPropose,
 };
 pub use crate::basic_authorship::{Proposer, ProposerFactory, DEFAULT_BLOCK_SIZE_LIMIT};

@@ -94,6 +94,10 @@ impl InvalidTransaction {
 		matches!(self, Self::Future | Self::Stale)
 	}
 
+	pub fn future(&self) -> bool {
+		self == &Self::Future
+	}
+
 	/// Returns if the reason for the invalidity was a mandatory call failing.
 	pub fn was_mandatory(&self) -> bool {
 		matches!(self, Self::BadMandatory)
@@ -167,6 +171,13 @@ impl TransactionValidityError {
 	pub fn stale_or_future(&self) -> bool {
 		match self {
 			Self::Invalid(e) => e.stale_or_future(),
+			Self::Unknown(_) => false,
+		}
+	}
+
+	pub fn future(&self) -> bool {
+		match self {
+			Self::Invalid(e) => e.future(),
 			Self::Unknown(_) => false,
 		}
 	}

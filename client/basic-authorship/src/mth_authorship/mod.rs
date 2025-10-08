@@ -5,12 +5,15 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use codec::Decode;
 use sp_api::ApiExt;
+use sp_consensus::Proposal;
 use sp_spot_api::SpotRuntimeApi;
 use sp_perp_api::PerpRuntimeApi;
 use sp_runtime::traits::Block as BlockT;
 use sp_state_machine::{MergeChange, OverlayedEntry, StorageKey, StorageValue};
 pub use merge_system::*;
 pub use mth_authorship::*;
+use sp_inherents::InherentData;
+use sp_runtime::Digest;
 
 /// Extended merge help trat for better handle state merge.
 pub trait MultiThreadBlockBuilder<B, Block: BlockT, Api>: MergeChange<StorageKey, Option<StorageValue>> + Default {
@@ -19,6 +22,35 @@ pub trait MultiThreadBlockBuilder<B, Block: BlockT, Api>: MergeChange<StorageKey
 
     /// Copy a new Self for another spawn merge work.
     fn copy_state(&self) -> Self;
+}
+
+/// Get extrinsic by grouped.
+#[async_trait::async_trait]
+pub trait StepBlockPropose<Block: BlockT>: sp_consensus::Proposer<Block> {
+    /// return all parallel extrinsic and single thread extrinsic
+    async fn extrinsic(
+        &self,
+        wait_pool: std::time::Duration,
+        deadline: std::time::Instant,
+        block_size_limit: Option<usize>,
+        except: Vec<Block::Extrinsic>,
+    ) -> (Vec<Vec<Block::Extrinsic>>, Vec<Block::Extrinsic>);
+
+    async fn step_propose(
+        self,
+        block_size_limit: Option<usize>,
+        inherent_data: InherentData,
+        inherent_digests: Digest,
+        extrinsic: (Vec<Vec<Block::Extrinsic>>, Vec<Block::Extrinsic>),
+        merge_in_thread_order: bool,
+    )
+        -> Result<
+            Proposal<
+                Block,
+                <Self as sp_consensus::Proposer<Block>>::Transaction, <Self as sp_consensus::Proposer<Block>>::Proof
+            >,
+            <Self as sp_consensus::Proposer<Block>>::Error
+        >;
 }
 
 /// Special trait for mth authorship used to generate extend extrinsic before finalize.

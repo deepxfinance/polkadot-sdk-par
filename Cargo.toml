@@ -259,6 +259,9 @@ members = [
 	"utils/prometheus",
 	"utils/wasm-builder",
 	"utils/binary-merkle-tree",
+	"hotstuff/consensus",
+	"hotstuff/pallets/hotstuff",
+	"hotstuff/primitives",
 ]
 
 # The list of dependencies below (which can be both direct and indirect dependencies) are crates

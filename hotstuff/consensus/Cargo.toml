@@ -1,0 +1,55 @@
+[package]
+name = "hotstuff-consensus"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+log = "0.4.17"
+scale-info = { version = "2.5.0", features = ["derive"] }
+serde = { version = "1.0.136", features = ["derive"] }
+codec = { package = "parity-scale-codec", version = "3.2.2", features = ["derive"] }
+async-recursion = "1.0.0"
+array-bytes = "6.1"
+futures = "0.3.21"
+tokio = { version = "1.22.0", features = ["rt", "time", "macros", "sync"] }
+async-trait = "0.1.57"
+parking_lot = "0.12.1"
+thiserror = "1.0"
+
+prometheus-endpoint = { package = "substrate-prometheus-endpoint", path = "../../utils/prometheus" }
+sc-basic-authorship = { path = "../../client/basic-authorship" }
+sc-utils = { path = "../../client/utils" }
+sc-telemetry = { path = "../../client/telemetry" }
+sc-client-api = { path = "../../client/api" }
+sc-consensus = { path = "../../client/consensus/common" }
+sc-consensus-slots = { path = "../../client/consensus/slots" }
+sc-network = { path = "../../client/network" }
+sc-network-sync = { path = "../../client/network/sync" }
+sc-network-common = { path = "../../client/network/common" }
+sc-network-gossip = { path = "../../client/network-gossip" }
+sc-chain-spec = {  path = "../../client/chain-spec" }
+sc-service = { path = "../../client/service" }
+
+sp-blockchain = { path = "../../primitives/blockchain" }
+sp-inherents = { path = "../../primitives/inherents" }
+sp-core = { path = "../../primitives/core" }
+sp-application-crypto = { path = "../../primitives/application-crypto" }
+sp-block-builder = { path = "../../primitives/block-builder" }
+sp-consensus-slots = { path = "../../primitives/consensus/slots" }
+sp-keyring = { path = "../../primitives/keyring" }
+sp-consensus = { path = "../../primitives/consensus/common" }
+sp-api = { path = "../../primitives/api" }
+sp-runtime = { path = "../../primitives/runtime" }
+sp-keystore = { path = "../../primitives/keystore" }
+sp-timestamp = { path = "../../primitives/timestamp" }
+hotstuff-primitives = { path="../primitives" }
+
+[dev-dependencies]
+tempfile = "3.8.0"
+sc-keystore = { path = "../../client/keystore" }
+sc-transaction-pool = {  path = "../../client/transaction-pool" }
+sc-network-test = { path = "../../client/network/test" }
+sp-tracing = { path = "../../primitives/tracing" }
+substrate-test-runtime-client = { path = "../../test-utils/runtime/client" }
+substrate-test-runtime = { path = "../../test-utils/runtime" }
+

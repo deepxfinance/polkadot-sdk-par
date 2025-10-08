@@ -46,6 +46,11 @@ sp-keyring = { version = "7.0.0", path = "../../../primitives/keyring" }
 frame-system = { version = "4.0.0-dev", path = "../../../frame/system" }
 pallet-transaction-payment = { version = "4.0.0-dev", default-features = false, path = "../../../frame/transaction-payment" }
 
+# Hotstuff Consensus
+hotstuff-consensus = { default-features = false, path = "../../../hotstuff/consensus" }
+pallet-hotstuff = { default-features = false, path = "../../../hotstuff/pallets/hotstuff" }
+hotstuff-primitives = { default-features = false, path = "../../../hotstuff/primitives" }
+
 # These dependencies are used for the node template's RPCs
 jsonrpsee = { version = "0.16.2", features = ["server"] }
 sc-rpc = { version = "4.0.0-dev", path = "../../../client/rpc" }

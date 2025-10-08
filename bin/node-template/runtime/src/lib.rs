@@ -6,14 +6,13 @@
 #[cfg(feature = "std")]
 include!(concat!(env!("OUT_DIR"), "/wasm_binary.rs"));
 
-use pallet_grandpa::AuthorityId as GrandpaId;
+use hotstuff_primitives::{AuthorityId as HotstuffId, Slot};
 use sp_api::impl_runtime_apis;
-use sp_consensus_aura::sr25519::AuthorityId as AuraId;
 use sp_core::{crypto::KeyTypeId, OpaqueMetadata};
 use sp_runtime::{
 	create_runtime_str, generic, impl_opaque_keys,
 	traits::{
-		AccountIdLookup, BlakeTwo256, Block as BlockT, IdentifyAccount, NumberFor, One, Verify,
+		AccountIdLookup, BlakeTwo256, Block as BlockT, IdentifyAccount, One, Verify,
 	},
 	transaction_validity::{TransactionSource, TransactionValidity},
 	ApplyExtrinsicResult, MultiSignature,
@@ -28,7 +27,7 @@ use sp_version::RuntimeVersion;
 pub use frame_support::{
 	construct_runtime, parameter_types,
 	traits::{
-		ConstU128, ConstU32, ConstU64, ConstU8, KeyOwnerProofSystem, Randomness, StorageInfo,
+		ConstU128, ConstU32, ConstU64, ConstU8, ConstBool, KeyOwnerProofSystem, Randomness, StorageInfo,
 	},
 	weights::{
 		constants::{
@@ -86,8 +85,7 @@ pub mod opaque {
 
 	impl_opaque_keys! {
 		pub struct SessionKeys {
-			pub aura: Aura,
-			pub grandpa: Grandpa,
+			pub hotstuff: Hotstuff,
 		}
 	}
 }
@@ -111,22 +109,18 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
 	state_version: 1,
 };
 
-/// This determines the average expected block time that we are targeting.
+/// This determines the minimum block time that we are targeting.
 /// Blocks will be produced at a minimum duration defined by `SLOT_DURATION`.
 /// `SLOT_DURATION` is picked up by `pallet_timestamp` which is in turn picked
-/// up by `pallet_aura` to implement `fn slot_duration()`.
+/// up by `pallet_hotstuff` to implement `fn slot_duration()`.
+/// This means the full Hotstuff consensus(Prepare/PreCommit/Commit) between two block should be g.e. than `MIN_MILLISECS_PER_BLOCK`
 ///
 /// Change this to adjust the block time.
-pub const MILLISECS_PER_BLOCK: u64 = 200;
+pub const MIN_MILLISECS_PER_BLOCK: u64 = 100;
 
 // NOTE: Currently it is not possible to change the slot duration after the chain has started.
 //       Attempting to do so will brick block production.
-pub const SLOT_DURATION: u64 = MILLISECS_PER_BLOCK;
-
-// Time is measured by number of blocks.
-pub const MINUTES: BlockNumber = 60_000 / (MILLISECS_PER_BLOCK as BlockNumber);
-pub const HOURS: BlockNumber = MINUTES * 60;
-pub const DAYS: BlockNumber = HOURS * 24;
+pub const SLOT_DURATION: u64 = MIN_MILLISECS_PER_BLOCK;
 
 /// The version information used to identify this runtime when compiled natively.
 #[cfg(feature = "std")]
@@ -203,28 +197,21 @@ impl frame_system::Config for Runtime {
 	type MaxConsumers = frame_support::traits::ConstU32<16>;
 }
 
-impl pallet_aura::Config for Runtime {
-	type AuthorityId = AuraId;
+impl pallet_hotstuff::Config for Runtime {
+	type AuthorityId = HotstuffId;
+
 	type DisabledValidators = ();
 	type MaxAuthorities = ConstU32<32>;
-}
-
-impl pallet_grandpa::Config for Runtime {
-	type RuntimeEvent = RuntimeEvent;
+	type AllowMultipleBlocksPerSlot = ConstBool<false>;
 
 	type WeightInfo = ();
-	type MaxAuthorities = ConstU32<32>;
-	type MaxSetIdSessionEntries = ConstU64<0>;
-
-	type KeyOwnerProof = sp_core::Void;
-	type EquivocationReportSystem = ();
 }
 
 impl pallet_timestamp::Config for Runtime {
 	/// A timestamp: milliseconds since the unix epoch.
 	type Moment = u64;
-	type OnTimestampSet = Aura;
-	type MinimumPeriod = ConstU64<{ SLOT_DURATION / 2 }>;
+	type OnTimestampSet = Hotstuff;
+	type MinimumPeriod = ConstU64<{ SLOT_DURATION / 3 }>;
 	type WeightInfo = ();
 }
 
@@ -284,8 +271,7 @@ construct_runtime!(
 	{
 		System: frame_system,
 		Timestamp: pallet_timestamp,
-		Aura: pallet_aura,
-		Grandpa: pallet_grandpa,
+		Hotstuff: pallet_hotstuff,
 		Balances: pallet_balances,
 		TransactionPayment: pallet_transaction_payment,
 		Sudo: pallet_sudo,
@@ -364,7 +350,7 @@ impl_runtime_apis! {
 	}
 
 	impl sp_perp_api::PerpRuntimeApi<Block> for Runtime {
-		fn match_perp_orders_for(market_id: u16) -> Vec<(Vec<(H160, u32)>, Vec<(H160, u32)>, Vec<(H160, u32)>, Vec<(H160, u32)>)> {
+		fn match_perp_orders_for(_market_id: u16) -> Vec<(Vec<(H160, u32)>, Vec<(H160, u32)>, Vec<(H160, u32)>, Vec<(H160, u32)>)> {
 			Vec::new()
 		}
 	}
@@ -430,13 +416,24 @@ impl_runtime_apis! {
 		}
 	}
 
-	impl sp_consensus_aura::AuraApi<Block, AuraId> for Runtime {
-		fn slot_duration() -> sp_consensus_aura::SlotDuration {
-			sp_consensus_aura::SlotDuration::from_millis(Aura::slot_duration())
+	impl hotstuff_primitives::HotstuffApi<Block, HotstuffId> for Runtime {
+		fn slot_duration() -> hotstuff_primitives::SlotDuration {
+			hotstuff_primitives::SlotDuration::from_millis(Hotstuff::slot_duration())
 		}
 
-		fn authorities() -> Vec<AuraId> {
-			Aura::authorities().into_inner()
+		fn current_slot() -> Slot {
+			Hotstuff::current_slot()
+		}
+
+		fn authorities() -> Vec<HotstuffId> {
+			Hotstuff::authorities().into_inner()
+		}
+
+		fn validate_transactions(
+			txs: sp_std::vec::Vec<(TransactionSource, <Block as BlockT>::Extrinsic)>,
+			block_hash: <Block as BlockT>::Hash,
+		) -> Vec<TransactionValidity> {
+			Executive::validate_transactions(txs, block_hash)
 		}
 	}
 
@@ -449,36 +446,6 @@ impl_runtime_apis! {
 			encoded: Vec<u8>,
 		) -> Option<Vec<(Vec<u8>, KeyTypeId)>> {
 			opaque::SessionKeys::decode_into_raw_public_keys(&encoded)
-		}
-	}
-
-	impl sp_consensus_grandpa::GrandpaApi<Block> for Runtime {
-		fn grandpa_authorities() -> sp_consensus_grandpa::AuthorityList {
-			Grandpa::grandpa_authorities()
-		}
-
-		fn current_set_id() -> sp_consensus_grandpa::SetId {
-			Grandpa::current_set_id()
-		}
-
-		fn submit_report_equivocation_unsigned_extrinsic(
-			_equivocation_proof: sp_consensus_grandpa::EquivocationProof<
-				<Block as BlockT>::Hash,
-				NumberFor<Block>,
-			>,
-			_key_owner_proof: sp_consensus_grandpa::OpaqueKeyOwnershipProof,
-		) -> Option<()> {
-			None
-		}
-
-		fn generate_key_ownership_proof(
-			_set_id: sp_consensus_grandpa::SetId,
-			_authority_id: GrandpaId,
-		) -> Option<sp_consensus_grandpa::OpaqueKeyOwnershipProof> {
-			// NOTE: this is the only implementation possible since we've
-			// defined our key owner proof type as a bottom type (i.e. a type
-			// with no values).
-			None
 		}
 	}
 

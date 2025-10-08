@@ -2,14 +2,14 @@
 
 use node_template_runtime::{self, opaque::Block, RuntimeApi};
 use sc_client_api::BlockBackend;
-use sc_consensus_aura::{ImportQueueParams, SlotProportion, StartAuraParams};
-use sc_consensus_grandpa::SharedVoterState;
+use hotstuff_consensus::import_queue::ImportQueueParams;
 pub use sc_executor::NativeElseWasmExecutor;
-use sc_service::{error::Error as ServiceError, Configuration, TFullBackend, TaskManager, WarpSyncParams};
+use sc_service::{error::Error as ServiceError, Configuration, TFullBackend, TaskManager};
 use sc_telemetry::{Telemetry, TelemetryWorker};
-use sp_consensus_aura::sr25519::AuthorityPair as AuraPair;
-use std::{sync::Arc, time::Duration};
+use hotstuff_primitives::AuthorityPair as HotstuffPair;
+use std::sync::Arc;
 use sc_transaction_pool::FullPool;
+use sp_timestamp::Timestamp;
 use crate::extend_extrinsic::ExtendTx;
 use crate::merge_handler::MergeHandler;
 use crate::transaction_group::DefaultRCGroup;
@@ -49,13 +49,9 @@ pub fn new_partial(
 		sc_consensus::DefaultImportQueue<Block, FullClient>,
 		sc_transaction_pool::FullPool<Block, FullClient, DefaultRCGroup>,
 		(
-			sc_consensus_grandpa::GrandpaBlockImport<
-				FullBackend,
-				Block,
-				FullClient,
-				FullSelectChain,
-			>,
-			sc_consensus_grandpa::LinkHalf<Block, FullClient, FullSelectChain>,
+			hotstuff_consensus::HotstuffBlockImport<FullBackend, Block, FullClient>,
+			//LinkHalf is something like `client`, `backend`, `network`, and other components needed by the Hotstuff consensus.
+			hotstuff_consensus::LinkHalf<Block, FullClient, FullSelectChain>,
 			Option<Telemetry>,
 		),
 	>,
@@ -96,19 +92,13 @@ pub fn new_partial(
 		client.clone(),
 	);
 
-	let (grandpa_block_import, grandpa_link) = sc_consensus_grandpa::block_import(
-		client.clone(),
-		&(client.clone() as Arc<_>),
-		select_chain.clone(),
-		telemetry.as_ref().map(|x| x.handle()),
-	)?;
+	let (hotstuff_block_import, hotstuff_link) = hotstuff_consensus::block_import(client.clone(), &client)?;
 
-	let slot_duration = sc_consensus_aura::slot_duration(&*client)?;
-
+	let slot_duration = hotstuff_consensus::slot_duration(&*client)?;
 	let import_queue =
-		sc_consensus_aura::import_queue::<AuraPair, _, _, _, _, _>(ImportQueueParams {
-			block_import: grandpa_block_import.clone(),
-			justification_import: Some(Box::new(grandpa_block_import.clone())),
+		hotstuff_consensus::import_queue::import_queue::<HotstuffPair, _, _, _, _, _>(ImportQueueParams {
+			block_import: hotstuff_block_import.clone(),
+			justification_import: Some(Box::new(hotstuff_block_import.clone())),
 			client: client.clone(),
 			create_inherent_data_providers: move |_, ()| async move {
 				let timestamp = sp_timestamp::InherentDataProvider::from_system_time();
@@ -136,7 +126,7 @@ pub fn new_partial(
 		keystore_container,
 		select_chain,
 		transaction_pool,
-		other: (grandpa_block_import, grandpa_link, telemetry),
+		other: (hotstuff_block_import, hotstuff_link, telemetry),
 	})
 }
 
@@ -150,24 +140,17 @@ pub fn new_full(config: Configuration) -> Result<TaskManager, ServiceError> {
 		keystore_container,
 		select_chain,
 		transaction_pool,
-		other: (block_import, grandpa_link, mut telemetry),
+		other: (hotstuff_block_import, hotstuff_link, mut telemetry),
 	} = new_partial(&config)?;
 
 	let mut net_config = sc_network::config::FullNetworkConfiguration::new(&config.network);
 
-	let grandpa_protocol_name = sc_consensus_grandpa::protocol_standard_name(
+	let hotstuff_protocol_name = hotstuff_consensus::config::standard_name(
 		&client.block_hash(0).ok().flatten().expect("Genesis block exists; qed"),
 		&config.chain_spec,
 	);
-	net_config.add_notification_protocol(sc_consensus_grandpa::grandpa_peers_set_config(
-		grandpa_protocol_name.clone(),
-	));
-
-	let warp_sync = Arc::new(sc_consensus_grandpa::warp_proof::NetworkProvider::new(
-		backend.clone(),
-		grandpa_link.shared_authority_set().clone(),
-		Vec::default(),
-	));
+	let hotstuff_protocol_config = hotstuff_consensus::config::hotstuff_peers_set_config(hotstuff_protocol_name.clone());
+	net_config.add_notification_protocol(hotstuff_protocol_config);
 
 	let (network, system_rpc_tx, tx_handler_controller, network_starter, sync_service) =
 		sc_service::build_network(sc_service::BuildNetworkParams {
@@ -178,7 +161,7 @@ pub fn new_full(config: Configuration) -> Result<TaskManager, ServiceError> {
 			spawn_handle: task_manager.spawn_handle(),
 			import_queue,
 			block_announce_validator_builder: None,
-			warp_sync_params: Some(WarpSyncParams::WithProvider(warp_sync)),
+			warp_sync_params: None,
 		})?;
 
 	if config.offchain_worker.enabled {
@@ -191,10 +174,8 @@ pub fn new_full(config: Configuration) -> Result<TaskManager, ServiceError> {
 	}
 
 	let role = config.role.clone();
-	let force_authoring = config.force_authoring;
-	let backoff_authoring_blocks: Option<()> = None;
-	let name = config.network.node_name.clone();
-	let enable_grandpa = !config.disable_grandpa;
+	// let force_authoring = config.force_authoring;
+	// let backoff_authoring_blocks: Option<()> = None;
 	let prometheus_registry = config.prometheus_registry().cloned();
 
 	let rpc_extensions_builder = {
@@ -224,6 +205,7 @@ pub fn new_full(config: Configuration) -> Result<TaskManager, ServiceError> {
 	})?;
 
 	if role.is_authority() {
+		// Create hotstuff consensus voter & network.
 		let proposer_factory: sc_basic_authorship::MTHProposerFactory<_, _, _, _, MergeHandler<TFullBackend<Block>, Block>, ExtendTx> =
 			sc_basic_authorship::MTHProposerFactory::new(
 				task_manager.spawn_handle(),
@@ -233,87 +215,50 @@ pub fn new_full(config: Configuration) -> Result<TaskManager, ServiceError> {
 				telemetry.as_ref().map(|x| x.handle()),
 				<ExecutorDispatch as sc_executor::NativeExecutionDispatch>::native_version(),
 			);
+		let slot_duration = hotstuff_consensus::slot_duration(&*client)?;
+		let (voter, hotstuff_network, block_authorship_task) = hotstuff_consensus::consensus::start_hotstuff(
+			network,
+			hotstuff_link,
+			sync_service.clone(),
+			hotstuff_block_import,
+			sync_service.clone(),
+			proposer_factory,
+			hotstuff_protocol_name,
+			keystore_container.keystore(),
+			move |_, extra_args: Timestamp| async move {
+				let timestamp = sp_timestamp::InherentDataProvider::new(extra_args);
+				let slot =
+					hotstuff_primitives::inherents::InherentDataProvider::from_timestamp_and_slot_duration(
+						*timestamp,
+						slot_duration,
+					);
 
-		let slot_duration = sc_consensus_aura::slot_duration(&*client)?;
-
-		let aura = sc_consensus_aura::start_aura::<AuraPair, _, _, _, _, _, _, _, _, _, _>(
-			StartAuraParams {
-				slot_duration,
-				client,
-				select_chain,
-				block_import,
-				proposer_factory,
-				create_inherent_data_providers: move |_, ()| async move {
-					let timestamp = sp_timestamp::InherentDataProvider::from_system_time();
-
-					let slot =
-						sp_consensus_aura::inherents::InherentDataProvider::from_timestamp_and_slot_duration(
-							*timestamp,
-							slot_duration,
-						);
-
-					Ok((slot, timestamp))
-				},
-				force_authoring,
-				backoff_authoring_blocks,
-				keystore: keystore_container.keystore(),
-				sync_oracle: sync_service.clone(),
-				justification_sync_link: sync_service.clone(),
-				block_proposal_slot_portion: SlotProportion::new(2f32 / 3f32),
-				max_block_proposal_slot_portion: None,
-				telemetry: telemetry.as_ref().map(|x| x.handle()),
-				compatibility_mode: Default::default(),
+				Ok((slot, timestamp))
 			},
+			select_chain,
+			slot_duration,
 		)?;
 
-		// the AURA authoring task is considered essential, i.e. if it
-		// fails we take down the service with it.
+		// Start hotstuff consensus voter
 		task_manager
 			.spawn_essential_handle()
-			.spawn_blocking("aura", Some("block-authoring"), aura);
-	}
+			.spawn_blocking("hotstuff block voter", None, voter);
 
-	if enable_grandpa {
-		// if the node isn't actively participating in consensus then it doesn't
-		// need a keystore, regardless of which protocol we use below.
-		let keystore = if role.is_authority() { Some(keystore_container.keystore()) } else { None };
-
-		let grandpa_config = sc_consensus_grandpa::Config {
-			// FIXME #1578 make this available through chainspec
-			gossip_duration: Duration::from_millis(333),
-			justification_period: 512,
-			name: Some(name),
-			observer_enabled: false,
-			keystore,
-			local_role: role,
-			telemetry: telemetry.as_ref().map(|x| x.handle()),
-			protocol_name: grandpa_protocol_name,
-		};
-
-		// start the full GRANDPA voter
-		// NOTE: non-authorities could run the GRANDPA observer protocol, but at
-		// this point the full voter should provide better guarantees of block
-		// and vote data availability than the observer. The observer has not
-		// been tested extensively yet and having most nodes in a network run it
-		// could lead to finality stalls.
-		let grandpa_config = sc_consensus_grandpa::GrandpaParams {
-			config: grandpa_config,
-			link: grandpa_link,
-			network,
-			sync: Arc::new(sync_service),
-			voting_rule: sc_consensus_grandpa::VotingRulesBuilder::default().build(),
-			prometheus_registry,
-			shared_voter_state: SharedVoterState::empty(),
-			telemetry: telemetry.as_ref().map(|x| x.handle()),
-		};
-
-		// the GRANDPA voter task is considered infallible, i.e.
-		// if it fails we take down the service with it.
+		// Start hotstuff consensus network
 		task_manager.spawn_essential_handle().spawn_blocking(
-			"grandpa-voter",
+			"hotstuff network",
 			None,
-			sc_consensus_grandpa::run_grandpa_voter(grandpa_config)?,
+			hotstuff_network,
 		);
+
+		// Start hotstuff block authorship
+		task_manager
+			.spawn_essential_handle()
+			.spawn_blocking(
+				"hotstuff block authorship",
+				None,
+				block_authorship_task,
+			);
 	}
 
 	network_starter.start_network();

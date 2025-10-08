@@ -1,0 +1,43 @@
+[package]
+name = "pallet-hotstuff"
+version = "0.1.0"
+description = "FRAME pallet template for defining custom runtime logic."
+edition = "2021"
+license = "MIT-0"
+publish = false
+
+[package.metadata.docs.rs]
+targets = ["x86_64-unknown-linux-gnu"]
+
+[dependencies]
+codec = { package = "parity-scale-codec", version = "3.2.2", features = ["derive"],default-features = false }
+log = "0.4.17"
+scale-info = { version = "2.5.0", default-features = false, features = ["derive"] }
+frame-benchmarking = {  default-features = false, optional = true, path = "../../../frame/benchmarking" }
+frame-support = { default-features = false, path = "../../../frame/support" }
+frame-system = { default-features = false, path = "../../../frame/system" }
+sp-runtime = { default-features = false, path = "../../../primitives/runtime" }
+sp-std = { default-features = false, path = "../../../primitives/std" }
+pallet-timestamp = {  default-features = false, path = "../../../frame/timestamp" }
+hotstuff-primitives = { default-features = false, path="../../primitives" }
+
+[dev-dependencies]
+sp-core = { default-features = false, path = "../../../primitives/core" }
+sp-io = { default-features = false, path = "../../../primitives/io" }
+
+[features]
+default = ["std"]
+std = [
+	"codec/std",
+	"log/std",
+	"frame-benchmarking?/std",
+	"frame-support/std",
+	"pallet-timestamp/std",
+	"frame-system/std",
+	"scale-info/std",
+	"sp-runtime/std",
+	"sp-std/std",
+	"hotstuff-primitives/std",
+]
+runtime-benchmarks = ["frame-benchmarking/runtime-benchmarks"]
+try-runtime = ["frame-support/try-runtime"]
