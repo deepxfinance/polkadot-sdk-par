@@ -424,15 +424,79 @@ impl<Block: BlockT> TC<Block> {
 	}
 }
 
+#[derive(Debug, Clone, Encode, Decode)]
+pub struct PeerAuthority<Block> {
+	pub peer_id: String,
+	pub authority: AuthorityId,
+	pub signature: Option<AuthoritySignature>,
+	pub phantom: PhantomData<Block>,
+}
+
+impl<Block: BlockT> PeerAuthority<Block> {
+	pub fn digest(&self) -> Block::Hash {
+		let mut data = self.peer_id.encode();
+		data.append(&mut self.authority.encode());
+		<<Block::Header as HeaderT>::Hashing as HashT>::hash_of(&data)
+	}
+
+	pub fn verify(&self) -> Result<(), HotstuffError> {
+		let digest = self.digest();
+		match &self.signature {
+			Some(signature) => if !AuthorityPair::verify(signature, digest, &self.authority) {
+				Err(InvalidSignature(self.authority.clone()))
+			} else {
+				Ok(())
+			},
+			None => Err(NullSignature),
+		}
+	}
+}
+
+#[derive(Debug, Clone, Encode, Decode)]
+pub enum ProposalReq<Block: BlockT> {
+	Hashes(Vec<Block::Hash>),
+	View(ViewNumber, Option<ViewNumber>),
+}
+
+#[derive(Debug, Clone, Encode, Decode)]
+pub struct ProposalRequest<Block: BlockT> {
+	pub authority: AuthorityId,
+	pub requests: ProposalReq<Block>,
+	pub signature: Option<AuthoritySignature>,
+}
+
+impl<Block: BlockT> ProposalRequest<Block> {
+	pub fn digest(&self) -> Block::Hash {
+		let data = self.requests.encode();
+		<<Block::Header as HeaderT>::Hashing as HashT>::hash_of(&data)
+	}
+
+	pub fn verify(&self, authorities: &AuthorityList) -> Result<(), HotstuffError> {
+		if authorities.iter().find(|(a, _)| a == &self.authority).is_none() {
+			return Err(NotAuthority);
+		}
+		let digest = self.digest();
+		match &self.signature {
+			Some(signature) => if !AuthorityPair::verify(signature, digest, &self.authority) {
+				Err(InvalidSignature(self.authority.clone()))
+			} else {
+				Ok(())
+			},
+			None => Err(NullSignature),
+		}
+	}
+}
+
 #[derive(Debug, Encode, Decode)]
 pub enum ConsensusMessage<B: BlockT> {
+	Greeting(PeerAuthority<B>),
+	GetProposal(ProposalRequest<B>),
 	Propose(Proposal<B>),
 	Vote(Vote<B>),
 	Timeout(Timeout<B>),
 	TC(TC<B>),
 	SyncRequest(B::Hash, AuthorityId),
 	BlockImport(BlockInfo<B>),
-	Phantom(PhantomData<B>),
 }
 
 impl<Block: BlockT> ConsensusMessage<Block> {

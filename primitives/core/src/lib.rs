@@ -119,6 +119,17 @@ pub enum ExecutionContext {
 	OffchainCall(Option<(Box<dyn offchain::Externalities>, offchain::Capabilities)>),
 }
 
+impl Clone for ExecutionContext {
+	fn clone(&self) -> Self {
+		match self {
+			Self::Importing => Self::Importing,
+			Self::Syncing => Self::Syncing,
+			Self::BlockConstruction => Self::BlockConstruction,
+			Self::OffchainCall(_) => unimplemented!("ExecutionContext::OffchainCall should not be cloned"),
+		}
+	}
+}
+
 impl ExecutionContext {
 	/// Returns the capabilities of particular context.
 	pub fn capabilities(&self) -> offchain::Capabilities {

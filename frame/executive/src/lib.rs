@@ -567,16 +567,16 @@ where
 		// Verify that the signature is good.
 		let xt = uxt.check(&Default::default())?;
 
-		// We don't need to make sure to `note_extrinsic` only after we know it's going to be
-		// executed to prevent it from leaking in storage since at this point, it will either
-		// execute or panic (and revert storage changes).
-		<frame_system::Pallet<System>>::note_extrinsic(encoded);
-
 		// AUDIT: Under no circumstances may this function panic from here onwards.
 
 		// Decode parameters and dispatch
 		let dispatch_info = xt.get_dispatch_info();
 		let r = Applyable::apply::<UnsignedValidator>(xt, &dispatch_info, encoded_len)?;
+
+		// We don't need to make sure to `note_extrinsic` only after we know it's going to be
+		// executed to prevent it from leaking in storage since at this point, it will either
+		// execute or panic (and revert storage changes).
+		<frame_system::Pallet<System>>::note_extrinsic(encoded);
 
 		// Mandatory(inherents) are not allowed to fail.
 		//

@@ -5,7 +5,7 @@ use std::{
 	task::{Context, Poll},
 	time::Duration,
 };
-
+use std::collections::HashMap;
 use log::debug;
 use tokio::time::{interval, Instant, Interval};
 
@@ -14,7 +14,7 @@ use sp_core::{Decode, Encode};
 use sp_runtime::traits::Block as BlockT;
 
 use crate::{
-	client::ClientForHotstuff, message::Proposal, primitives::HotstuffError, store::Store,
+	client::ClientForHotstuff, message::Proposal, primitives::{HotstuffError, ViewNumber}, store::Store,
 };
 
 pub struct Timer {
@@ -46,6 +46,10 @@ impl Future for Timer {
 // Synchronizer synchronizes replicas to the same view.
 pub struct Synchronizer<B: BlockT, BE: Backend<B>, C: ClientForHotstuff<B, BE>> {
 	store: Store<B, BE, C>,
+	trace_size: usize,
+	trace_from: ViewNumber,
+	trace_to: ViewNumber,
+	trace_view: HashMap<ViewNumber, B::Hash>,
 }
 
 impl<B, BE, C> Synchronizer<B, BE, C>
@@ -54,8 +58,8 @@ where
 	BE: Backend<B>,
 	C: ClientForHotstuff<B, BE>,
 {
-	pub fn new(client: Arc<C>) -> Self {
-		Self { store: Store::new(client) }
+	pub fn new(client: Arc<C>, trace_size: usize) -> Self {
+		Self { store: Store::new(client), trace_size, trace_view: HashMap::with_capacity(trace_size), trace_from: 0, trace_to: 0 }
 	}
 
 	pub fn save_proposal(&mut self, proposal: &Proposal<B>) -> Result<(), HotstuffError> {
@@ -66,10 +70,29 @@ where
 		log::debug!(target: "Hotstuff", "save proposal {} {key} {:?}, parent: {}", proposal.view, proposal.payload, proposal.qc.proposal_hash);
 		self.store
 			.set(key.as_ref(), &value)
-			.map_err(|e| HotstuffError::SaveProposal(e.to_string()))
+			.map_err(|e| HotstuffError::SaveProposal(e.to_string()))?;
+		loop {
+			if self.trace_view.len() >= self.trace_size {
+				self.trace_view.remove(&self.trace_from);
+				self.trace_from += 1;
+			} else {
+				break;
+			}
+		}
+		self.trace_view.insert(proposal.view, key);
+		self.trace_from = self.trace_from.min(proposal.view);
+		self.trace_to = self.trace_to.max(proposal.view);
+		Ok(())
 	}
 
-	pub fn get_proposal(&mut self, hash: B::Hash) -> Result<Option<Proposal<B>>, HotstuffError> {
+	pub fn get_proposal_by_trace_view(&self, view: ViewNumber) -> Result<Option<Proposal<B>>, HotstuffError> {
+		match self.trace_view.get(&view) {
+			Some(hash) => self.get_proposal(*hash),
+			None => Ok(None),
+		}
+	}
+
+	pub fn get_proposal(&self, hash: B::Hash) -> Result<Option<Proposal<B>>, HotstuffError> {
 		self
 			.store
 			.get(hash.as_ref())

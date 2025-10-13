@@ -55,7 +55,7 @@ impl From<PayloadError> for HotstuffError {
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum PayloadError {
-	UnknownBlock,
-	BlockRollBack,
+	UnknownBlock(String),
+	BlockRollBack(String),
 	ExtrinsicErr(String),
 }

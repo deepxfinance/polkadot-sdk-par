@@ -59,7 +59,7 @@ fn check_header<C, B: BlockT, P: Pair>(
     hash: B::Hash,
     authorities: &[AuthorityId],
     _check_for_equivocation: CheckForEquivocation,
-) -> Result<CheckedHeader<B::Header, (Slot, DigestItem)>, Error<B>>
+) -> Result<CheckedHeader<B::Header, (Slot, DigestItem, DigestItem)>, Error<B>>
 where
     P::Signature: Codec,
     C: AuxStore,
@@ -69,7 +69,7 @@ where
         crate::check_header_slot_and_seal::<B, P>(slot_now, header, authorities);
 
     match check_result {
-        Ok((header, slot, seal)) => {
+        Ok((header, slot, groups_seal, seal)) => {
             // TODO check equivocation for Hotstuff?
             // let expected_author = crate::slot_author::<P>(slot, &authorities);
             // let should_equiv_check = check_for_equivocation.check_for_equivocation();
@@ -88,7 +88,7 @@ where
             //     }
             // }
 
-            Ok(CheckedHeader::Checked(header, (slot, seal)))
+            Ok(CheckedHeader::Checked(header, (slot, groups_seal, seal)))
         },
         Err(SealVerificationError::Deferred(header, slot)) =>
             Ok(CheckedHeader::Deferred(header, slot)),
@@ -230,7 +230,7 @@ where
         )
             .map_err(|e| e.to_string())?;
         match checked_header {
-            CheckedHeader::Checked(pre_header, (slot, seal)) => {
+            CheckedHeader::Checked(pre_header, (slot, groups_seal, seal)) => {
                 // if the body is passed through, we need to use the runtime
                 // to check that the internally-set timestamp in the inherents
                 // actually matches the slot set in the seal.
@@ -271,6 +271,7 @@ where
 				);
 
                 block.header = pre_header;
+                block.post_digests.push(groups_seal);
                 block.post_digests.push(seal);
                 block.fork_choice = Some(ForkChoiceStrategy::LongestChain);
                 block.post_hash = Some(hash);

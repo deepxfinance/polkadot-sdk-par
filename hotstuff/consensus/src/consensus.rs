@@ -8,14 +8,16 @@ use std::{
 };
 use std::marker::PhantomData;
 use std::ops::{Add, Deref};
+use std::str::FromStr;
+use std::thread::JoinHandle;
 use async_recursion::async_recursion;
 use futures::{channel::mpsc::Receiver as Recv, Future, StreamExt};
 
 use codec::{Decode, Encode};
 use log::{debug, error, info, trace, warn};
-use tokio::sync::mpsc::{channel, unbounded_channel, Receiver, Sender, UnboundedReceiver, UnboundedSender};
+use tokio::sync::mpsc::{channel, unbounded_channel, Receiver, Sender, UnboundedSender};
 use tokio::sync::RwLock;
-use sc_basic_authorship::StepBlockPropose;
+use sc_basic_authorship::BlockPropose;
 use sc_client_api::{Backend, CallExecutor, ExecutionStrategy};
 use sc_network::types::ProtocolName;
 use sc_network_gossip::TopicNotification;
@@ -23,29 +25,30 @@ use sp_application_crypto::AppCrypto;
 use sp_blockchain::BlockStatus;
 use sp_core::{crypto::ByteArray, traits::CallContext};
 use sp_keystore::KeystorePtr;
-use sp_runtime::{generic::BlockId, traits::{Block as BlockT, Hash as HashT, Header as HeaderT, Zero}, Digest, Saturating};
-use hotstuff_primitives::digests::CompatibleDigestItem;
-use sc_consensus::{BlockImport, BlockImportParams, ForkChoiceStrategy, StateAction};
-use sc_consensus_slots::{InherentDataProviderExt, StorageChanges};
-use sp_consensus::{BlockOrigin, SelectChain};
-use sp_runtime::DigestItem;
+use sp_runtime::{generic::BlockId, traits::{Block as BlockT, Hash as HashT, Header as HeaderT, Zero}, Saturating};
+use sc_consensus::BlockImport;
+use sc_consensus_slots::InherentDataProviderExt;
+use sp_consensus::SelectChain;
 
 use crate::{
     aggregator::Aggregator, client::{ClientForHotstuff, LinkHalf},
     import::{BlockInfo, PendingFinalizeBlockQueue},
-    message::{ConsensusMessage, ConsensusMessage::*, Payload, Proposal, Timeout, Vote, QC, TC},
+    message::{ConsensusMessage, Payload, Proposal, Timeout, Vote, QC, TC},
     network::{HotstuffNetworkBridge, Network as NetworkT, Syncing as SyncingT},
     primitives::{HotstuffError, HotstuffError::*, PayloadError, ViewNumber}, synchronizer::{Synchronizer, Timer},
 };
-use hotstuff_primitives::{AuthorityId, AuthorityList, AuthoritySignature, HotstuffApi, Slot, HOTSTUFF_KEY_TYPE};
+use hotstuff_primitives::{AuthorityId, AuthorityList, AuthoritySignature, HotstuffApi, HOTSTUFF_KEY_TYPE};
 use hotstuff_primitives::inherents::InherentType;
+use sc_network::PeerId;
 use sp_api::TransactionFor;
 use sp_consensus::{Environment, Error as ConsensusError, Proposer};
 use sp_consensus_slots::SlotDuration;
-use sp_inherents::{CreateInherentDataProviders, InherentDataProvider};
+use sp_inherents::CreateInherentDataProviders;
 use sp_runtime::transaction_validity::TransactionSource;
 use sp_timestamp::Timestamp;
-use crate::message::{ConsensusStage, NewBlock, NextBlock};
+use crate::executor::BlockExecutor;
+use crate::import::ImportLock;
+use crate::message::{ConsensusStage, NewBlock, NextBlock, PeerAuthority, ProposalReq, ProposalRequest};
 
 #[cfg(test)]
 #[path = "tests/consensus_tests.rs"]
@@ -169,6 +172,51 @@ impl<B: BlockT> ConsensusState<B> {
         Some(vote)
     }
 
+    pub fn make_peer_authority(&self, peer_id: String) -> Option<PeerAuthority<B>> {
+        let author_id = self.local_authority_id.as_ref()?;
+        let mut peer_authority = PeerAuthority::<B> {
+            peer_id,
+            authority: author_id.clone(),
+            signature: None,
+            phantom: PhantomData,
+        };
+
+        peer_authority.signature = self
+            .keystore
+            .sign_with(
+                AuthorityId::ID,
+                AuthorityId::CRYPTO_ID,
+                author_id.as_slice(),
+                peer_authority.digest().as_ref(),
+            )
+            .ok()?
+            .and_then(|data| AuthoritySignature::try_from(data).ok());
+
+        Some(peer_authority)
+    }
+
+    pub fn make_proposal_request(&self, requests: ProposalReq<B>) -> Option<ProposalRequest<B>> {
+        let author_id = self.local_authority_id.as_ref()?;
+        let mut request = ProposalRequest {
+            authority: author_id.clone(),
+            requests,
+            signature: None,
+        };
+
+        request.signature = self
+            .keystore
+            .sign_with(
+                AuthorityId::ID,
+                AuthorityId::CRYPTO_ID,
+                author_id.as_slice(),
+                request.digest().as_ref(),
+            )
+            .ok()?
+            .and_then(|data| AuthoritySignature::try_from(data).ok());
+
+        Some(request)
+    }
+
     pub fn view(&self) -> ViewNumber {
         self.view
     }
@@ -282,13 +330,13 @@ pub struct ConsensusWorker<
 
     network: HotstuffNetworkBridge<B, N, S>,
     client: Arc<C>,
-    sync: S,
+    _sync: S,
     local_timer: Timer,
     slot_duration: SlotDuration,
     synchronizer: Synchronizer<B, BE, C>,
     consensus_msg_tx: Sender<(bool, ConsensusMessage<B>)>,
     consensus_msg_rx: Receiver<(bool, ConsensusMessage<B>)>,
-    executor_tx: UnboundedSender<(Timestamp, [QC<B>; 3], NextBlock<B>)>,
+    executor_tx: UnboundedSender<([QC<B>; 3], NextBlock<B>)>,
 
     proposer_factory: Arc<RwLock<PF>>,
     processing_block: Option<NextBlock<B>>,
@@ -304,12 +352,12 @@ impl<B, BE, C, N, S, PF, Error> ConsensusWorker<B, BE, C, N, S, PF, Error>
 where
     B: BlockT,
     BE: Backend<B>,
-    C: ClientForHotstuff<B, BE>,
+    C: ClientForHotstuff<B, BE> + 'static,
     C::Api: HotstuffApi<B, AuthorityId>,
     N: NetworkT<B> + Sync + 'static,
     S: SyncingT<B> + Sync + 'static,
     PF: Environment<B, Error = Error> + Send + Sync + 'static,
-    PF::Proposer: Proposer<B, Error = Error, Transaction = sp_api::TransactionFor<C, B>> + StepBlockPropose<B>,
+    PF::Proposer: Proposer<B, Error = Error, Transaction = sp_api::TransactionFor<C, B>> + BlockPropose<B>,
     Error: std::error::Error + Send + From<ConsensusError> + 'static,
 {
     #![allow(clippy::too_many_arguments)]
@@ -324,7 +372,7 @@ where
         slot_duration: SlotDuration,
         consensus_msg_tx: Sender<(bool, ConsensusMessage<B>)>,
         consensus_msg_rx: Receiver<(bool, ConsensusMessage<B>)>,
-        executor_tx: UnboundedSender<(Timestamp, [QC<B>; 3], NextBlock<B>)>,
+        executor_tx: UnboundedSender<([QC<B>; 3], NextBlock<B>)>,
         pending_finalize_queue: Arc<Mutex<VecDeque<BlockInfo<B>>>>,
     ) -> Self {
         if local_timer_duration * 3 <= slot_duration.as_millis() {
@@ -342,10 +390,9 @@ where
             consensus_msg_rx,
             executor_tx,
             client,
-            sync,
+            _sync: sync,
             synchronizer,
             proposer_factory,
-            // TODO SHOULD should load from some where?
             processing_block: None,
             processed_timestamp,
             processed: NextBlock::empty(),
@@ -363,46 +410,48 @@ where
         self.local_timer.reset();
         loop {
             let _ = tokio::select! {
-                _ = &mut self.local_timer => self.handle_local_timer().await,
+                _ = &mut self.local_timer => if let Err(e) = self.handle_local_timer().await {
+                    debug!(target: "Hotstuff","handle_local_timer has error {e:#?}");
+                },
                 Some((local, message)) = self.consensus_msg_rx.recv()=> {
                     let from = if local { "local" } else { "network" };
                     match message {
-                        BlockImport(block_info) => {
-                            match self.handle_block_import(&block_info).await{
-                                Ok(_) => {},
-                                Err(e) =>  debug!(target: "Hotstuff","{:#?} handle_block_import from {from} has error {e:#?}", self.state.local_authority_id),
-                            };
-                            Ok(())
-                        },
-                        Propose(proposal) => {
-                            match self.handle_proposal(&proposal, local).await{
-                                Ok(_) => {},
-                                Err(e) =>  debug!(target: "Hotstuff","{:#?} handle_proposal from {from} has error {e:#?}", self.state.local_authority_id),
-                            };
-                            Ok(())
-                        },
-                        Vote(vote) => {
-                            match self.handle_vote(&vote, local).await{
-                                Ok(_) => {},
-                                Err(e) => debug!(target: "Hotstuff","{:#?} handle_vote from {from} has error {e:#?}", self.state.local_authority_id),
-                            };
-                            Ok(())
-                        },
-                        Timeout(timeout) => {
-                            match self.handle_timeout(&timeout, local).await{
-                                Ok(_) => {},
-                                Err(e) => debug!(target: "Hotstuff","{:#?} handle_timeout from {from} has error {e:#?}",self.state.local_authority_id),
-                            };
-                            Ok(())
-                        },
-                        TC(tc) => {
-                            match self.handle_tc(tc, local).await{
-                                Ok(_) => {},
-                                Err(e) =>  debug!(target: "Hotstuff","{:#?} handle_tc from {from} has error {e:#?}", self.state.local_authority_id),
+                        ConsensusMessage::Greeting(authority_id) => {
+                            if let Err(e) = self.handle_greeting(&authority_id) {
+                                debug!(target: "Hotstuff","{:#?} handle_greeting from {from} has error {e:#?}", self.state.local_authority_id);
                             }
-                            Ok(())
                         },
-                        _ => Ok(()),
+                        ConsensusMessage::GetProposal(request) => {
+                            if let Err(e) = self.handle_proposal_request(&request).await {
+                                debug!(target: "Hotstuff","{:#?} handle_proposal_request from {from} has error {e:#?}", self.state.local_authority_id);
+                            }
+                        },
+                        ConsensusMessage::BlockImport(block_info) => {
+                            if let Err(e) = self.handle_block_import(&block_info).await {
+                                debug!(target: "Hotstuff","{:#?} handle_block_import from {from} has error {e:#?}", self.state.local_authority_id);
+                            }
+                        },
+                        ConsensusMessage::Propose(proposal) => {
+                            if let Err(e) = self.handle_proposal(&proposal, local).await{
+                                debug!(target: "Hotstuff","{:#?} handle_proposal from {from} has error {e:#?}", self.state.local_authority_id);
+                            }
+                        },
+                        ConsensusMessage::Vote(vote) => {
+                            if let Err(e) = self.handle_vote(&vote, local).await{
+                                debug!(target: "Hotstuff","{:#?} handle_vote from {from} has error {e:#?}", self.state.local_authority_id);
+                            }
+                        },
+                        ConsensusMessage::Timeout(timeout) => {
+                            if let Err(e) = self.handle_timeout(&timeout, local).await{
+                                debug!(target: "Hotstuff","{:#?} handle_timeout from {from} has error {e:#?}",self.state.local_authority_id);
+                            }
+                        },
+                        ConsensusMessage::TC(tc) => {
+                            if let Err(e) = self.handle_tc(tc, local).await{
+                                debug!(target: "Hotstuff","{:#?} handle_tc from {from} has error {e:#?}", self.state.local_authority_id);
+                            }
+                        },
+                        _ => (),
                     }
                 }
             };
@@ -462,6 +511,48 @@ where
         Ok(())
     }
 
+    pub fn handle_greeting(&mut self, peer_authority: &PeerAuthority<B>) -> Result<(), HotstuffError> {
+        peer_authority.verify()?;
+        let peer_id = PeerId::from_str(&peer_authority.peer_id).map_err(|e| HotstuffError::Other(e.to_string()))?;
+        debug!(target: "Hotstuff","~~ handle_greeting. Authority {} with PeerId {}.", peer_authority.authority, peer_id.to_base58());
+        self.network.authorities.insert(peer_authority.authority.clone(), Some(peer_id));
+        Ok(())
+    }
+
+    pub async fn handle_proposal_request(&self, request: &ProposalRequest<B>) -> Result<(), HotstuffError> {
+        // only reply to authorities
+        request.verify(&self.state.authorities)?;
+        let mut proposals = vec![];
+        match &request.requests {
+            ProposalReq::Hashes(hashes) => {
+                for hash in hashes {
+                    if let Ok(Some(proposal)) = self.synchronizer.get_proposal(*hash) {
+                        proposals.push(proposal);
+                    }
+                }
+            },
+            ProposalReq::View(from, to) => {
+                let to  = to.unwrap_or(self.state.view).min(self.state.view);
+                for view in *from..to {
+                    if let Ok(Some(proposal)) = self.synchronizer.get_proposal_by_trace_view(view) {
+                        proposals.push(proposal);
+                    }
+                }
+            }
+        }
+        debug!(
+            target: "Hotstuff",
+            "~~ handle_proposal_request. Response {} proposals to {}({:?}).",
+            proposals.len(),
+            request.authority,
+            proposals.iter().map(|p| format!("{}:{}", p.view, p.digest())).collect::<Vec<_>>(),
+        );
+        for proposal in proposals {
+            self.network.send_to_authorities(Some(vec![request.authority.clone()]), ConsensusMessage::Propose(proposal).encode())?;
+        }
+        Ok(())
+    }
+
     pub async fn handle_block_import(&mut self, _block_info: &BlockInfo<B>) -> Result<(), HotstuffError> {
         // Should update local time limit if generate new proposal.
         // check processing_finalize_block,
@@ -485,40 +576,37 @@ where
             proposal.digest(),
             proposal.payload,
         );
-
         if !local {
             self.state.verify_proposal(proposal)?;
             proposal.qc.verify(&self.state.authorities)?;
+        }
+        self.synchronizer.save_proposal(proposal)?;
+        if !local {
+            if let Some(tc) = proposal.tc.as_ref() {
+                self.handle_qc(&tc.high_qc);
+                if tc.view > self.state.view() {
+                    self.advance_view(tc.view);
+                    self.processing_block = None;
+                    self.processing_finalize_block = None;
+                }
+            }
+            self.handle_qc(&proposal.qc);
             // verify payload
             if let Err(e) = self.check_payload(&proposal.payload) {
                 debug!(target:"Hotstuff", "#^# Check proposal {} digest {} parent {} payload {:?} error: {e:?}", proposal.view, proposal.digest(), proposal.parent_hash(), proposal.payload);
                 return Ok(())
             }
-        }
-        if let Some(tc) = proposal.tc.as_ref() {
-            self.handle_qc(&tc.high_qc);
-            if tc.view > self.state.view() {
-                self.advance_view(tc.view);
-                self.processing_block = None;
-                self.processing_finalize_block = None;
-            }
-        }
-        if !local {
-            self.handle_qc(&proposal.qc);
+            // if from local, the qc mission is triggered before this proposal generate.
+            self.trigger_qc_mission(&proposal.qc, local)?;
         }
         if proposal.view != self.state.view() {
             return Ok(());
         }
-        self.synchronizer.save_proposal(proposal)?;
         if !proposal.payload.next_block.is_empty() {
             self.processing_block = Some(proposal.payload.next_block.clone());
         }
         if !proposal.payload.new_block.is_empty() {
             self.processing_finalize_block = Some(proposal.payload.new_block.clone());
-        }
-        if !local {
-            // if from local, the qc mission is triggered before this proposal generate.
-            self.trigger_qc_mission(&proposal.qc, local)?;
         }
 
         if let Some(vote) = self.state.make_vote(proposal) {
@@ -596,12 +684,15 @@ where
             let qc_proposal = match self.synchronizer.get_proposal(qc.proposal_hash)? {
                 Some(p) => p,
                 None => {
-                    // TODO If we can't get them from local store, then get them by network. So should we block here.
-                    unimplemented!("For devlop, should not missing proposal from synchronizer");
+                    if let Some(req) = self.state.make_proposal_request(ProposalReq::Hashes(vec![qc.proposal_hash.clone()])) {
+                        self.network.send_to_authorities(None, req.encode())?;
+                    }
+                    return Ok(());
                 }
             };
+            let info = self.client.info();
             // grandpa -> parent(grandpa_qc) -> qc_proposal(parent_qc) -> qc
-            if qc_proposal.payload.next_block.stage.finish() {
+            if info.best_number < qc_proposal.payload.next_block.block_number && qc_proposal.payload.next_block.stage.finish() {
                 match self.synchronizer.get_proposal_ancestors(&qc_proposal, &|p| !p.payload.next_block.is_empty()) {
                     Ok(Some((parent, grandpa))) => {
                         if qc_proposal.view == parent.view + 1 && parent.view == grandpa.view + 1 {
@@ -611,7 +702,6 @@ where
                                         let slot = InherentType::from_timestamp(qc.timestamp, self.slot_duration);
                                         let processed_slot = InherentType::from_timestamp(Timestamp::from(self.processed_timestamp), self.slot_duration);
                                         if slot > processed_slot {
-                                            self.processed_timestamp = qc.timestamp.as_millis();
                                             // send execute block mission to a block execute queue and execute/import it.
                                             let full_qc = [qc.clone(), qc_proposal.qc.clone(), parent.qc.clone()];
                                             debug!(
@@ -623,14 +713,22 @@ where
                                                 qc_proposal.parent_hash(),
                                                 parent.parent_hash(),
                                             );
-                                            if let Err(e) = self.executor_tx.send((qc.timestamp, full_qc, grandpa.payload.next_block.clone())) {
+                                            if let Err(e) = self.executor_tx.send((full_qc, grandpa.payload.next_block.clone())) {
                                                 error!(target: "Hotstuff","~~ trigger_qc_mission from {from}. block {} execute mission send failed for {e:?}", grandpa.payload.next_block.block_number);
                                             }
-                                            self.processed = grandpa.payload.next_block.clone();
-                                            self.processing_block = None;
+                                            if grandpa.payload.next_block.block_number >= self.processed.block_number {
+                                                self.processed = grandpa.payload.next_block.clone();
+                                                self.processed_timestamp = qc.timestamp.as_millis();
+                                            }
+                                            if self.processing_block.is_some()
+                                                && grandpa.payload.next_block.block_number >= self.processing_block.as_ref().unwrap().block_number
+                                            {
+                                                // clear here for local to get correct next proposal payload
+                                                self.processing_block = None;
+                                            }
                                         } else {
                                             // skip update `self.processing_block` here should make next following `generate_proposal` to re-process this block.
-                                            error!(target: "Hotstuff","~~ trigger_qc_mission from {from}. block {} execute mission skipped for slot rollback {processed_slot} -> {slot} ", grandpa.payload.next_block.block_number);
+                                            debug!(target: "Hotstuff","~~ trigger_qc_mission from {from}. block {} execute mission skipped for slot rollback {processed_slot} -> {slot} ", grandpa.payload.next_block.block_number);
                                         }
                                     }
                                 } else {
@@ -645,7 +743,7 @@ where
                     _ => (),
                 }
             }
-            if !qc_proposal.payload.new_block.is_empty() {
+            if info.finalized_number < qc_proposal.payload.new_block.block_number && !qc_proposal.payload.new_block.is_empty() {
                 match self.synchronizer.get_proposal_ancestors(&qc_proposal, &|p| !p.payload.new_block.is_empty()) {
                     Ok(Some((parent, grandpa))) => {
                         if qc_proposal.view == parent.view + 1 && parent.view == grandpa.view + 1 {
@@ -856,16 +954,16 @@ where
     ) -> (NextBlock<B>, u128) {
         let start = std::time::Instant::now();
         self.client.info().best_hash;
-        let parent_header = self.client.header( self.client.info().best_hash).unwrap().unwrap();
-        let proposer = self.proposer_factory.write().await.init(&parent_header).await.unwrap();
+        let parent_header = self.client.header(self.client.info().best_hash).expect("failed to get best_hash").expect("no expected header");
+        let proposer = self.proposer_factory.write().await.init(&parent_header).await.expect("proposer init");
         let except = exclude
             .map(|(groups, single)| [groups.into_iter().flatten().collect(), single].concat())
             .unwrap_or_default();
         let local_timer_period = self.local_timer.period();
-        let mut extrinsic = StepBlockPropose::<B>::extrinsic(
+        let mut extrinsic = BlockPropose::<B>::extrinsic(
             &proposer,
             // time wait for pool response.
-            local_timer_period.checked_div(10).unwrap(),
+            local_timer_period.checked_div(10).unwrap_or_default(),
             // execute time limit to estimate extrinsic number. We currently set `2 * slot_duration`. `slot_duration` is min_block_time.
             std::time::Instant::now().add(std::time::Duration::from_millis(self.slot_duration.as_millis().saturating_mul(2))),
             // TODO SHOULD add block size limit
@@ -888,38 +986,64 @@ where
     fn check_payload(&self, payload: &Payload<B>) -> Result<(), HotstuffError> {
         let info = self.client.info();
         if !payload.next_block.is_empty() {
-            // if we meet processed next_block. we can re-process it.
-            if info.finalized_number >= payload.next_block.block_number {
-                return Err(PayloadError::BlockRollBack.into());
+            // processed next_block. should not re-process it.
+            if payload.next_block.block_number <= self.processed.block_number
+                || info.finalized_number >= payload.next_block.block_number
+            {
+                return Err(PayloadError::BlockRollBack(format!("Next/Processed/Finalized: {}/{}/{}", payload.next_block.block_number, self.processed.block_number, info.finalized_number)).into());
             }
-            if let Some((groups, single)) = payload.next_block.extrinsic.clone() {
-                let extrinsic = [groups.into_iter().flatten().collect(), single].concat();
-                let extrinsic = extrinsic.into_iter().map(|e| (TransactionSource::External, e)).collect();
-                if self.client
-                    .runtime_api()
-                    .validate_transactions(info.best_hash, extrinsic, info.best_hash)
-                    .map_err(|e| HotstuffError::ClientError(e.to_string()))?
+            if let Some((mut groups, single)) = payload.next_block.extrinsic.clone() {
+                let start = std::time::Instant::now();
+                groups.push(single);
+                let extrinsic: Vec<_> = groups
                     .into_iter()
-                    .any(|r| if let Err(e) = r {
-                        !(e.exhausted_resources() || e.future())
-                    } else {
-                        true
-                    })
-                {
-                    // some extrinsic check filed(error but not exhausted_resources or future).
-                    return Err(PayloadError::ExtrinsicErr(format!("validate_transactions meet err: {e:?}")).into());
+                    .map(|e| e.into_iter().map(|e| (TransactionSource::External, e)).collect::<Vec<_>>())
+                    .collect();
+                let mut check_tasks: Vec<JoinHandle<Result<(usize, u128), HotstuffError>>> = vec![];
+                for thread_extrinsic in extrinsic {
+                    let client = self.client.clone();
+                    let task = std::thread::spawn(move || {
+                        let thread_start = std::time::Instant::now();
+                        let length = thread_extrinsic.len();
+                        let validate_results = client
+                            .clone()
+                            .runtime_api()
+                            .validate_transactions(info.best_hash, thread_extrinsic, info.best_hash)
+                            .map_err(|e| HotstuffError::ClientError(e.to_string()))?;
+                        for res in validate_results {
+                            if let Err(e) = res {
+                                if !(e.exhausted_resources() || e.future()) {
+                                    // some extrinsic check filed(error but not exhausted_resources or future).
+                                    return Err(PayloadError::ExtrinsicErr(format!("validate_transactions meet err: {e:?}")).into());
+                                }
+                            }
+                        }
+                        Ok((length, thread_start.elapsed().as_millis()))
+                    });
+                    check_tasks.push(task);
+                }
+                let mut threads_verify = vec![];
+                for task in check_tasks {
+                    let res = task
+                        .join()
+                        .map_err(|e| HotstuffError::Payload(PayloadError::ExtrinsicErr(format!("validate_transactions meet err: {e:?}"))))??;
+                    threads_verify.push(res);
+                }
+                let check_extrinsic_time = start.elapsed().as_micros();
+                if check_extrinsic_time / 1000 >= self.local_timer.period().as_millis() {
+                    warn!(target: "Hotstuff", "check_payload extrinsic timeout: {check_extrinsic_time} micros(each length & millis: {threads_verify:?})");
                 }
             }
         }
         if !payload.new_block.is_empty() {
             if info.finalized_number >= payload.new_block.block_number {
-                return Err(PayloadError::BlockRollBack.into());
+                return Err(PayloadError::BlockRollBack(format!("Finalize: {} -> {}", info.finalized_number, payload.new_block.block_number)).into());
             }
             match self.client.status(payload.new_block.block_hash) {
                 Ok(block_status) => {
                     if BlockStatus::Unknown == block_status {
                         // skip for no new_block in proposal is not in local.
-                        return Err(PayloadError::UnknownBlock.into());
+                        return Err(PayloadError::UnknownBlock(format!("Finalize: {} ({})", payload.new_block.block_number, payload.new_block.block_hash)).into());
                     }
                 }
                 Err(e) => return Err(ClientError(e.to_string())),
@@ -1032,206 +1156,9 @@ where
     N: NetworkT<B> + Sync + 'static,
     S: SyncingT<B> + Sync + 'static,
     PF: Environment<B, Error = Error> + Send + Sync + 'static,
-    PF::Proposer: Proposer<B, Error = Error, Transaction = sp_api::TransactionFor<C, B>> + StepBlockPropose<B>,
+    PF::Proposer: Proposer<B, Error = Error, Transaction = sp_api::TransactionFor<C, B>> + BlockPropose<B>,
     Error: std::error::Error + Send + From<ConsensusError> + 'static,
 {
-}
-
-pub struct BlockAuthorship<C: ClientForHotstuff<B, BE>, B: BlockT, I, PF, L: sc_consensus::JustificationSyncLink<B>, BE: Backend<B>, CIDP, SC> {
-    pub client: Arc<C>,
-    pub proposer_factory: Arc<RwLock<PF>>,
-    pub import: I,
-    pub justification_sync_link: L,
-    pub create_inherent_data_providers: CIDP,
-    pub select_chain: SC,
-    pub last_slot: Slot,
-    pub executor_rx: UnboundedReceiver<(Timestamp, [QC<B>; 3], NextBlock<B>)>,
-    pub mission_queue: Arc<Mutex<VecDeque<(Timestamp, [QC<B>; 3], NextBlock<B>)>>>,
-    pub working: Arc<Mutex<Option<<B::Header as HeaderT>::Number>>>,
-    pub block_size_limit: Option<usize>,
-    phantom_data: PhantomData<BE>,
-}
-
-impl<C, B: BlockT, I, PF, L, BE: Backend<B>, Error, CIDP, SC> BlockAuthorship<C, B, I, PF, L, BE, CIDP, SC>
-where
-    C: ClientForHotstuff<B, BE> + Send + Sync + 'static,
-    I: BlockImport<B, Transaction = TransactionFor<C, B>> + Send + Sync + 'static,
-    PF: Environment<B, Error = Error> + Send + Sync + 'static,
-    PF::Proposer: Proposer<B, Error = Error, Transaction = sp_api::TransactionFor<C, B>> + StepBlockPropose<B>,
-    L: sc_consensus::JustificationSyncLink<B>,
-    Error: std::error::Error + Send + From<ConsensusError> + 'static,
-    CIDP: CreateInherentDataProviders<B, Timestamp> + Send + 'static,
-    CIDP::InherentDataProviders: InherentDataProviderExt + Send,
-    SC: SelectChain<B>,
-{
-    pub fn new(
-        client: Arc<C>,
-        import: I,
-        proposer_factory: Arc<RwLock<PF>>,
-        justification_sync_link: L,
-        create_inherent_data_providers: CIDP,
-        select_chain: SC,
-        executor_rx: UnboundedReceiver<(Timestamp, [QC<B>; 3], NextBlock<B>)>,
-    ) -> Self {
-        Self {
-            client,
-            proposer_factory,
-            import,
-            justification_sync_link,
-            create_inherent_data_providers,
-            select_chain,
-            last_slot: 0.into(),
-            executor_rx,
-            mission_queue: Arc::new(Mutex::new(VecDeque::new())),
-            working: Arc::new(Mutex::new(None)),
-            block_size_limit: None,
-            phantom_data: PhantomData,
-        }
-    }
-
-    pub async fn block_import_params(
-        &self,
-        header: B::Header,
-        body: Vec<B::Extrinsic>,
-        storage_changes: StorageChanges<TransactionFor<C, B>, B>,
-        full_qc: [QC<B>; 3],
-    ) -> Result<BlockImportParams<B, TransactionFor<C, B>>, ConsensusError> {
-        let mut import_block = BlockImportParams::new(BlockOrigin::ConsensusBroadcast, header);
-        let digest_item = <DigestItem as CompatibleDigestItem<Vec<QC<B>>>>::hotstuff_seal(full_qc.to_vec());
-        import_block.post_digests.push(digest_item);
-        import_block.body = Some(body);
-        import_block.state_action =
-            StateAction::ApplyChanges(sc_consensus::StorageChanges::Changes(storage_changes));
-        import_block.fork_choice = Some(ForkChoiceStrategy::LongestChain);
-
-        Ok(import_block)
-    }
-}
-
-pub async fn start_hotstuff_block_authorship<C, B: BlockT, I, PF, L, BE: Backend<B>, Error, CIDP, SC>(
-    mut block_authorship: BlockAuthorship<C, B, I, PF, L, BE, CIDP, SC>,
-)
-where
-    C: ClientForHotstuff<B, BE>+ Send + Sync + 'static,
-    I: BlockImport<B, Transaction = TransactionFor<C, B>> + Send + Sync + 'static,
-    PF: Environment<B, Error = Error> + Send + Sync + 'static,
-    PF::Proposer: Proposer<B, Error = Error, Transaction = TransactionFor<C, B>> + StepBlockPropose<B>,
-    L: sc_consensus::JustificationSyncLink<B>,
-    Error: std::error::Error + Send + From<ConsensusError> + 'static,
-    CIDP: CreateInherentDataProviders<B, Timestamp> + Send + 'static,
-    CIDP::InherentDataProviders: InherentDataProviderExt + Send,
-    SC: SelectChain<B>,
-{
-    // TODO SHOULD add restart recover logic to execute unexecuted block.
-    loop {
-        if let Some((timestamp, full_qc, next_block)) = block_authorship.executor_rx.recv().await {
-            // push next_block to mission_queue.
-            block_authorship.mission_queue.lock().unwrap().push_back((timestamp, full_qc, next_block));
-            // try handle all next_blocks for mission_queue.
-            loop {
-                let next_mission = block_authorship.mission_queue.lock().unwrap().pop_front();
-                if let Some((timestamp, full_qc, mut next_block)) = next_mission {
-                    let extrinsic = next_block.extrinsic.take();
-                    if extrinsic.is_none() {
-                        warn!(target: "Hotstuff", "[Execute] Next block number: {} skipped for None extrinsic", next_block.block_number);
-                        continue;
-                    }
-                    let chain_head = match block_authorship.select_chain.best_chain().await {
-                        Ok(x) => x,
-                        Err(e) => {
-                            warn!(target: "Hotstuff", "[Execute] Unable to author block in slot. No best block header: {e}");
-                            continue
-                        },
-                    };
-                    let best_block = chain_head.number().clone();
-                    let best_hash = chain_head.hash();
-                    if best_block.saturating_add(1u32.into()) != next_block.block_number {
-                        warn!(target: "Hotstuff", "[Execute] Best block number: {best_block}, next block number: {} skipped", next_block.block_number);
-                        continue;
-                    }
-                    block_authorship.working.lock().unwrap().replace(next_block.block_number.clone());
-                    // execute block
-                    // creat inherent data
-                    let inherent_data_providers = match block_authorship
-                        .create_inherent_data_providers
-                        .create_inherent_data_providers(chain_head.hash(), timestamp)
-                        .await
-                    {
-                        Ok(x) => x,
-                        Err(e) => {
-                            warn!(target: "Hotstuff", "[Execute] Unable to author block in slot. Failure creating inherent data provider: {e}");
-                            continue
-                        },
-                    };
-                    debug!(target: "Hotstuff", "[Execute] Best block number: {best_block}, next block number: {} start execute", next_block.block_number);
-                    let slot = inherent_data_providers.slot();// Never yield the same slot twice.
-                    if slot > block_authorship.last_slot {
-                        block_authorship.last_slot = slot;
-                    } else {
-                        warn!(target: "Hotstuff", "[Execute] Best block number: {best_block}, next block number: {} skipped for last_slot {}, current_slot {slot}", next_block.block_number, block_authorship.last_slot);
-                        continue;
-                    }
-                    let inherent_data = inherent_data_providers.create_inherent_data().await.unwrap();
-
-                    let logs = vec![<DigestItem as CompatibleDigestItem<Slot>>::hotstuff_pre_digest(slot)];
-                    let parent_header = block_authorship
-                        .client
-                        .header(best_hash)
-                        .unwrap()
-                        .unwrap();
-                    let proposer = block_authorship.proposer_factory.write().await.init(&parent_header).await.unwrap();
-                    let proposal = match StepBlockPropose::<B>::step_propose(
-                        proposer,
-                        block_authorship.block_size_limit,
-                        inherent_data,
-                        Digest { logs },
-                        extrinsic.unwrap(),
-                        true,
-                    ).await {
-                        Ok(propose) => propose,
-                        Err(e) => {
-                            warn!(target: "Hotstuff", "[Execute] Propose block {} failed for {e:?}", next_block.block_number);
-                            block_authorship.working.lock().unwrap().take();
-                            continue;
-                        }
-                    };
-                    // generate import params
-                    let (block, _storage_proof) = (proposal.block, proposal.proof);
-                    let (header, body) = block.deconstruct();
-                    let block_import_params = match block_authorship.block_import_params(
-                        header,
-                        body.clone(),
-                        proposal.storage_changes,
-                        full_qc,
-                    ).await {
-                        Ok(import_params) => import_params,
-                        Err(e) => {
-                            warn!(target: "Hotstuff", "[Execute] Propose block {} get block_import_params failed for {e:?}", next_block.block_number);
-                            continue;
-                        }
-                    };
-                    // import block
-                    let header = block_import_params.post_header();
-                    match block_authorship.import.import_block(block_import_params).await {
-                        Ok(res) => {
-                            res.handle_justification(
-                                &header.hash(),
-                                *header.number(),
-                                &block_authorship.justification_sync_link,
-                            );
-                        },
-                        Err(err) => {
-                            warn!(target: "Hotstuff", "[Execute] Error with block {} built on {best_hash:?}: {err}", next_block.block_number);
-                        },
-                    }
-
-                    block_authorship.working.lock().unwrap().take();
-                } else {
-                    break;
-                }
-            }
-        }
-    }
 }
 
 pub fn start_hotstuff<B, BE, C, N, S, SC, PF, Error, L, I, CIDP>(
@@ -1259,9 +1186,9 @@ where
     C: ClientForHotstuff<B, BE> + Send + Sync + 'static,
     C::Api: hotstuff_primitives::HotstuffApi<B, AuthorityId>,
     PF: Environment<B, Error = Error> + Send + Sync + 'static,
-    PF::Proposer: Proposer<B, Error = Error, Transaction = TransactionFor<C, B>> + StepBlockPropose<B>,
+    PF::Proposer: Proposer<B, Error = Error, Transaction = TransactionFor<C, B>> + BlockPropose<B>,
     L: sc_consensus::JustificationSyncLink<B>,
-    I: BlockImport<B, Transaction = TransactionFor<C, B>> + Send + Sync + 'static,
+    I: BlockImport<B, Transaction = TransactionFor<C, B>> + ImportLock<B> + Send + Sync + 'static,
     Error: std::error::Error + Send + From<ConsensusError> + 'static,
     CIDP: CreateInherentDataProviders<B, Timestamp> + Send + 'static,
     CIDP::InherentDataProviders: InherentDataProviderExt + Send,
@@ -1270,9 +1197,10 @@ where
     let LinkHalf { client, .. } = link;
     let authorities = get_genesis_authorities_from_client::<B, BE, C>(client.clone());
 
-    let network = HotstuffNetworkBridge::new(network.clone(), sync.clone(), hotstuff_protocol_name);
-    let synchronizer = Synchronizer::<B, BE, C>::new(client.clone());
-    let consensus_state = ConsensusState::<B>::new(keystore, authorities);
+    let consensus_state = ConsensusState::<B>::new(keystore, authorities.clone());
+    let peer_authority = consensus_state.make_peer_authority(network.local_peer_id().to_base58());
+    let network = HotstuffNetworkBridge::new(network.clone(), sync.clone(), hotstuff_protocol_name, authorities, peer_authority);
+    let synchronizer = Synchronizer::<B, BE, C>::new(client.clone(), 2000);
 
     let (consensus_msg_tx, consensus_msg_rx) = channel(1000);
 
@@ -1302,9 +1230,16 @@ where
     );
 
     let consensus_network = ConsensusNetwork::<B, N, S>::new(network, consensus_msg_tx, queue);
-    let block_authorship = BlockAuthorship::new(client, import, proposer_factory, justification_sync_link, create_inherent_data_providers, select_chain, executor_rx);
-    let block_authorship_task = start_hotstuff_block_authorship(block_authorship);
-    Ok((async { consensus_worker.run().await }, consensus_network, block_authorship_task))
+    let mut block_executor = BlockExecutor::new(
+        client,
+        import,
+        proposer_factory,
+        justification_sync_link,
+        create_inherent_data_providers,
+        select_chain,
+        executor_rx,
+    );
+    Ok((async { consensus_worker.run().await }, consensus_network, async move { block_executor.run().await }))
 }
 
 pub fn get_genesis_authorities_from_client<

@@ -124,6 +124,7 @@ where
 		parent: Block::Hash,
 		inherent_digests: Digest,
 		record_proof: R,
+		context: Option<ExecutionContext>,
 	) -> sp_blockchain::Result<BlockBuilder<Block, RA, B>>;
 
 	/// Create a new block with some state.
@@ -133,6 +134,7 @@ where
 		&self,
 		parent: Block::Hash,
 		estimated_header_size: usize,
+		context: Option<ExecutionContext>,
 	) -> sp_blockchain::Result<BlockBuilder<Block, RA, B>>;
 
 	/// Create a new block, built on the head of the chain.
@@ -144,6 +146,8 @@ where
 
 /// Utility for building new (valid) blocks from a stream of extrinsics.
 pub struct BlockBuilder<'a, Block: BlockT, A: ProvideRuntimeApi<Block>, B> {
+	/// execution context,
+	pub context: ExecutionContext,
 	/// current applied extrinsic list.
 	pub extrinsics: Vec<Block::Extrinsic>,
 	/// Runtime api env.
@@ -178,6 +182,7 @@ where
 		record_proof: RecordProof,
 		inherent_digests: Digest,
 		backend: &'a Arc<B>,
+		context: Option<ExecutionContext>,
 	) -> Result<Self, Error> {
 		let header = <<Block as BlockT>::Header as HeaderT>::new(
 			parent_number + One::one(),
@@ -194,10 +199,10 @@ where
 		if record_proof.yes() {
 			api.record_proof();
 		}
-
+		let context = context.unwrap_or(ExecutionContext::BlockConstruction);
 		api.initialize_block_with_context(
 			parent_hash,
-			ExecutionContext::BlockConstruction,
+			context.clone(),
 			&header,
 		)?;
 
@@ -206,6 +211,7 @@ where
 			.ok_or_else(|| Error::VersionInvalid("BlockBuilderApi".to_string()))?;
 
 		Ok(Self {
+			context,
 			parent_hash,
 			extrinsics: Vec::new(),
 			api,
@@ -221,13 +227,16 @@ where
 		parent_hash: Block::Hash,
 		estimated_header_size: usize,
 		backend: &'a Arc<B>,
+		context: Option<ExecutionContext>,
 	) -> Result<Self, Error> {
 		let api = api.runtime_api();
 		let version = api
 			.api_version::<dyn BlockBuilderApi<Block>>(parent_hash)?
 			.ok_or_else(|| Error::VersionInvalid("BlockBuilderApi".to_string()))?;
 
+		let context = context.unwrap_or(ExecutionContext::BlockConstruction);
 		Ok(Self {
+			context,
 			parent_hash,
 			extrinsics: Vec::new(),
 			api,
@@ -250,14 +259,14 @@ where
 				#[allow(deprecated)]
 				api.apply_extrinsic_before_version_6_with_context(
 					parent_hash,
-					ExecutionContext::BlockConstruction,
+					self.context.clone(),
 					xt.clone(),
 				)
 				.map(legacy::byte_sized_error::convert_to_latest)
 			} else {
 				api.apply_extrinsic_with_context(
 					parent_hash,
-					ExecutionContext::BlockConstruction,
+					self.context.clone(),
 					xt.clone(),
 				)
 			};
@@ -293,7 +302,7 @@ where
 					#[allow(deprecated)]
 					match api.apply_extrinsic_before_version_6_with_context(
 						parent_hash,
-						ExecutionContext::BlockConstruction,
+						self.context.clone(),
 						xt.clone(),
 					)
 						.map(legacy::byte_sized_error::convert_to_latest) {
@@ -467,6 +476,7 @@ mod tests {
 			RecordProof::Yes,
 			Default::default(),
 			&*backend,
+			None,
 		)
 		.unwrap()
 		.build()
@@ -498,6 +508,7 @@ mod tests {
 			RecordProof::Yes,
 			Default::default(),
 			&*backend,
+			None,
 		)
 		.unwrap();
 
@@ -514,6 +525,7 @@ mod tests {
 			RecordProof::Yes,
 			Default::default(),
 			&*backend,
+			None,
 		)
 		.unwrap();
 

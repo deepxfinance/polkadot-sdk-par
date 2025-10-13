@@ -2,10 +2,10 @@
 use std::{marker::PhantomData, sync::Arc};
 
 use codec::Decode;
-
+use tokio::sync::RwLock;
 use sc_client_api::{AuxStore, Backend, BlockchainEvents, CallExecutor, ExecutionStrategy, ExecutorProvider, Finalizer, LockImportRun, StorageProvider};
 use sc_consensus::BlockImport;
-use sp_api::ProvideRuntimeApi;
+use sp_api::{ProvideRuntimeApi, TransactionFor};
 use sp_blockchain::{Error as ClientError, HeaderBackend, HeaderMetadata};
 use sp_core::traits::CallContext;
 use sp_runtime::{
@@ -14,7 +14,9 @@ use sp_runtime::{
 };
 
 use hotstuff_primitives::AuthorityId;
-
+use sc_basic_authorship::BlockPropose;
+use sc_network_common::role::Role;
+use sp_consensus::{Environment, Proposer, Error as ConsensusError};
 use crate::{authorities::SharedAuthoritySet, aux_schema, import::HotstuffBlockImport};
 
 /// A trait that includes all the client functionalities hotstuff requires.
@@ -117,12 +119,14 @@ where
 
 /// Make block importer and link half necessary to tie the background voter
 /// to it.
-pub fn block_import<BE, Block: BlockT, Client, SC>(
+pub fn block_import<BE, Block: BlockT, Client, SC, PF, Error>(
+    role: Role,
     client: Arc<Client>,
+    proposer_factory: PF,
     genesis_authorities_provider: &dyn GenesisAuthoritySetProvider<Block>,
 ) -> Result<
     (
-        HotstuffBlockImport<BE, Block, Client>,
+        HotstuffBlockImport<BE, Block, Client, PF>,
         LinkHalf<Block, Client, SC>,
     ),
     ClientError,
@@ -130,6 +134,9 @@ pub fn block_import<BE, Block: BlockT, Client, SC>(
 where
     BE: Backend<Block> + 'static,
     Client: ClientForHotstuff<Block, BE> + 'static,
+    PF: Environment<Block, Error = Error> + Send + Sync + 'static,
+    PF::Proposer: Proposer<Block, Error = Error, Transaction = TransactionFor<Client, Block>> + BlockPropose<Block>,
+    Error: std::error::Error + Send + From<ConsensusError> + 'static,
 {
     let chain_info = client.info();
     let genesis_hash = chain_info.genesis_hash;
@@ -152,7 +159,7 @@ where
     )?;
 
     Ok((
-        HotstuffBlockImport::new(client.clone()),
+        HotstuffBlockImport::new(client.clone(), role, Arc::new(RwLock::new(proposer_factory))),
         LinkHalf {
             client,
             select_chain: None,

@@ -17,6 +17,7 @@ use sp_runtime::traits::Header as HeaderT;
 
 use crate::client::GenesisAuthoritySetProvider;
 use hotstuff_primitives::HotstuffApi;
+use sc_network_common::role::Role;
 
 type TestLinkHalf =
 	LinkHalf<Block, PeersFullClient, LongestChain<substrate_test_runtime_client::Backend, Block>>;
@@ -124,7 +125,7 @@ impl TestNetFactory for TestNet {
 		client: PeersClient,
 	) -> (BlockImportAdapter<Self::BlockImport>, Option<BoxJustificationImport<Block>>, PeerData) {
 		let (client, _backend) = (client.as_client(), client.as_backend());
-		let (import, link) = crate::client::block_import(client.clone(), &self.test_config)
+		let (import, link) = crate::client::block_import(Role::Authority, client.clone(), &self.test_config)
 			.expect("Could not create block import for fresh peer.");
 		let justification_import = Box::new(import.clone());
 		(BlockImportAdapter::new(import), Some(justification_import), Mutex::new(Some(link)))

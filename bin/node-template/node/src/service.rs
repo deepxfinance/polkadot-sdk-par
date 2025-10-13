@@ -4,11 +4,11 @@ use node_template_runtime::{self, opaque::Block, RuntimeApi};
 use sc_client_api::BlockBackend;
 use hotstuff_consensus::import_queue::ImportQueueParams;
 pub use sc_executor::NativeElseWasmExecutor;
-use sc_service::{error::Error as ServiceError, Configuration, TFullBackend, TaskManager};
+use sc_service::{error::Error as ServiceError, Configuration, TaskManager};
 use sc_telemetry::{Telemetry, TelemetryWorker};
 use hotstuff_primitives::AuthorityPair as HotstuffPair;
 use std::sync::Arc;
-use sc_transaction_pool::FullPool;
+use sp_consensus::DisableProofRecording;
 use sp_timestamp::Timestamp;
 use crate::extend_extrinsic::ExtendTx;
 use crate::merge_handler::MergeHandler;
@@ -38,6 +38,15 @@ pub(crate) type FullClient =
 	sc_service::TFullClient<Block, RuntimeApi, NativeElseWasmExecutor<ExecutorDispatch>>;
 type FullBackend = sc_service::TFullBackend<Block>;
 type FullSelectChain = sc_consensus::LongestChain<FullBackend, Block>;
+type FullPool = sc_transaction_pool::FullPool<Block, FullClient, DefaultRCGroup>;
+type ProposerFactory = sc_basic_authorship::MTHProposerFactory<
+	FullPool,
+	FullBackend,
+	FullClient,
+	DisableProofRecording,
+	MergeHandler<FullBackend, Block>,
+	ExtendTx,
+>;
 
 pub fn new_partial(
 	config: &Configuration,
@@ -47,9 +56,9 @@ pub fn new_partial(
 		FullBackend,
 		FullSelectChain,
 		sc_consensus::DefaultImportQueue<Block, FullClient>,
-		sc_transaction_pool::FullPool<Block, FullClient, DefaultRCGroup>,
+		FullPool,
 		(
-			hotstuff_consensus::HotstuffBlockImport<FullBackend, Block, FullClient>,
+			hotstuff_consensus::HotstuffBlockImport<FullBackend, Block, FullClient, ProposerFactory>,
 			//LinkHalf is something like `client`, `backend`, `network`, and other components needed by the Hotstuff consensus.
 			hotstuff_consensus::LinkHalf<Block, FullClient, FullSelectChain>,
 			Option<Telemetry>,
@@ -84,15 +93,23 @@ pub fn new_partial(
 
 	let select_chain = sc_consensus::LongestChain::new(backend.clone());
 
-	let transaction_pool: Arc<FullPool<_, _, DefaultRCGroup>> = sc_transaction_pool::BasicPool::new_full(
+	let transaction_pool: Arc<FullPool> = sc_transaction_pool::BasicPool::new_full(
 		config.transaction_pool.clone(),
 		config.role.is_authority().into(),
 		config.prometheus_registry(),
 		task_manager.spawn_essential_handle(),
 		client.clone(),
 	);
+	let proposer_factory: ProposerFactory = ProposerFactory::new(
+		task_manager.spawn_handle(),
+		client.clone(),
+		transaction_pool.clone(),
+		None,
+		None,
+		<ExecutorDispatch as sc_executor::NativeExecutionDispatch>::native_version(),
+	);
 
-	let (hotstuff_block_import, hotstuff_link) = hotstuff_consensus::block_import(client.clone(), &client)?;
+	let (hotstuff_block_import, hotstuff_link) = hotstuff_consensus::block_import(config.role.clone(), client.clone(), proposer_factory, &client)?;
 
 	let slot_duration = hotstuff_consensus::slot_duration(&*client)?;
 	let import_queue =
@@ -206,15 +223,14 @@ pub fn new_full(config: Configuration) -> Result<TaskManager, ServiceError> {
 
 	if role.is_authority() {
 		// Create hotstuff consensus voter & network.
-		let proposer_factory: sc_basic_authorship::MTHProposerFactory<_, _, _, _, MergeHandler<TFullBackend<Block>, Block>, ExtendTx> =
-			sc_basic_authorship::MTHProposerFactory::new(
-				task_manager.spawn_handle(),
-				client.clone(),
-				transaction_pool,
-				prometheus_registry.as_ref(),
-				telemetry.as_ref().map(|x| x.handle()),
-				<ExecutorDispatch as sc_executor::NativeExecutionDispatch>::native_version(),
-			);
+		let proposer_factory: ProposerFactory = ProposerFactory::new(
+			task_manager.spawn_handle(),
+			client.clone(),
+			transaction_pool,
+			prometheus_registry.as_ref(),
+			telemetry.as_ref().map(|x| x.handle()),
+			<ExecutorDispatch as sc_executor::NativeExecutionDispatch>::native_version(),
+		);
 		let slot_duration = hotstuff_consensus::slot_duration(&*client)?;
 		let (voter, hotstuff_network, block_authorship_task) = hotstuff_consensus::consensus::start_hotstuff(
 			network,

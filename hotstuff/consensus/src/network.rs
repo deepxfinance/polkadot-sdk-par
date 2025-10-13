@@ -4,7 +4,8 @@ use std::{
 	sync::Arc,
 	task::{Context, Poll},
 };
-
+use std::collections::HashMap;
+use codec::Encode;
 use futures::prelude::*;
 use parking_lot::Mutex;
 use sc_network::{
@@ -18,9 +19,10 @@ use sc_utils::mpsc::{tracing_unbounded, TracingUnboundedReceiver};
 use sp_core::Decode;
 use sp_runtime::traits::{Block as BlockT, Hash as HashT, Header as HeaderT, NumberFor};
 
-use hotstuff_primitives::RoundNumber;
-
+use hotstuff_primitives::{AuthorityId, AuthorityList, RoundNumber};
 use crate::{import::PeerReport, message::ConsensusMessage, primitives::ViewNumber};
+use crate::message::PeerAuthority;
+use crate::primitives::HotstuffError;
 
 /// A handle to the network.
 ///
@@ -64,6 +66,7 @@ where
 
 pub(super) struct GossipValidator<Block: BlockT> {
 	view: parking_lot::RwLock<ViewNumber>,
+	authority_id: parking_lot::RwLock<Option<PeerAuthority<Block>>>,
 	_phantom: Option<PhantomData<Block>>,
 }
 
@@ -71,9 +74,9 @@ impl<Block: BlockT> GossipValidator<Block> {
 	/// Create a new gossip-validator. The current set is initialized to 0. If
 	/// `catch_up_enabled` is set to false then the validator will not issue any
 	/// catch up requests (useful e.g. when running just the hotstuff observer).
-	pub(super) fn new() -> (GossipValidator<Block>, TracingUnboundedReceiver<PeerReport>) {
+	pub(super) fn new(authority: Option<PeerAuthority<Block>>) -> (GossipValidator<Block>, TracingUnboundedReceiver<PeerReport>) {
 		let (_tx, rx) = tracing_unbounded("mpsc_hotstuff_gossip_validator", 100_000);
-		let val = GossipValidator { _phantom: None, view: parking_lot::RwLock::new(0) };
+		let val = GossipValidator { _phantom: None, view: parking_lot::RwLock::new(0), authority_id: parking_lot::RwLock::new(authority) };
 
 		(val, rx)
 	}
@@ -91,9 +94,11 @@ impl<Block: BlockT> GossipValidator<Block> {
 
 impl<B: BlockT> sc_network_gossip::Validator<B> for GossipValidator<B> {
 	/// New peer is connected.
-	fn new_peer(&self, _context: &mut dyn ValidatorContext<B>, _who: &PeerId, _role: ObservedRole) {
+	fn new_peer(&self, context: &mut dyn ValidatorContext<B>, who: &PeerId, _role: ObservedRole) {
 		// println!("~~~~【GossipValidator】:: new_peer PeerId:{}", who);
-		// context.send_message(who, Vec::from("hotstuff send back"));
+		if let Some(authority) = self.authority_id.read().as_ref() {
+			context.send_message(who, ConsensusMessage::Greeting(authority.clone()).encode());
+		}
 	}
 
 	/// New connection is dropped.
@@ -109,15 +114,16 @@ impl<B: BlockT> sc_network_gossip::Validator<B> for GossipValidator<B> {
 		mut data: &[u8],
 	) -> ValidationResult<B::Hash> {
 		if let Ok(message) = ConsensusMessage::<B>::decode(&mut data) {
+			let current_view = self.get_view();
 			let message_vew = match message {
+				ConsensusMessage::Greeting(_) => return ValidationResult::ProcessAndDiscard(ConsensusMessage::<B>::gossip_topic()),
+				ConsensusMessage::GetProposal(_) => return ValidationResult::ProcessAndDiscard(ConsensusMessage::<B>::gossip_topic()),
 				ConsensusMessage::Propose(proposal) => proposal.view,
 				ConsensusMessage::Vote(vote) => vote.view,
 				ConsensusMessage::Timeout(timeout) => timeout.view,
 				ConsensusMessage::TC(tc) => tc.view,
 				_ => 0,
 			};
-
-			let current_view = self.get_view();
 
 			if current_view > 1 && message_vew < current_view - 1 {
 				return ValidationResult::Discard;
@@ -160,6 +166,8 @@ impl<B: BlockT> sc_network_gossip::Validator<B> for GossipValidator<B> {
 
 			if let Ok(message) = ConsensusMessage::<B>::decode(&mut data) {
 				let message_vew = match message {
+					ConsensusMessage::Greeting(_) => return true,
+					ConsensusMessage::GetProposal(_) => return true,
 					ConsensusMessage::Propose(proposal) => proposal.view,
 					ConsensusMessage::Vote(vote) => vote.view,
 					ConsensusMessage::Timeout(timeout) => timeout.view,
@@ -184,6 +192,7 @@ pub struct HotstuffNetworkBridge<B: BlockT, N: Network<B>, S: Syncing<B>> {
 	pub service: N,
 	pub sync: S,
 	pub gossip_engine: Arc<Mutex<GossipEngine<B>>>,
+	pub authorities: HashMap<AuthorityId, Option<PeerId>>,
 	gossip_validator: Arc<GossipValidator<B>>,
 }
 
@@ -202,8 +211,8 @@ impl<B: BlockT, N: Network<B>, S: Syncing<B>> HotstuffNetworkBridge<B, N, S> {
 	/// handle.
 	/// On creation it will register previous rounds' votes with the gossip
 	/// service taken from the VoterSetState.
-	pub fn new(service: N, sync: S, protocol_name: ProtocolName) -> Self {
-		let (validator, _report_stream) = GossipValidator::new();
+	pub fn new(service: N, sync: S, protocol_name: ProtocolName, authorities: AuthorityList, authority_id: Option<PeerAuthority<B>>) -> Self {
+		let (validator, _report_stream) = GossipValidator::new(authority_id);
 
 		let validator = Arc::new(validator);
 		let gossip_engine = Arc::new(Mutex::new(GossipEngine::new(
@@ -213,8 +222,9 @@ impl<B: BlockT, N: Network<B>, S: Syncing<B>> HotstuffNetworkBridge<B, N, S> {
 			validator.clone(),
 			None,
 		)));
+		let authorities = authorities.into_iter().map(|a| (a.0, None)).collect();
 
-		HotstuffNetworkBridge { service, sync, gossip_engine, gossip_validator: validator.clone() }
+		HotstuffNetworkBridge { service, sync, gossip_engine, authorities, gossip_validator: validator.clone() }
 	}
 
 	// TODO does this validator make peer disconnect?
@@ -224,6 +234,15 @@ impl<B: BlockT, N: Network<B>, S: Syncing<B>> HotstuffNetworkBridge<B, N, S> {
 
 	pub fn local_peer_id(&self) -> PeerId {
 		self.service.local_peer_id()
+	}
+
+	pub fn send_to_authorities(&self, who: Option<Vec<AuthorityId>>, message: Vec<u8>) -> Result<(), HotstuffError> {
+		let peers: Vec<_> = match who {
+			None => self.authorities.values().filter_map(|p| p.clone()).collect(),
+			Some(authorities) => authorities.into_iter().filter_map(|a| self.authorities.get(&a).cloned().unwrap_or_default()).collect(),
+		};
+		self.gossip_engine.lock().send_message(peers, message.clone());
+		Ok(())
 	}
 }
 

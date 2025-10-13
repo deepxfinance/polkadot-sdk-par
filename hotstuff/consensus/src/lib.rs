@@ -12,6 +12,7 @@ pub mod primitives;
 pub mod store;
 pub mod synchronizer;
 pub mod import_queue;
+pub mod executor;
 
 pub use client::{block_import, LinkHalf};
 pub use import::HotstuffBlockImport;
@@ -282,23 +283,25 @@ pub fn check_header_slot_and_seal<B: BlockT, P: Pair>(
     slot_now: Slot,
     mut header: B::Header,
     authorities: &[AuthorityId],
-) -> Result<(B::Header, Slot, DigestItem), SealVerificationError<B::Header>>
+) -> Result<(B::Header, Slot, DigestItem, DigestItem), SealVerificationError<B::Header>>
 where
     P::Signature: Codec,
     P::Public: Codec + PartialEq + Clone,
 {
     // TODO 1. We should check Full QC or check signatures for block? we have no sign for block header.
-    let seal = header.digest_mut().pop().ok_or(SealVerificationError::Unsealed)?;
+    let seal_full_qc = header.digest_mut().pop().ok_or(SealVerificationError::Unsealed)?;
+    // just remove groups digest.
+    let seal_groups = header.digest_mut().pop().ok_or(SealVerificationError::Unsealed)?;
     let slot = find_pre_digest::<B, P::Signature>(&header)
         .map_err(SealVerificationError::InvalidPreDigest)?;
 
     if slot > slot_now {
-        header.digest_mut().push(seal);
+        header.digest_mut().push(seal_full_qc);
         Err(SealVerificationError::Deferred(header, slot))
     } else {
         // check the signature is valid under the expected authority and
         // chain state.
-        let full_qc: Vec<QC<B>> = seal.as_hotstuff_seal().ok_or(SealVerificationError::FullQCNotFound)?;
+        let full_qc: Vec<QC<B>> = seal_full_qc.as_hotstuff_seal().ok_or(SealVerificationError::FullQCNotFound)?;
         let authorities = authorities
             .iter()
             .map(|id| (id.clone(), 0))
@@ -309,6 +312,6 @@ where
                 return Err(SealVerificationError::BadSignature);
             }
         }
-        Ok((header, slot, seal))
+        Ok((header, slot, seal_groups, seal_full_qc))
     }
 }

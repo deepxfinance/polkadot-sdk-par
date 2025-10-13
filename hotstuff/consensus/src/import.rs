@@ -6,62 +6,138 @@ use std::{
 	sync::{Arc, Mutex},
 	task::{Context, Poll},
 };
-
+use std::collections::HashMap;
 use codec::{Encode, Decode};
 use futures::{Future, StreamExt};
+use tokio::sync::oneshot::{Receiver, Sender};
+use tokio::sync::RwLock;
+use hotstuff_primitives::digests::CompatibleDigestItem;
+use sc_basic_authorship::BlockPropose;
 use sc_client_api::{
 	client::{FinalityNotifications, ImportNotifications},
 	Backend, BlockImportNotification,
 };
-use sc_consensus::{
-	BlockCheckParams, BlockImport, BlockImportParams, ImportResult, JustificationImport,
-};
+use sc_consensus::{BlockCheckParams, BlockImport, BlockImportParams, ImportResult, JustificationImport, StateAction, StorageChanges};
 use sc_network::{PeerId, ReputationChange};
+use sc_network_common::role::Role;
 use sp_api::TransactionFor;
 use sp_blockchain::BlockStatus;
-use sp_consensus::Error as ConsensusError;
-use sp_runtime::{
-	generic::BlockId,
-	traits::{Block as BlockT, Header as HeaderT, NumberFor, One},
-	Justification,
-};
+use sp_consensus::{BlockOrigin, Environment, Error as ConsensusError, Proposer};
+use sp_runtime::{generic::BlockId, traits::{Block as BlockT, Header as HeaderT, NumberFor, One}, Digest, Justification};
+use crate::{client::ClientForHotstuff, primitives::{HotstuffError, HotstuffError::*}};
 
-use crate::{
-	client::ClientForHotstuff,
-	primitives::{HotstuffError, HotstuffError::*},
-};
+pub struct BlockNotification<B: BlockT> {
+	pub origin: BlockOrigin,
+    pub notifier: Sender<()>,
+    pub receiver: Option<Receiver<()>>,
+    // TODO use B for better notification.
+    phantom: PhantomData<B>,
+}
 
-// const LOG_TARGET: &str  = "hotstuff";
-pub struct HotstuffBlockImport<Backend, Block: BlockT, Client> {
+#[async_trait::async_trait]
+pub trait ImportLock<B: BlockT> {
+    async fn lock(&self, origin: BlockOrigin, number: <B::Header as HeaderT>::Number);
+
+    async fn unlock(&self, origin: BlockOrigin, number: <B::Header as HeaderT>::Number);
+}
+
+pub struct HotstuffBlockImport<Backend, Block: BlockT, Client, PF> {
 	inner: Arc<Client>,
+	role: Role,
+	proposer_factory: Arc<RwLock<PF>>,
+    import_lock: Arc<RwLock<HashMap<<Block::Header as HeaderT>::Number, BlockNotification<Block>>>>,
 	backend: PhantomData<Backend>,
 	_phantom: PhantomData<Block>,
 }
 
-impl<Backend, Block: BlockT, Client> Clone for HotstuffBlockImport<Backend, Block, Client> {
+impl<Backend, Block: BlockT, Client, PF> Clone for HotstuffBlockImport<Backend, Block, Client, PF> {
 	fn clone(&self) -> Self {
 		HotstuffBlockImport {
 			inner: self.inner.clone(),
+			role: self.role.clone(),
+			proposer_factory: self.proposer_factory.clone(),
+            import_lock: self.import_lock.clone(),
 			backend: PhantomData,
 			_phantom: PhantomData,
 		}
 	}
 }
 
-impl<Backend, Block: BlockT, Client> HotstuffBlockImport<Backend, Block, Client> {
-	pub fn new(inner: Arc<Client>) -> HotstuffBlockImport<Backend, Block, Client> {
-		HotstuffBlockImport { inner, backend: PhantomData, _phantom: PhantomData }
+#[async_trait::async_trait]
+impl<Backend, Block: BlockT, Client, PF> ImportLock<Block> for HotstuffBlockImport<Backend, Block, Client, PF>
+where
+    Backend: Send + Sync,
+    Client: Send + Sync + 'static,
+    PF: Send + Sync,
+{
+    async fn lock(&self, origin: BlockOrigin, number: <Block::Header as HeaderT>::Number) {
+		// if locked by same origin, return for continue import.
+        // if locked by different origin, wait for unlock notification.
+        let mut receiver = None;
+        let mut lock = self.import_lock.write().await;
+        if let Some(notifier) = lock.get_mut(&number) {
+			if origin == notifier.origin {
+				return;
+			}
+            receiver = notifier.receiver.take();
+        } else {
+            let (sender, receiver) = tokio::sync::oneshot::channel();
+            let notifier = BlockNotification {
+				origin,
+                notifier: sender,
+                receiver: Some(receiver),
+                phantom: PhantomData,
+            };
+            lock.insert(number, notifier);
+        }
+        drop(lock);
+        if let Some(receiver) = receiver {
+            let _ = receiver.await;
+        } else {
+			log::trace!(target: "Hotstuff", "[HotstuffBlockImport] {origin:?} lock block {number}");
+		}
+    }
+
+    async fn unlock(&self, origin: BlockOrigin, number: <Block::Header as HeaderT>::Number) {
+        // try to send unlock notification
+        let mut lock = self.import_lock.write().await;
+        if let Some(notification) = lock.remove(&number) {
+			if origin != notification.origin {
+				lock.insert(number, notification);
+				return;
+			}
+            if let Err(e) = notification.notifier.send(()) {
+                log::warn!(target: "Hotstuff", "notification for block {number} execution result failed {e:?}");
+            }
+			log::trace!(target: "Hotstuff", "[HotstuffBlockImport] {origin:?} unlock block {number}");
+        }
+    }
+}
+
+impl<Backend, Block: BlockT, Client, PF> HotstuffBlockImport<Backend, Block, Client, PF> {
+	pub fn new(inner: Arc<Client>, role: Role, proposer_factory: Arc<RwLock<PF>>) -> HotstuffBlockImport<Backend, Block, Client, PF> {
+		HotstuffBlockImport {
+            inner,
+            role,
+            proposer_factory,
+            backend: PhantomData,
+            import_lock: Arc::new(RwLock::new(HashMap::new())),
+            _phantom: PhantomData,
+        }
 	}
 }
 
 #[async_trait::async_trait]
-impl<BE, Block: BlockT, Client> BlockImport<Block> for HotstuffBlockImport<BE, Block, Client>
+impl<BE, Block: BlockT, Client, PF, Error> BlockImport<Block> for HotstuffBlockImport<BE, Block, Client, PF>
 where
 	BE: Backend<Block>,
-	Client: ClientForHotstuff<Block, BE>,
+	Client: ClientForHotstuff<Block, BE> + 'static,
 	for<'a> &'a Client:
 		BlockImport<Block, Error = ConsensusError, Transaction = TransactionFor<Client, Block>>,
 	TransactionFor<Client, Block>: 'static,
+    PF: Environment<Block, Error = Error> + Send + Sync + 'static,
+    PF::Proposer: Proposer<Block, Error = Error, Transaction = TransactionFor<Client, Block>> + BlockPropose<Block>,
+    Error: std::error::Error + Send + From<ConsensusError> + 'static,
 {
 	type Error = ConsensusError;
 	type Transaction = TransactionFor<Client, Block>;
@@ -77,40 +153,134 @@ where
 		&mut self,
 		mut block: BlockImportParams<Block, Self::Transaction>,
 	) -> Result<ImportResult, Self::Error> {
+		let calculate_block = |block: &BlockImportParams<Block, Self::Transaction>| {
+			let post_header = block.post_header();
+			let post_digests = post_header.digest();
+			if post_digests.logs().len() < 3 {
+				return Err(ConsensusError::ClientImport(format!("Insufficient post_digests: {}/3", post_digests.logs().len()).into()));
+			}
+			let inherent_digest = Digest { logs: vec![post_digests.logs()[0].clone()] };
+			let groups: Vec<u32> = post_digests.logs()[1].as_hotstuff_seal().ok_or(ConsensusError::ClientImport("Invalid post_digests for groups".into()))?;
+			let parent_header = self.inner
+				.header(*block.header.parent_hash())
+				.map_err(|e| ConsensusError::ClientImport(format!("Get header for {:?} failed: {e:?}", block.header.parent_hash())))?
+				.ok_or(ConsensusError::ClientImport(format!("No header for {:?}", block.header.parent_hash())))?;
+			futures::executor::block_on(async {
+				self
+					.proposer_factory
+					.write()
+					.await
+					.init(&parent_header)
+					.await
+					.map_err(|e| ConsensusError::ClientImport(format!("init proposer: {e:?}")))?
+					.execute_block_for_changes(
+						"ImportBlock",
+						block.origin.into(),
+						*block.header.parent_hash(),
+						inherent_digest,
+						block.body.clone().unwrap_or_default(),
+						groups,
+						true,
+					)
+					.await
+					.map_err(|e| Self::Error::ClientImport(format!("Execute block error {e:?}")))
+			})
+		};
 		let hash = block.post_hash();
-
+		log::trace!(
+			target: "Hotstuff",
+			"ImportBlock({:?}): {}(parent: {:?}, body: {:?}, digests: {}, post_digests: {}, action: {})",
+			block.origin,
+			block.header.number(),
+			block.header.parent_hash(),
+			block.body.as_ref().map(|e| e.len()),
+			block.header.digest().logs().len(),
+			block.post_digests.len(),
+			match block.state_action {
+				StateAction::ApplyChanges(StorageChanges::Changes(_)) => "ApplyChanges(Changes)",
+				StateAction::ApplyChanges(StorageChanges::Import(_)) => "ApplyChanges(Import)",
+				StateAction::Skip => "Skip",
+				StateAction::ExecuteIfPossible => "ExecuteIfPossible",
+				StateAction::Execute => "Execute",
+			},
+		);
+        self.lock(block.origin, *block.header.number()).await;
 		match self.inner.status(hash) {
 			Ok(BlockStatus::InChain) => {
-				// Strip justifications when re-importing an existing block.
-				let _justifications = block.justifications.take();
-				return (&*self.inner).import_block(block).await;
+				// TODO should we support re-import same block?
+				// if self.role.is_authority() {
+				// 	return Ok(ImportResult::AlreadyInChain);
+				// }
+				// if let Ok(BlockStatus::InChain) = self.inner.status(*block.header.parent_hash()) {
+				// 	// Strip justifications when re-importing an existing block.
+				// 	let _justifications = block.justifications.take();
+				// 	if matches!(block.origin, BlockOrigin::ConsensusBroadcast | BlockOrigin::Own)
+				// 		&& !matches!(block.state_action, StateAction::Execute | StateAction::ExecuteIfPossible)
+				// 	{
+				// 		// Block from local/local_consensus with calculated changes do not need check.
+				// 	} else if matches!(block.state_action, StateAction::Execute | StateAction::ExecuteIfPossible) {
+				// 		let proposal = match calculate_block(&block) {
+				// 			Ok((proposal, _groups)) => proposal,
+				// 			Err(e) => {
+				// 				log::warn!(target: "Hotstuff", "ImportBlock({:?}): {} failed for {e}", block.origin, block.header.number());
+				// 				return Err(e);
+				// 			}
+				// 		};
+				// 		block.state_action = StateAction::ApplyChanges(StorageChanges::Changes(proposal.storage_changes));
+				// 	}
+				// 	(&*self.inner).import_block(block).await
+				// } else {
+				// 	Ok(ImportResult::UnknownParent)
+				// }
+                self.unlock(block.origin, *block.header.number()).await;
+				Ok(ImportResult::AlreadyInChain)
 			},
-			Ok(BlockStatus::Unknown) => {},
-			Err(e) => return Err(ConsensusError::ClientImport(e.to_string())),
+			Ok(BlockStatus::Unknown) => {
+				if let Ok(BlockStatus::InChain) = self.inner.status(*block.header.parent_hash()) {
+					if matches!(block.origin, BlockOrigin::ConsensusBroadcast | BlockOrigin::Own)
+						&& !matches!(block.state_action, StateAction::Execute | StateAction::ExecuteIfPossible)
+					{
+						// Block from local/local_consensus with calculated changes do not need check.
+					} else if matches!(block.state_action, StateAction::Execute | StateAction::ExecuteIfPossible)
+						|| self.role.is_authority()
+					{
+						let proposal = match calculate_block(&block) {
+							Ok((proposal, _groups)) => proposal,
+							Err(e) => {
+								log::warn!(target: "Hotstuff", "ImportBlock({:?}): {} failed for {e}", block.origin, block.header.number());
+                                self.unlock(block.origin, *block.header.number()).await;
+								return Err(e);
+							}
+						};
+						if self.role.is_authority() {
+							if let Err(e) = check_header::<Block>(&block.header, &proposal.block.header()) {
+								log::warn!(target: "Hotstuff", "ImportBlock({:?}): {} failed for {e}", block.origin, block.header.number());
+                                self.unlock(block.origin, *block.header.number()).await;
+								return Err(ConsensusError::ClientImport(format!("Check header with calculated: {e}")));
+							}
+						}
+						block.state_action = StateAction::ApplyChanges(StorageChanges::Changes(proposal.storage_changes));
+					}
+                    let header = block.header.clone();
+					let origin = block.origin;
+					let result = (&*self.inner).import_block(block).await;
+                    self.unlock(origin, *header.number()).await;
+                    result
+				} else {
+                    self.unlock(block.origin, *block.header.number()).await;
+					Ok(ImportResult::UnknownParent)
+				}
+			},
+			Err(e) => Err(ConsensusError::ClientImport(e.to_string())),
 		}
-
-		// if block.with_state() {
-		// 	return self.import_state(block).await
-		// }
-
-		let import_result = (&*self.inner).import_block(block).await;
-		let imported_aux = {
-			match import_result {
-				Ok(ImportResult::Imported(aux)) => aux,
-				Ok(r) => return Ok(r),
-				Err(e) => return Err(ConsensusError::ClientImport(e.to_string())),
-			}
-		};
-
-		// TODO
-		Ok(ImportResult::Imported(imported_aux))
 	}
 }
 
-impl<BE, Block: BlockT, Client> HotstuffBlockImport<BE, Block, Client>
+impl<BE, Block: BlockT, Client, PF> HotstuffBlockImport<BE, Block, Client, PF>
 where
 	BE: Backend<Block>,
 	Client: ClientForHotstuff<Block, BE>,
+    PF: Send + Sync + 'static,
 {
 	/// Import a block justification and finalize the block.
 	///
@@ -142,11 +312,12 @@ where
 }
 
 #[async_trait::async_trait]
-impl<BE, Block: BlockT, Client> JustificationImport<Block>
-	for HotstuffBlockImport<BE, Block, Client>
+impl<BE, Block: BlockT, Client, PF> JustificationImport<Block>
+	for HotstuffBlockImport<BE, Block, Client, PF>
 where
 	BE: Backend<Block>,
 	Client: ClientForHotstuff<Block, BE>,
+    PF: Send + Sync + 'static,
 {
 	type Error = ConsensusError;
 
@@ -241,7 +412,7 @@ impl<B: BlockT> Future for PendingFinalizeBlockQueue<B> {
 					}
 
 					if let Ok(mut pending) = self.inner.lock() {
-						log::debug!(target: "Hotstuff", "*** push {}, {}", notification.hash, notification.header.number());
+						// log::debug!(target: "Hotstuff", "*** push {} ({})", notification.header.number(), notification.hash);
 						pending.push_back(BlockInfo {
 							hash: Some(notification.hash),
 							number: notification.header.number().clone(),
@@ -265,7 +436,8 @@ impl<B: BlockT> Future for PendingFinalizeBlockQueue<B> {
 								break;
 							}
 							if let Some(b) = pending.pop_front() {
-								log::debug!(target: "Hotstuff", "*** pop {}, {}", b.hash.unwrap(), b.number);
+								// log::debug!(target: "Hotstuff", "*** pop {}, {}", b.hash.unwrap(), b.number);
+								log::info!(target: "Hotstuff", "✨ Finalized #{} ({})", b.number, b.hash.unwrap());
 							}
 						}
 					}
@@ -278,4 +450,26 @@ impl<B: BlockT> Future for PendingFinalizeBlockQueue<B> {
 			None => Poll::Pending,
 		}
 	}
+}
+
+fn check_header<B: BlockT>(header: &B::Header, new_header: &B::Header) -> Result<(), String> {
+	// check digest
+	if header.digest().logs().len() != new_header.digest().logs().len() {
+		return Err(format!("Number of digest items must match that calculated({}/{}).", new_header.digest().logs().len(), header.digest().logs().len()));
+	}
+	let items_zip = header.digest().logs().iter().zip(new_header.digest().logs().iter());
+	for (item, new_item) in items_zip {
+		if item != new_item {
+			return Err("Digest item must match that calculated.".to_string());
+		}
+	}
+	// check extrinsic root
+	if header.extrinsics_root() != new_header.extrinsics_root() {
+		return Err(format!("Transaction trie root must be valid({}/{}).", new_header.extrinsics_root(), header.extrinsics_root()));
+	}
+	// check storage root.
+	if header.state_root() != new_header.state_root() {
+		return Err(format!("Storage root must match that calculated({}/{}).", new_header.state_root(), header.state_root()));
+	}
+	Ok(())
 }

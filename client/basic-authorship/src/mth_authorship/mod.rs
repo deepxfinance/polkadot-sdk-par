@@ -12,6 +12,7 @@ use sp_runtime::traits::Block as BlockT;
 use sp_state_machine::{MergeChange, OverlayedEntry, StorageKey, StorageValue};
 pub use merge_system::*;
 pub use mth_authorship::*;
+use sp_core::ExecutionContext;
 use sp_inherents::InherentData;
 use sp_runtime::Digest;
 
@@ -26,7 +27,7 @@ pub trait MultiThreadBlockBuilder<B, Block: BlockT, Api>: MergeChange<StorageKey
 
 /// Get extrinsic by grouped.
 #[async_trait::async_trait]
-pub trait StepBlockPropose<Block: BlockT>: sp_consensus::Proposer<Block> {
+pub trait BlockPropose<Block: BlockT>: sp_consensus::Proposer<Block> {
     /// return all parallel extrinsic and single thread extrinsic
     async fn extrinsic(
         &self,
@@ -36,7 +37,7 @@ pub trait StepBlockPropose<Block: BlockT>: sp_consensus::Proposer<Block> {
         except: Vec<Block::Extrinsic>,
     ) -> (Vec<Vec<Block::Extrinsic>>, Vec<Block::Extrinsic>);
 
-    async fn step_propose(
+    async fn propose_block(
         self,
         block_size_limit: Option<usize>,
         inherent_data: InherentData,
@@ -45,12 +46,35 @@ pub trait StepBlockPropose<Block: BlockT>: sp_consensus::Proposer<Block> {
         merge_in_thread_order: bool,
     )
         -> Result<
+            (
+                Proposal<
+                    Block,
+                    <Self as sp_consensus::Proposer<Block>>::Transaction, <Self as sp_consensus::Proposer<Block>>::Proof
+                >,
+                Vec<u32>
+            ),
+            <Self as sp_consensus::Proposer<Block>>::Error
+        >;
+
+    async fn execute_block_for_changes(
+        &self,
+        source: &str,
+        context: ExecutionContext,
+        parent_hash: Block::Hash,
+        inherent_digests: Digest,
+        extrinsic: Vec<Block::Extrinsic>,
+        groups: Vec<u32>,
+        merge_in_thread_order: bool,
+    ) -> Result<
+        (
             Proposal<
                 Block,
                 <Self as sp_consensus::Proposer<Block>>::Transaction, <Self as sp_consensus::Proposer<Block>>::Proof
             >,
-            <Self as sp_consensus::Proposer<Block>>::Error
-        >;
+            Vec<u32>
+        ),
+        <Self as sp_consensus::Proposer<Block>>::Error
+    >;
 }
 
 /// Special trait for mth authorship used to generate extend extrinsic before finalize.
