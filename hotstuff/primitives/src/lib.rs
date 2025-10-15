@@ -8,13 +8,6 @@ use sp_std::vec::Vec;
 pub mod digests;
 pub mod inherents;
 
-// use sp_application_crypto::RuntimeAppPublic;
-
-/// The log target to be used by client code.
-pub const CLIENT_LOG_TARGET: &str = "hotstuff";
-/// The log target to be used by runtime code.
-pub const RUNTIME_LOG_TARGET: &str = "runtime::hotstuff";
-
 /// Key type for HOTSTUFF module.
 pub const HOTSTUFF_KEY_TYPE: sp_core::crypto::KeyTypeId = sp_core::crypto::KeyTypeId(*b"hots");
 
@@ -23,9 +16,6 @@ pub const GENESIS_AUTHORITY_SET_ID: u64 = 0;
 
 pub use sp_consensus_slots::{Slot, SlotDuration};
 use sp_runtime::transaction_validity::{TransactionSource, TransactionValidity};
-
-/// A typedef for validator set id.
-pub type ValidatorSetId = u64;
 
 mod app {
 	use crate::HOTSTUFF_KEY_TYPE;

@@ -34,7 +34,7 @@ pub trait BlockPropose<Block: BlockT>: sp_consensus::Proposer<Block> {
         wait_pool: std::time::Duration,
         deadline: std::time::Instant,
         block_size_limit: Option<usize>,
-        except: Vec<Block::Extrinsic>,
+        except: Vec<&Block::Extrinsic>,
     ) -> (Vec<Vec<Block::Extrinsic>>, Vec<Block::Extrinsic>);
 
     async fn propose_block(

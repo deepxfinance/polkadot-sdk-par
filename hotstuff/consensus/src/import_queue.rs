@@ -18,10 +18,7 @@
 
 //! Module implementing the logic for verifying and importing Hotstuff blocks.
 
-use crate::{
-    authorities, SealVerificationError, CompatibilityMode, Error,
-    LOG_TARGET,
-};
+use crate::{SealVerificationError, CompatibilityMode, Error, LOG_TARGET};
 use codec::{Codec, Decode, Encode};
 use log::{debug, trace};
 use prometheus_endpoint::Registry;
@@ -53,50 +50,33 @@ use hotstuff_primitives::inherents::HotstuffInherentData;
 ///
 /// This digest item will always return `Some` when used with `as_hotstuff_seal`.
 fn check_header<C, B: BlockT, P: Pair>(
-    _client: &C,
+    client: &C,
     slot_now: Slot,
     header: B::Header,
     hash: B::Hash,
-    authorities: &[AuthorityId],
+    compatibility_mode: &CompatibilityMode<NumberFor<B>>,
     _check_for_equivocation: CheckForEquivocation,
 ) -> Result<CheckedHeader<B::Header, (Slot, DigestItem, DigestItem)>, Error<B>>
 where
     P::Signature: Codec,
-    C: AuxStore,
+    C: AuxStore + ProvideRuntimeApi<B>,
+    C::Api: HotstuffApi<B, AuthorityId>,
     P::Public: Encode + Decode + PartialEq + Clone,
 {
     let check_result =
-        crate::check_header_slot_and_seal::<B, P>(slot_now, header, authorities);
+        crate::check_header_slot_and_seal::<B, C, P>(client, slot_now, header, compatibility_mode);
 
     match check_result {
-        Ok((header, slot, groups_seal, seal)) => {
-            // TODO check equivocation for Hotstuff?
-            // let expected_author = crate::slot_author::<P>(slot, &authorities);
-            // let should_equiv_check = check_for_equivocation.check_for_equivocation();
-            // if let (true, Some(expected)) = (should_equiv_check, expected_author) {
-            //     if let Some(equivocation_proof) =
-            //         check_equivocation(client, slot_now, slot, &header, expected)
-            //             .map_err(Error::Client)?
-            //     {
-            //         info!(
-			// 			target: LOG_TARGET,
-			// 			"Slot author is equivocating at slot {} with headers {:?} and {:?}",
-			// 			slot,
-			// 			equivocation_proof.first_header.hash(),
-			// 			equivocation_proof.second_header.hash(),
-			// 		);
-            //     }
-            // }
-
-            Ok(CheckedHeader::Checked(header, (slot, groups_seal, seal)))
-        },
+        Ok((header, slot, seal_groups, seal_commit)) =>
+            Ok(CheckedHeader::Checked(header, (slot, seal_groups, seal_commit))),
         Err(SealVerificationError::Deferred(header, slot)) =>
             Ok(CheckedHeader::Deferred(header, slot)),
         Err(SealVerificationError::Unsealed) => Err(Error::HeaderUnsealed(hash)),
         Err(SealVerificationError::BadSeal) => Err(Error::HeaderBadSeal(hash)),
         Err(SealVerificationError::BadSignature) => Err(Error::BadSignature(hash)),
-        Err(SealVerificationError::FullQCNotFound) => Err(Error::SlotAuthorNotFound),
+        Err(SealVerificationError::InvalidBlockCommit) => Err(Error::InvalidBlockCommit),
         Err(SealVerificationError::InvalidAuthor) => Err(Error::InvalidAuthor),
+        Err(SealVerificationError::GetAuthorities(e)) => Err(Error::GetAuthorities(e)),
         Err(SealVerificationError::InvalidPreDigest(e)) => Err(Error::from(e)),
     }
 }
@@ -196,13 +176,6 @@ where
 
         let hash = block.header.hash();
         let parent_hash = *block.header.parent_hash();
-        let authorities = authorities(
-            self.client.as_ref(),
-            parent_hash,
-            *block.header.number(),
-            &self.compatibility_mode,
-        )
-            .map_err(|e| format!("Could not fetch authorities at {:?}: {}", parent_hash, e))?;
 
         let create_inherent_data_providers = self
             .create_inherent_data_providers
@@ -217,20 +190,18 @@ where
 
         let slot_now = create_inherent_data_providers.slot();
 
-        // we add one to allow for some small drift.
-        // FIXME #1019 in the future, alter this queue to allow deferring of
         // headers
         let checked_header = check_header::<C, B, P>(
             &self.client,
             slot_now + 1,
             block.header,
             hash,
-            &authorities[..],
+            &self.compatibility_mode,
             self.check_for_equivocation,
         )
             .map_err(|e| e.to_string())?;
         match checked_header {
-            CheckedHeader::Checked(pre_header, (slot, groups_seal, seal)) => {
+            CheckedHeader::Checked(pre_header, (slot, seal_groups, seal_commit)) => {
                 // if the body is passed through, we need to use the runtime
                 // to check that the internally-set timestamp in the inherents
                 // actually matches the slot set in the seal.
@@ -271,8 +242,8 @@ where
 				);
 
                 block.header = pre_header;
-                block.post_digests.push(groups_seal);
-                block.post_digests.push(seal);
+                block.post_digests.push(seal_groups);
+                block.post_digests.push(seal_commit);
                 block.fork_choice = Some(ForkChoiceStrategy::LongestChain);
                 block.post_hash = Some(hash);
 

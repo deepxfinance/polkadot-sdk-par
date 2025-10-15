@@ -3408,6 +3408,7 @@ dependencies = [
  "array-bytes 6.1.0",
  "async-recursion",
  "async-trait",
+ "frame-system",
  "futures",
  "hotstuff-primitives",
  "log",

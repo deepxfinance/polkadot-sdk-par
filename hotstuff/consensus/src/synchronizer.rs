@@ -5,7 +5,6 @@ use std::{
 	task::{Context, Poll},
 	time::Duration,
 };
-use std::collections::HashMap;
 use log::debug;
 use tokio::time::{interval, Instant, Interval};
 
@@ -13,9 +12,11 @@ use sc_client_api::Backend;
 use sp_core::{Decode, Encode};
 use sp_runtime::traits::Block as BlockT;
 
-use crate::{
-	client::ClientForHotstuff, message::Proposal, primitives::{HotstuffError, ViewNumber}, store::Store,
-};
+use crate::{client::ClientForHotstuff, message::Proposal, primitives::{HotstuffError, ViewNumber}, store::Store, CLIENT_LOG_TARGET};
+use crate::message::ProposalKey;
+
+pub const HIGH_VIEW_KEY: &str = "hots_high_view";
+pub const VIEW_PREFIX: &str = "hots_view";
 
 pub struct Timer {
 	delay: Interval,
@@ -43,13 +44,15 @@ impl Future for Timer {
 	}
 }
 
+pub fn view_key(view: ViewNumber) -> Vec<u8> {
+	format!("{VIEW_PREFIX}_{view}").as_bytes().to_vec()
+}
+
 // Synchronizer synchronizes replicas to the same view.
 pub struct Synchronizer<B: BlockT, BE: Backend<B>, C: ClientForHotstuff<B, BE>> {
 	store: Store<B, BE, C>,
-	trace_size: usize,
-	trace_from: ViewNumber,
-	trace_to: ViewNumber,
-	trace_view: HashMap<ViewNumber, B::Hash>,
+	high_view: ViewNumber,
+	high_digest: B::Hash,
 }
 
 impl<B, BE, C> Synchronizer<B, BE, C>
@@ -58,61 +61,120 @@ where
 	BE: Backend<B>,
 	C: ClientForHotstuff<B, BE>,
 {
-	pub fn new(client: Arc<C>, trace_size: usize) -> Self {
-		Self { store: Store::new(client), trace_size, trace_view: HashMap::with_capacity(trace_size), trace_from: 0, trace_to: 0 }
+	pub fn new(client: Arc<C>) -> Self {
+		let store = Store::new(client);
+		let (high_view, high_digest): (ViewNumber, B::Hash) = store
+			.get(HIGH_VIEW_KEY.as_ref())
+			.unwrap()
+			.map(|v| Decode::decode(&mut v.as_slice()).unwrap())
+			.unwrap_or_default();
+		Self {
+			store,
+			high_view,
+			high_digest,
+		}
+	}
+
+	fn save_high_proposal(&mut self, view: ViewNumber , digest: B::Hash) -> Result<(), HotstuffError> {
+		if view >= self.high_view {
+			if view == self.high_view {
+				// TODO should we allow same proposal cover same view?
+				log::warn!(target: CLIENT_LOG_TARGET, "Trying to cover high_proposal(view {view}) {} -> {digest}", self.high_view);
+			}
+			self.store
+				.set(HIGH_VIEW_KEY.as_ref(), (view, digest).encode().as_slice())
+				.map_err(|e| HotstuffError::SaveProposal(e.to_string()))?;
+			self.high_view = view;
+			self.high_digest = digest;
+		}
+		Ok(())
 	}
 
 	pub fn save_proposal(&mut self, proposal: &Proposal<B>) -> Result<(), HotstuffError> {
 		let value = proposal.encode();
 		let key = proposal.digest();
 
-		debug!("~~ save proposal, digest {}", key);
-		log::debug!(target: "Hotstuff", "save proposal {} {key} {:?}, parent: {}", proposal.view, proposal.payload, proposal.qc.proposal_hash);
+		debug!(target: CLIENT_LOG_TARGET, "save proposal {} {key} {:?}, parent: {}", proposal.view, proposal.payload, proposal.qc.proposal_hash);
+		// try save high_view and high_digest
+		self.save_high_proposal(proposal.view, key)?;
+		// save view -> digest
+		self.store
+			.set(view_key(proposal.view).as_slice(), &key.encode().as_ref())
+			.map_err(|e| HotstuffError::SaveProposal(e.to_string()))?;
+		// save digest -> proposal
 		self.store
 			.set(key.as_ref(), &value)
 			.map_err(|e| HotstuffError::SaveProposal(e.to_string()))?;
-		loop {
-			if self.trace_view.len() >= self.trace_size {
-				self.trace_view.remove(&self.trace_from);
-				self.trace_from += 1;
-			} else {
-				break;
-			}
-		}
-		self.trace_view.insert(proposal.view, key);
-		self.trace_from = self.trace_from.min(proposal.view);
-		self.trace_to = self.trace_to.max(proposal.view);
 		Ok(())
 	}
 
-	pub fn get_proposal_by_trace_view(&self, view: ViewNumber) -> Result<Option<Proposal<B>>, HotstuffError> {
-		match self.trace_view.get(&view) {
-			Some(hash) => self.get_proposal(*hash),
-			None => Ok(None),
+	pub fn get_high_proposal(&self) -> Result<Option<Proposal<B>>, HotstuffError> {
+		self.get_proposal(ProposalKey::digest(self.high_digest))
+	}
+
+	pub fn get_digest(&self, view: ViewNumber) -> Result<Option<B::Hash>, HotstuffError> {
+		self
+			.store
+			.get(view_key(view).as_slice())
+			.map(|value| value.map(|v| Decode::decode(&mut v.as_slice()).unwrap()))
+			.map_err(|e| HotstuffError::GetProposal(e.to_string()))
+	}
+
+	pub fn get_proposal(&self, key: ProposalKey<B>) -> Result<Option<Proposal<B>>, HotstuffError> {
+		match key {
+			ProposalKey::View(view) => match self.get_digest(view)? {
+				Some(digest) => self.get_proposal(ProposalKey::digest(digest)),
+				None => Ok(None)
+			}
+			ProposalKey::Digest(digest) => {
+				self
+					.store
+					.get(digest.as_ref())
+					.map(|value| value.map(|v| Proposal::decode(&mut v.as_slice()).unwrap()))
+					.map_err(|e| HotstuffError::GetProposal(e.to_string()))
+			}
 		}
 	}
 
-	pub fn get_proposal(&self, hash: B::Hash) -> Result<Option<Proposal<B>>, HotstuffError> {
-		self
-			.store
-			.get(hash.as_ref())
-			.map(|value| value.map(|v| Proposal::decode(&mut v.as_slice()).unwrap()))
-			.map_err(|e| HotstuffError::SaveProposal(e.to_string()))
+	pub fn get_proposals(&self, from: ProposalKey<B>, to: ProposalKey<B>) -> Result<Vec<Proposal<B>>, HotstuffError> {
+		let mut proposals = vec![];
+		let mut proposal_hash = match to {
+			ProposalKey::View(view) => match self.get_digest(view)? {
+				Some(digest) => digest,
+				None => return Ok(proposals),
+			},
+			ProposalKey::Digest(digest) => digest,
+		};
+		loop {
+			match self.get_proposal(ProposalKey::digest(proposal_hash))? {
+				Some(proposal) => {
+					match &from {
+						ProposalKey::View(view) => if proposal.view <= *view {
+							break;
+						}
+						ProposalKey::Digest(digest) => if digest == &proposal_hash {
+							break;
+						}
+					}
+					proposal_hash = proposal.parent_hash();
+					proposals.push(proposal);
+				},
+				None => continue,
+			}
+		}
+		proposals.reverse();
+		Ok(proposals)
 	}
 
-	pub fn get_proposal_ancestors<F>(
+	pub fn get_proposal_ancestors(
 		&self,
 		proposal: &Proposal<B>,
-		filter: &F,
-	) -> Result<Option<(Proposal<B>, Proposal<B>)>, HotstuffError>
-	where
-		F: Fn(&Proposal<B>) -> bool
-	{
-		let parent = self.get_proposal_parent(proposal, filter)?;
+	) -> Result<Option<(Proposal<B>, Proposal<B>)>, HotstuffError> {
+		let parent = self.get_proposal_parent::<B>(proposal)?;
 		if parent.is_none() {
 			return Ok(None);
 		}
-		let grandpa = self.get_proposal_parent(parent.as_ref().unwrap(), filter)?;
+		let grandpa = self.get_proposal_parent::<B>(parent.as_ref().unwrap())?;
 		if grandpa.is_none() {
 			return Ok(None);
 		}
@@ -123,29 +185,7 @@ where
 	pub fn get_proposal_parent<F>(
 		&self,
 		proposal: &Proposal<B>,
-		filter: &F,
-	) -> Result<Option<Proposal<B>>, HotstuffError>
-	where
-		F: Fn(&Proposal<B>) -> bool
-	{
-		let mut parent_hash = proposal.parent_hash().as_ref().to_vec();
-		loop {
-			let res = self
-				.store
-				.get(&parent_hash)
-				.map_err(|e| HotstuffError::Other(e.to_string()))?;
-
-			if let Some(data) = res {
-				let proposal: Proposal<B> =
-					Decode::decode(&mut &data[..]).map_err(|e| HotstuffError::Other(e.to_string()))?;
-				if filter(&proposal) {
-					return Ok(Some(proposal));
-				}
-				parent_hash = proposal.parent_hash().as_ref().to_vec();
-			} else {
-				// TODO request from network, wait result here?
-				return Ok(None)
-			}
-		}
+	) -> Result<Option<Proposal<B>>, HotstuffError> {
+		self.get_proposal(ProposalKey::digest(proposal.parent_hash()))
 	}
 }

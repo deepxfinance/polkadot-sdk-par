@@ -24,7 +24,7 @@ use sp_api::TransactionFor;
 use sp_blockchain::BlockStatus;
 use sp_consensus::{BlockOrigin, Environment, Error as ConsensusError, Proposer};
 use sp_runtime::{generic::BlockId, traits::{Block as BlockT, Header as HeaderT, NumberFor, One}, Digest, Justification};
-use crate::{client::ClientForHotstuff, primitives::{HotstuffError, HotstuffError::*}};
+use crate::{client::ClientForHotstuff, primitives::{HotstuffError, HotstuffError::*}, CLIENT_LOG_TARGET};
 
 pub struct BlockNotification<B: BlockT> {
 	pub origin: BlockOrigin,
@@ -94,7 +94,7 @@ where
         if let Some(receiver) = receiver {
             let _ = receiver.await;
         } else {
-			log::trace!(target: "Hotstuff", "[HotstuffBlockImport] {origin:?} lock block {number}");
+			log::trace!(target: CLIENT_LOG_TARGET, "{origin:?} lock block {number}");
 		}
     }
 
@@ -107,9 +107,9 @@ where
 				return;
 			}
             if let Err(e) = notification.notifier.send(()) {
-                log::warn!(target: "Hotstuff", "notification for block {number} execution result failed {e:?}");
+                log::warn!(target: CLIENT_LOG_TARGET, "notification for block {number} execution result failed {e:?}");
             }
-			log::trace!(target: "Hotstuff", "[HotstuffBlockImport] {origin:?} unlock block {number}");
+			log::trace!(target: CLIENT_LOG_TARGET, "{origin:?} unlock block {number}");
         }
     }
 }
@@ -156,15 +156,17 @@ where
 		let calculate_block = |block: &BlockImportParams<Block, Self::Transaction>| {
 			let post_header = block.post_header();
 			let post_digests = post_header.digest();
-			if post_digests.logs().len() < 3 {
-				return Err(ConsensusError::ClientImport(format!("Insufficient post_digests: {}/3", post_digests.logs().len()).into()));
+			let post_digests_len = post_digests.logs().len();
+			if post_digests_len < 3 {
+				return Err(ConsensusError::ClientImport(format!("Insufficient post_digests: {post_digests_len}/3").into()));
 			}
 			let inherent_digest = Digest { logs: vec![post_digests.logs()[0].clone()] };
-			let groups: Vec<u32> = post_digests.logs()[1].as_hotstuff_seal().ok_or(ConsensusError::ClientImport("Invalid post_digests for groups".into()))?;
+			let groups: Vec<u32> = post_digests.logs()[post_digests_len - 2].as_hotstuff_seal().ok_or(ConsensusError::ClientImport("Invalid post_digests for groups".into()))?;
 			let parent_header = self.inner
 				.header(*block.header.parent_hash())
 				.map_err(|e| ConsensusError::ClientImport(format!("Get header for {:?} failed: {e:?}", block.header.parent_hash())))?
 				.ok_or(ConsensusError::ClientImport(format!("No header for {:?}", block.header.parent_hash())))?;
+			// TODO !!!MUST should we check actual extrinsic_root in header with BlockCommit in header.digest?
 			futures::executor::block_on(async {
 				self
 					.proposer_factory
@@ -188,14 +190,16 @@ where
 		};
 		let hash = block.post_hash();
 		log::trace!(
-			target: "Hotstuff",
-			"ImportBlock({:?}): {}(parent: {:?}, body: {:?}, digests: {}, post_digests: {}, action: {})",
+			target: CLIENT_LOG_TARGET,
+			"ImportBlock({:?}): {}(parent: {:?}, body: {:?}, digests: {}, post_digests: {}, justifications: {}, finalized: {}, action: {})",
 			block.origin,
 			block.header.number(),
 			block.header.parent_hash(),
 			block.body.as_ref().map(|e| e.len()),
 			block.header.digest().logs().len(),
 			block.post_digests.len(),
+			block.justifications.is_some(),
+			block.finalized,
 			match block.state_action {
 				StateAction::ApplyChanges(StorageChanges::Changes(_)) => "ApplyChanges(Changes)",
 				StateAction::ApplyChanges(StorageChanges::Import(_)) => "ApplyChanges(Import)",
@@ -222,7 +226,7 @@ where
 				// 		let proposal = match calculate_block(&block) {
 				// 			Ok((proposal, _groups)) => proposal,
 				// 			Err(e) => {
-				// 				log::warn!(target: "Hotstuff", "ImportBlock({:?}): {} failed for {e}", block.origin, block.header.number());
+				// 				log::warn!(target: CLIENT_LOG_TARGET, "ImportBlock({:?}): {} failed for {e}", block.origin, block.header.number());
 				// 				return Err(e);
 				// 			}
 				// 		};
@@ -247,14 +251,14 @@ where
 						let proposal = match calculate_block(&block) {
 							Ok((proposal, _groups)) => proposal,
 							Err(e) => {
-								log::warn!(target: "Hotstuff", "ImportBlock({:?}): {} failed for {e}", block.origin, block.header.number());
+								log::warn!(target: CLIENT_LOG_TARGET, "ImportBlock({:?}): {} failed for {e}", block.origin, block.header.number());
                                 self.unlock(block.origin, *block.header.number()).await;
 								return Err(e);
 							}
 						};
 						if self.role.is_authority() {
 							if let Err(e) = check_header::<Block>(&block.header, &proposal.block.header()) {
-								log::warn!(target: "Hotstuff", "ImportBlock({:?}): {} failed for {e}", block.origin, block.header.number());
+								log::warn!(target: CLIENT_LOG_TARGET, "ImportBlock({:?}): {} failed for {e}", block.origin, block.header.number());
                                 self.unlock(block.origin, *block.header.number()).await;
 								return Err(ConsensusError::ClientImport(format!("Check header with calculated: {e}")));
 							}
@@ -352,7 +356,7 @@ pub(crate) struct PeerReport {
 
 #[derive(Clone, Copy, Debug, Encode, Decode, PartialEq, Eq)]
 pub struct BlockInfo<B: BlockT> {
-	pub hash: Option<B::Hash>,
+	pub hash: B::Hash,
 	pub number: <B::Header as HeaderT>::Number,
 }
 
@@ -412,9 +416,8 @@ impl<B: BlockT> Future for PendingFinalizeBlockQueue<B> {
 					}
 
 					if let Ok(mut pending) = self.inner.lock() {
-						// log::debug!(target: "Hotstuff", "*** push {} ({})", notification.header.number(), notification.hash);
 						pending.push_back(BlockInfo {
-							hash: Some(notification.hash),
+							hash: notification.hash,
 							number: notification.header.number().clone(),
 						});
 						result = Some(notification.clone());
@@ -436,8 +439,7 @@ impl<B: BlockT> Future for PendingFinalizeBlockQueue<B> {
 								break;
 							}
 							if let Some(b) = pending.pop_front() {
-								// log::debug!(target: "Hotstuff", "*** pop {}, {}", b.hash.unwrap(), b.number);
-								log::info!(target: "Hotstuff", "✨ Finalized #{} ({})", b.number, b.hash.unwrap());
+								log::info!(target: CLIENT_LOG_TARGET, "✨ Finalized #{} ({})", b.number, b.hash);
 							}
 						}
 					}

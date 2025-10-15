@@ -41,6 +41,8 @@ pub enum HotstuffError {
 
 	Payload(PayloadError),
 
+	VerifyClaim(String),
+
 	// Error generate by node client.
 	ClientError(String),
 
@@ -57,5 +59,6 @@ impl From<PayloadError> for HotstuffError {
 pub enum PayloadError {
 	UnknownBlock(String),
 	BlockRollBack(String),
+	BaseBlock(String),
 	ExtrinsicErr(String),
 }

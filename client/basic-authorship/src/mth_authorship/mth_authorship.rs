@@ -48,6 +48,8 @@ use sp_runtime::traits::{Header, One};
 use crate::DEFAULT_BLOCK_SIZE_LIMIT;
 use super::{ExtendExtrinsic, MultiThreadBlockBuilder, BlockPropose};
 
+const LOG_TARGET: &str = "authorship";
+
 const DEFAULT_SOFT_DEADLINE_PERCENT: Percent = Percent::from_percent(70);
 
 /// [`Proposer`] factory.
@@ -135,7 +137,7 @@ impl<A, B, C, MBH, E> ProposerFactory<A, B, C, DisableProofRecording, MBH, E> {
             Err(_) => 0,
         };
         info!(
-            target: "mth_authorship",
+            target: LOG_TARGET,
             "ProposerFactory init soft_deadline_percent: {soft_deadline_percent:?}, pool_deadline_percent: {pool_deadline_percent:?}, merge_deadline_percent: {merge_deadline_percent:?}, thread_limit: {thread_limit}, millis_tx_rate: {millis_tx_rate:?}, default_round_tx: {default_round_tx}",
         );
         ProposerFactory {
@@ -412,7 +414,7 @@ where
         max_duration: time::Duration,
         block_size_limit: Option<usize>,
     ) -> Result<Proposal<Block, backend::TransactionFor<B, Block>, PR::Proof>, sp_blockchain::Error> {
-        info!("🙌 Starting consensus session on top of parent {}({:?})", self.parent_number, self.parent_hash);
+        info!(target: LOG_TARGET, "🙌 Starting consensus session on top of parent {}({:?})", self.parent_number, self.parent_hash);
         let propose_with_start = time::Instant::now();
         let deadline = time::Instant::now() + max_duration;
         // 1. initialize main thread
@@ -436,7 +438,7 @@ where
             .await
             .unwrap();
         debug!(
-            target: "mth_authorship",
+            target: LOG_TARGET,
             "[Execute Block {}] GroupTx use {} ms({} micros)({raw_groups} -> {} groups, {extrinsic_count} txs)",
             self.parent_number + One::one(),
             pool_time.2,
@@ -489,18 +491,16 @@ where
         block_size_limit: usize,
         extrinsic_count: usize,
         pool_time: (u128, u128, u128),
-        mut extrinsic_group: Vec<Vec<(usize, Option<<A as TransactionPool>::Hash>, Block::Extrinsic)>>,
-        mut single_group: Vec<(usize, Option<<A as TransactionPool>::Hash>, Block::Extrinsic)>,
+        extrinsic_group: Vec<Vec<(usize, Option<<A as TransactionPool>::Hash>, Block::Extrinsic)>>,
+        single_group: Vec<(usize, Option<<A as TransactionPool>::Hash>, Block::Extrinsic)>,
         merge_in_thread_order: bool,
     ) -> Result<(Proposal<Block, backend::TransactionFor<B, Block>, PR::Proof>, Vec<u32>), sp_blockchain::Error> {
         let mut native = true;
         // if native version not latest, we can only execute in single thread.
         let onchain_version = CallApiAt::runtime_version_at(&*self.client, self.parent_hash)
             .map_err(|e| sp_blockchain::Error::RuntimeApiError(e))?;
-        if !onchain_version.can_call_with(&self.native_version.runtime_version) || extrinsic_group.len() <= 1 {
+        if !onchain_version.can_call_with(&self.native_version.runtime_version) {
             native = false;
-            let groups = std::mem::replace(&mut extrinsic_group, vec![]);
-            single_group = [groups.into_iter().flatten().collect(), single_group].concat();
         }
         // 1. initialize main thread block_builder by inherent transactions.
         let inherent_length = inherents.len();
@@ -591,6 +591,7 @@ where
         });
 
         info!(
+            target: LOG_TARGET,
 			"🎁 [{source}] Prepared block for proposing of {} [{}/{} ms ({}({}) {mth_time}({extra_merge_time}) {single_exe_time} {finalize_exe_time})ms] \
 			[hash: {:?}; parent_hash: {}; native: {native}; extrinsics [({mth_applied}/{})/({single_applied}/{})/{}], threads {thread_number}]",
 			block.header().number(),
@@ -633,7 +634,7 @@ where
         mut block_size: usize,
         mut proof_size: usize,
         thread_limit: usize,
-        excepts: &[Block::Extrinsic],
+        excepts: &[&Block::Extrinsic],
     ) -> Result<(Vec<Vec<(usize, Arc<<A as TransactionPool>::InPoolTransaction>)>>, Vec<(usize, Arc<<A as TransactionPool>::InPoolTransaction>)>, usize, usize, (u128, u128, u128)), String> {
         let pool_timer = time::Instant::now();
         let mut except_set = HashSet::new();
@@ -647,7 +648,7 @@ where
         let mut pending_iterator = select! {
 			res = t1 => res,
 			_ = t2 => {
-				trace!(target: "mth_authorship", "[GroupTx Block {block}] Timeout fired waiting for transaction pool. Proceeding with production.");
+				trace!(target: LOG_TARGET, "[GroupTx Block {block}] Timeout fired waiting for transaction pool. Proceeding with production.");
 				self.transaction_pool.ready()
 			},
 		};
@@ -673,17 +674,17 @@ where
         //      parse transaction runtime call group info and return by channel.
         loop {
             if pool_extrinsic_count >= tx_limit {
-                debug!(target: "mth_authorship", "[GroupTx Block {block}] Reach tx_limit {}/{} ms (total {pool_extrinsic_count}, block size: {}/{block_size_limit})", start.elapsed().as_millis(), pool_time.as_millis(), block_size + proof_size);
+                debug!(target: LOG_TARGET, "[GroupTx Block {block}] Reach tx_limit {}/{} ms (total {pool_extrinsic_count}, block size: {}/{block_size_limit})", start.elapsed().as_millis(), pool_time.as_millis(), block_size + proof_size);
                 break;
             }
             if time::Instant::now() > pool_deadline {
-                debug!(target: "mth_authorship", "[GroupTx Block {block}] Reach deadline {}/{} ms (total {pool_extrinsic_count}, block size: {}/{block_size_limit})", start.elapsed().as_millis(), pool_time.as_millis(), block_size + proof_size);
+                debug!(target: LOG_TARGET, "[GroupTx Block {block}] Reach deadline {}/{} ms (total {pool_extrinsic_count}, block size: {}/{block_size_limit})", start.elapsed().as_millis(), pool_time.as_millis(), block_size + proof_size);
                 break;
             }
             let pending_tx = if let Some(pending_tx) = pending_iterator.next() {
                 pending_tx
             } else {
-                debug!(target: "mth_authorship", "[GroupTx Block {block}] Out of transactions({} ms, total {pool_extrinsic_count}, block size: {}/{block_size_limit})", start.elapsed().as_millis(), block_size + proof_size);
+                debug!(target: LOG_TARGET, "[GroupTx Block {block}] Out of transactions({} ms, total {pool_extrinsic_count}, block size: {}/{block_size_limit})", start.elapsed().as_millis(), block_size + proof_size);
                 break;
             };
             if except_set.remove(pending_tx.hash()) {
@@ -700,7 +701,7 @@ where
                     );
                     continue
                 } else {
-                    debug!(target: "mth_authorship", "[GroupTx Block {block}] Reached block size limit({}/{block_size_limit}) with extrinsic: {pool_extrinsic_count} in {} ms. start execute transactions.", block_size + proof_size, start.elapsed().as_millis());
+                    debug!(target: LOG_TARGET, "[GroupTx Block {block}] Reached block size limit({}/{block_size_limit}) with extrinsic: {pool_extrinsic_count} in {} ms. start execute transactions.", block_size + proof_size, start.elapsed().as_millis());
                     break;
                 }
             }
@@ -753,7 +754,7 @@ where
         let single_deadline = mth_finish_deadline + single_time;
         let thread_number = multi_groups.len();
         debug!(
-            target: "mth_authorship",
+            target: LOG_TARGET,
             "[Execute Block {block}] ExecuteLimits: threads {thread_number}, mth_exe(mth_merge) {}({}) ms, single_exe {} ms, total execute_deadline {} ms",
             mth_execute_time.as_millis(),
             mth_merge_time.as_millis(),
@@ -1022,7 +1023,7 @@ where
             let (execute_times, (commit_time, rollback_time)) = block_builder.api.execute_times();
             for (method, times) in execute_times {
                 let method = String::from_utf8(method).unwrap_or("unknown".to_string());
-                // trace!(target: "mth_authorship", "Thread {_thread}, method: {method:?}, exe/read/read_backend/write: {times:?} nanos");
+                // trace!(target: LOG_TARGET, "Thread {_thread}, method: {method:?}, exe/read/read_backend/write: {times:?} nanos");
                 if method.as_str() == "BlockBuilder_apply_extrinsics" {
                     execute_time_count += times[0];
                     round_times.push(times.clone());
@@ -1052,9 +1053,9 @@ where
             let avg_w = time[3] as usize / tx_num;
             (*txs, avg, avg.saturating_sub(avg_io), avg_io, avg_rb, avg_w)
         }).collect::<Vec<_>>();
-        trace!(target: "mth_authorship", "[Execute Block {block}] Thread {thread_name} extra: {extra}({commit_time}/{rollback_time}) nanos, times(min/avg/max/count): {times:?}");
+        trace!(target: LOG_TARGET, "[Execute Block {block}] Thread {thread_name} extra: {extra}({commit_time}/{rollback_time}) nanos, times(min/avg/max/count): {times:?}");
         debug!(
-            target: "mth_authorship",
+            target: LOG_TARGET,
             "[Execute Block {block}] Thread {thread_name} {reason}({}/{} ms) {applied}/{}/{total_nonce_err_tx}/{total_tx} executed in {} rounds([(num, avg, avg_exe, avg_io, avg_rb, avg_w)]: {round_with_times:?}).",
             thread_start.elapsed().as_millis(),
             thread_time.as_millis(),
@@ -1131,7 +1132,7 @@ where
                     let (_, mut changes) = merge_box.pop().unwrap();
                     if merge_count + 1 < thread_number {
                         warn!(
-                            target: "mth_authorship",
+                            target: LOG_TARGET,
                             "Timeout fired waiting for threads result execution for block #{} mth_time {mth_time} ms. Build block with current threads {:?}.",
                             self.parent_number + One::one(),
                             changes.0,
@@ -1195,12 +1196,12 @@ where
         let merge_time = exe_merge_start.elapsed().as_micros();
         let changes = match merge_result {
             Ok((changes, to_threads, from_threads)) => {
-                debug!(target: "mth_authorship", "[MergeCh Block {block}] Merge threads {to_threads:?} and {from_threads:?} in {merge_time} micros");
+                debug!(target: LOG_TARGET, "[MergeCh Block {block}] Merge threads {to_threads:?} and {from_threads:?} in {merge_time} micros");
                 changes
             },
             Err((keep, drop, e)) => {
                 error!(
-                    target: "mth_authorship",
+                    target: LOG_TARGET,
                     "[MergeCh Block {block}] Merge threads keep {:?}, drop [threads {:?}, {} extrinsics] in {merge_time} micros for error: {e:?}",
                     keep.0,
                     drop.0,
@@ -1274,7 +1275,7 @@ where
         let mut block_builder = match client.new_block_at(parent_hash, inherent_digests, PR::ENABLED, None) {
             Ok(builder) => builder,
             Err(e) => {
-                warn!(target: "mth_authorship", "[OTC Block {number}] Create BlockBuilder error: {e:?}");
+                warn!(target: LOG_TARGET, "[OTC Block {number}] Create BlockBuilder error: {e:?}");
                 return;
             },
         };
@@ -1283,7 +1284,7 @@ where
         for (index, pending_tx_data) in extrinsic.into_iter().enumerate() {
             if let Err(e) = sc_block_builder::BlockBuilder::push(&mut block_builder, pending_tx_data.clone()) {
                 error!(
-                    target: "mth_authorship",
+                    target: LOG_TARGET,
                     "[OTC Block {number}] push extrinsic {index} error: {e:?}"
                 );
                 return;
@@ -1299,7 +1300,7 @@ where
                 let (block_res, storage_changes_res, _proof_res) = res.into_inner();
                 // total block hash check
                 if block_res.hash() == block.hash() {
-                    info!(target: "mth_authorship", "[OTC Block {number}({block_time} ({init_time} {execute_time} {build_time}) ms)] Check Block Hash success");
+                    info!(target: LOG_TARGET, "[OTC Block {number}({block_time} ({init_time} {execute_time} {build_time}) ms)] Check Block Hash success");
                     return;
                 }
                 let change_diff = |mth: &Vec<(StorageKey, Option<StorageValue>)>, oth: &Vec<(StorageKey, Option<StorageValue>)>| {
@@ -1325,7 +1326,7 @@ where
                 // main_storage_changes check if block different.
                 let (oth_main_less, oth_main_diff, oth_main_extra) = change_diff(&main_storage_changes, &storage_changes_res.main_storage_changes);
                 error!(
-                    target: "mth_authorship",
+                    target: LOG_TARGET,
                     "[OTC Block {number}({block_time} ({init_time} {execute_time} {build_time}) ms)] [one thread/multi threads] main change differences, less: {oth_main_less:?}, diff: {oth_main_diff:?}, extra: {oth_main_extra:?}",
                 );
                 // child_storage_changes check if block different.
@@ -1338,7 +1339,7 @@ where
                     if let Some(child_storage_changes) = child_changes.remove(parent_key) {
                         let (oth_child_less, oth_child_diff, oth_child_extra) = change_diff(&child_storage_changes, child_storage_changes_res);
                         error!(
-                            target: "mth_authorship",
+                            target: LOG_TARGET,
                             "[OTC Block {number}({block_time} ({init_time} {execute_time} {build_time}) ms)] [one thread/multi threads] child change differences parent key: {parent_key:?}, less: {oth_child_less:?}, diff: {oth_child_diff:?}, extra: {oth_child_extra:?}",
                         );
                     } else {
@@ -1348,20 +1349,20 @@ where
                     }
                 }
                 if !oth_extra_childs.is_empty() {
-                    error!(target: "mth_authorship", "[OTC Block {number}({block_time} ({init_time} {execute_time} {build_time}) ms)] oth extra child changes {oth_extra_childs:?}");
+                    error!(target: LOG_TARGET, "[OTC Block {number}({block_time} ({init_time} {execute_time} {build_time}) ms)] oth extra child changes {oth_extra_childs:?}");
                 }
                 let mth_extra_childs: Vec<(StorageKey, Vec<StorageKey>)> = child_changes
                     .into_iter()
                     .map(|(parent, childs)| (parent, childs.into_iter().map(|(key, _)| key).collect()))
                     .collect();
                 if !mth_extra_childs.is_empty() {
-                    error!(target: "mth_authorship", "[OTC Block {number}({block_time} ({init_time} {execute_time} {build_time}) ms)] mth extra child changes {mth_extra_childs:?}");
+                    error!(target: LOG_TARGET, "[OTC Block {number}({block_time} ({init_time} {execute_time} {build_time}) ms)] mth extra child changes {mth_extra_childs:?}");
                 }
             },
             Err(e) => {
                 let block_time = block_timer.elapsed().as_millis();
                 let build_time = build_timer.elapsed().as_millis();
-                error!(target: "mth_authorship", "[OTC Block {number}({block_time} ({init_time} {execute_time} {build_time}) ms)] Build block error: {e:?}");
+                error!(target: LOG_TARGET, "[OTC Block {number}({block_time} ({init_time} {execute_time} {build_time}) ms)] Build block error: {e:?}");
             }
         }
     }
@@ -1392,7 +1393,7 @@ where
         wait_pool: time::Duration,
         deadline: time::Instant,
         block_size_limit: Option<usize>,
-        excepts: Vec<Block::Extrinsic>,
+        excepts: Vec<&Block::Extrinsic>,
     ) -> (Vec<Vec<Block::Extrinsic>>, Vec<Block::Extrinsic>) {
         let block_size_limit = block_size_limit.unwrap_or(self.default_block_size_limit);
         let (groups, mut single, _, _, _) = self.group_transactions_from_pool(
@@ -1434,7 +1435,7 @@ where
             <Self as sp_consensus::Proposer<Block>>::Error
         >
     {
-        info!("🙌 Starting consensus session on top of parent {}({:?})", self.parent_number, self.parent_hash);
+        info!(target: LOG_TARGET, "🙌 Starting consensus session on top of parent {}({:?})", self.parent_number, self.parent_hash);
         let max_duration = time::Duration::from_secs(3);
         let mut block_builder =
             self.client.new_block_at(self.parent_hash.clone(), inherent_digests.clone(), PR::ENABLED, None)?;
@@ -1491,7 +1492,7 @@ where
             <Self as sp_consensus::Proposer<Block>>::Error
         >
     {
-        debug!(target: "mth_authorship", "[{source}] Start to execute block {} on parent_hash {parent_hash} with groups {groups:?}", self.parent_number + One::one());
+        debug!(target: LOG_TARGET, "[{source}] Start to execute block {} on parent_hash {parent_hash} with groups {groups:?}", self.parent_number + One::one());
         let inherents = extrinsic[..groups.first().cloned().unwrap_or_default() as usize].to_vec();
         let mut extrinsic_count = groups.iter().map(|l| *l as usize).sum::<usize>();
         extrinsic_count = extrinsic_count.saturating_sub(inherents.len());
@@ -1605,7 +1606,7 @@ impl<K: PartialEq + Eq + Hash + Clone, V> ConflictGroup<K, V>  {
             self.key_group.insert(key.clone(), gid);
         }
         if !tmp_move_groups.is_empty() {
-            debug!(target: "mth_authorship", "ConflictGroup move to group {gid} with groups: {tmp_move_groups:?}");
+            debug!(target: LOG_TARGET, "ConflictGroup move to group {gid} with groups: {tmp_move_groups:?}");
         }
         // insert tx to gid
         if let Some(values) = self.group.get_mut(&gid) {

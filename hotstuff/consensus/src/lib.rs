@@ -19,7 +19,7 @@ pub use import::HotstuffBlockImport;
 use std::fmt::Debug;
 use codec::Codec;
 use log::trace;
-use hotstuff_primitives::{AuthorityList, HotstuffApi};
+use hotstuff_primitives::{AuthorityList, ConsensusLog, HotstuffApi, HOTSTUFF_ENGINE_ID};
 use hotstuff_primitives::{SlotDuration, digests::CompatibleDigestItem, AuthorityId};
 use sc_client_api::{AuxStore, UsageProvider};
 use sp_api::{BlockT, Core, ProvideRuntimeApi};
@@ -28,10 +28,9 @@ use sp_consensus_slots::Slot;
 use sp_core::Pair;
 use sp_runtime::DigestItem;
 use sp_runtime::traits::{Header, NumberFor, Zero};
-use crate::message::QC;
+use crate::message::BlockCommit;
 
 pub const LOG_TARGET: &str = "hots";
-/// The log target to be used by client code.
 pub const CLIENT_LOG_TARGET: &str = "hotstuff";
 
 /// Get the slot duration for Hotstuff by reading from a runtime API at the best block's state.
@@ -73,12 +72,15 @@ pub enum Error<B: BlockT> {
     /// Header has a bad seal
     #[error("Header {0:?} has a bad seal")]
     HeaderBadSeal(B::Hash),
-    /// Slot Author not found
-    #[error("Slot Author not found")]
-    SlotAuthorNotFound,
+    /// Get authorities error
+    #[error("Get authorities: {0}")]
+    GetAuthorities(String),
     /// The author is incorrect.
     #[error("No expected author")]
     InvalidAuthor,
+    /// The block commit is incorrect.
+    #[error("Invalid block commit")]
+    InvalidBlockCommit,
     /// Bad signature
     #[error("Bad signature on {0:?}")]
     BadSignature(B::Hash),
@@ -129,11 +131,15 @@ pub enum SealVerificationError<Header> {
 
     /// No QC found.
     #[error("No full QC for provided slot")]
-    FullQCNotFound,
+    InvalidBlockCommit,
 
     /// The author is incorrect.
     #[error("No expected author")]
     InvalidAuthor,
+
+    /// The authority is not in local.
+    #[error("Get authorities {0:?}")]
+    GetAuthorities(String),
 
     /// Header has no valid slot pre-digest.
     #[error("Header has no valid slot pre-digest")]
@@ -252,66 +258,70 @@ pub fn find_pre_digest<B: BlockT, Signature: Codec>(
     pre_digest.ok_or_else(|| PreDigestLookupError::NoDigestFound)
 }
 
-/// Get the slot author for given block along with authorities.
-pub fn slot_author<P: Pair>(slot: Slot, authorities: &[AuthorityId]) -> Option<&AuthorityId> {
-    if authorities.is_empty() {
-        return None
-    }
-
-    let idx = *slot % (authorities.len() as u64);
-    assert!(
-        idx <= usize::MAX as u64,
-        "It is impossible to have a vector with length beyond the address space; qed",
-    );
-
-    let current_author = authorities.get(idx as usize).expect(
-        "authorities not empty; index constrained to list length;this is a valid index; qed",
-    );
-
-    Some(current_author)
+/// Find all ConsensusLog digests from header.
+pub fn find_consensus_logs<B: BlockT>(header: &B::Header) -> Vec<ConsensusLog<AuthorityId>> {
+    header.digest()
+        .logs()
+        .iter()
+        .filter_map(|log| log.consensus_try_to::<ConsensusLog<AuthorityId>>(&HOTSTUFF_ENGINE_ID))
+        .collect()
 }
 
-/// Check a header has been signed by the right key. If the slot is too far in the future, an error
+/// Find all QC from header last digest.
+pub fn find_block_commit<B: BlockT>(header: &B::Header) -> Option<BlockCommit<B>> {
+    header.digest()
+        .logs()
+        .last()
+        .map(|digest| digest.as_hotstuff_seal())
+        .unwrap_or_default()
+}
+
+/// Check a header has correct [BlockCommit]. If the slot is too far in the future, an error
 /// will be returned. If it's successful, returns the pre-header (i.e. without the seal),
 /// the slot, and the digest item containing the seal.
 ///
-/// Note that this does not check for equivocations, and [`check_equivocation`] is recommended
-/// for that purpose.
-///
 /// This digest item will always return `Some` when used with `as_hotstuff_seal`.
-pub fn check_header_slot_and_seal<B: BlockT, P: Pair>(
+pub fn check_header_slot_and_seal<B: BlockT, C, P: Pair>(
+    client: &C,
     slot_now: Slot,
     mut header: B::Header,
-    authorities: &[AuthorityId],
+    compatibility_mode: &CompatibilityMode<NumberFor<B>>,
 ) -> Result<(B::Header, Slot, DigestItem, DigestItem), SealVerificationError<B::Header>>
 where
     P::Signature: Codec,
     P::Public: Codec + PartialEq + Clone,
+    C: ProvideRuntimeApi<B>,
+    C::Api: HotstuffApi<B, AuthorityId>,
 {
-    // TODO 1. We should check Full QC or check signatures for block? we have no sign for block header.
-    let seal_full_qc = header.digest_mut().pop().ok_or(SealVerificationError::Unsealed)?;
+    let seal_commit = header.digest_mut().pop().ok_or(SealVerificationError::Unsealed)?;
     // just remove groups digest.
     let seal_groups = header.digest_mut().pop().ok_or(SealVerificationError::Unsealed)?;
     let slot = find_pre_digest::<B, P::Signature>(&header)
         .map_err(SealVerificationError::InvalidPreDigest)?;
 
     if slot > slot_now {
-        header.digest_mut().push(seal_full_qc);
+        header.digest_mut().push(seal_commit);
         Err(SealVerificationError::Deferred(header, slot))
     } else {
         // check the signature is valid under the expected authority and
         // chain state.
-        let full_qc: Vec<QC<B>> = seal_full_qc.as_hotstuff_seal().ok_or(SealVerificationError::FullQCNotFound)?;
+        let commit: BlockCommit<B> = seal_commit.as_hotstuff_seal().ok_or(SealVerificationError::InvalidBlockCommit)?;
+        let base_block = commit.base_block().clone();
+        let authorities = authorities(
+            client,
+            base_block.hash,
+            *header.number(),
+            compatibility_mode,
+        )
+            .map_err(|e| SealVerificationError::GetAuthorities(format!("get authortites from {}:{} err {e:?}", base_block.number, base_block.hash)))?;
         let authorities = authorities
             .iter()
             .map(|id| (id.clone(), 0))
             .collect::<AuthorityList>();
-        for qc in full_qc {
-            if let Err(e) = qc.verify(&authorities) {
-                log::warn!(target: "Hotstuff", "check_header qc.verify err: {e:?} for header: {header:?}");
-                return Err(SealVerificationError::BadSignature);
-            }
+        if let Err(e) = commit.verify(&authorities, *header.number()) {
+            log::warn!(target: LOG_TARGET, "check_header qc.verify err: {e:?} for header: {header:?}");
+            return Err(SealVerificationError::InvalidBlockCommit);
         }
-        Ok((header, slot, seal_groups, seal_full_qc))
+        Ok((header, slot, seal_groups, seal_commit))
     }
 }

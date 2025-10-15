@@ -2,11 +2,12 @@ use std::{collections::HashSet, marker::PhantomData};
 use std::fmt::{Debug, Display, Formatter};
 use codec::{Decode, Encode};
 use sp_core::Pair;
-use sp_runtime::traits::{Block as BlockT, Hash as HashT, Header as HeaderT};
+use sp_runtime::traits::{Block as BlockT, Hash as HashT, Header as HeaderT, Zero};
 use sp_timestamp::Timestamp;
 
 use hotstuff_primitives::{AuthorityId, AuthorityList, AuthorityPair, AuthoritySignature};
-use crate::{import::BlockInfo, primitives::{HotstuffError::{self, *}, ViewNumber}};
+use crate::{primitives::{HotstuffError, ViewNumber}};
+use crate::import::BlockInfo;
 
 #[cfg(test)]
 #[path = "tests/message_tests.rs"]
@@ -60,20 +61,19 @@ impl<Block: BlockT> QC<Block> {
 
 		for (authority_id, _) in self.votes.iter() {
 			if used.contains(authority_id) {
-				return Err(AuthorityReuse(authority_id.clone()));
+				return Err(HotstuffError::AuthorityReuse(authority_id.clone()));
 			}
 			used.insert(authority_id.clone());
 			grant_votes += 1;
 		}
 
 		if grant_votes <= (authorities.len() * 2 / 3) {
-			log::warn!(target: "Hotstuff", "qc.verify votes: {} grant_votes: {grant_votes} authorities: {} proposal_hash: {}", self.votes.len(), authorities.len(), self.proposal_hash);
-			return Err(InsufficientQuorum);
+			return Err(HotstuffError::InsufficientQuorum);
 		}
 
 		for (voter, signature) in self.votes.iter() {
 			if !AuthorityPair::verify(signature, self.digest(), voter) {
-				return Err(InvalidSignature(voter.clone()));
+				return Err(HotstuffError::InvalidSignature(voter.clone()));
 			}
 		}
 		Ok(())
@@ -119,118 +119,89 @@ impl Display for ConsensusStage {
 }
 
 #[derive(Clone, Encode, Decode)]
-pub struct NewBlock<Block: BlockT> {
+pub struct Payload<Block: BlockT> {
+	pub best_block: BlockInfo<Block>,
 	pub block_number: <Block::Header as HeaderT>::Number,
-	pub block_hash: Block::Hash,
-	pub stage: ConsensusStage,
-}
-
-impl<Block: BlockT> NewBlock<Block> {
-	pub fn empty() -> Self {
-		NewBlock {
-			block_number: 0u32.into(),
-			block_hash: Block::Hash::default(),
-			stage: ConsensusStage::default(),
-		}
-	}
-
-	pub fn is_empty(&self) -> bool {
-		self.block_number == 0u32.into() && self.block_hash == Block::Hash::default()
-	}
-
-	pub fn full_consensus(son: &Self, parent: &Self, grandpa: &Self) -> bool {
-		if (son.stage, parent.stage, grandpa.stage) != (ConsensusStage::Commit, ConsensusStage::PreCommit, ConsensusStage::Prepare) {
-			return false;
-		}
-		if son.block_number != parent.block_number || son.block_hash != parent.block_hash {
-			return false;
-		}
-		if parent.block_number != grandpa.block_number || parent.block_hash != grandpa.block_hash {
-			return false;
-		}
-		true
-	}
-}
-
-impl<Block: BlockT> Display for NewBlock<Block> {
-	fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-		if self.is_empty() {
-			write!(f, "Empty")
-		} else {
-			write!(f, "{}:{}:{}", self.stage, self.block_number, self.block_hash)
-		}
-	}
-}
-
-impl<Block: BlockT> Debug for NewBlock<Block> {
-	fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-		write!(f, "{}", self)
-	}
-}
-
-#[derive(Clone, Encode, Decode)]
-pub struct NextBlock<Block: BlockT> {
-	pub block_number: <Block::Header as HeaderT>::Number,
-	pub hash: Block::Hash,
+	pub extrinsics_root: Block::Hash,
 	pub extrinsic: Option<(Vec<Vec<Block::Extrinsic>>, Vec<Block::Extrinsic>)>,
 	pub stage: ConsensusStage,
 }
 
-impl<Block: BlockT> NextBlock<Block> {
+impl<Block: BlockT> Payload<Block> {
+	pub fn digest(&self) -> Block::Hash {
+		let mut data = self.best_block.encode();
+		data.append(&mut self.block_number.encode());
+		data.append(&mut self.extrinsics_root.encode());
+		data.append(&mut self.stage.encode());
+		<<Block::Header as HeaderT>::Hashing as HashT>::hash_of(&data)
+	}
+
 	pub fn empty() -> Self {
 		Self {
+			best_block: BlockInfo { number: Zero::zero(), hash: Default::default() },
 			block_number: 0u32.into(),
-			hash: Block::Hash::default(),
+			extrinsics_root: Block::Hash::default(),
 			extrinsic: None,
 			stage: ConsensusStage::default(),
 		}
 	}
 
 	pub fn is_empty(&self) -> bool {
-		self.block_number == 0u32.into() && self.hash == Block::Hash::default() && self.extrinsic.is_none()
+		self.block_number == 0u32.into() && self.extrinsics_root == Block::Hash::default() && self.extrinsic.is_none()
+	}
+	
+	pub fn claim(&self) -> PayloadClaim<Block> {
+		PayloadClaim {
+			best_block: self.best_block.clone(),
+			extrinsics_root: self.extrinsics_root.clone(),
+			stage: self.stage,
+		}
+	}
+
+	pub fn groups(&self) -> Vec<u32> {
+		let mut groups = Vec::new();
+		if let Some((multi, single)) = &self.extrinsic {
+			groups.extend(multi.iter().map(|extrinsic| extrinsic.len() as u32).collect::<Vec<u32>>());
+			groups.push(single.len() as u32);
+		}
+		groups
 	}
 
 	pub fn full_consensus(son: &Self, parent: &Self, grandpa: &Self) -> bool {
 		if (son.stage, parent.stage, grandpa.stage) != (ConsensusStage::Commit, ConsensusStage::PreCommit, ConsensusStage::Prepare) {
 			return false;
 		}
-		if son.block_number != parent.block_number || son.hash != parent.hash {
+		if son.block_number != parent.block_number || son.extrinsics_root != parent.extrinsics_root {
 			return false;
 		}
-		if parent.block_number != grandpa.block_number || parent.hash != grandpa.hash {
+		if parent.block_number != grandpa.block_number || parent.extrinsics_root != grandpa.extrinsics_root {
 			return false;
 		}
 		true
 	}
 }
 
-impl<Block: BlockT> Display for NextBlock<Block> {
+impl<Block: BlockT> Display for Payload<Block> {
 	fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
 		if self.is_empty() {
 			write!(f, "Empty")
 		} else {
-			write!(f, "{}:{}:{}:", self.stage, self.block_number, self.hash)?;
-			if let Some((multi, single)) = &self.extrinsic {
-				let mut length: Vec<_> = multi.iter().map(|extrinsic| extrinsic.len()).collect();
-				length.push(single.len());
-				write!(f, "{length:?}")
+			write!(f, "{}:{}:{}:", self.stage, self.block_number, self.extrinsics_root)?;
+			let groups = self.groups();
+			if !groups.is_empty() {
+				write!(f, "{groups:?}")?;
 			} else {
-				write!(f, "None")
+				write!(f, "None")?;
 			}
+			write!(f, "({}:{})", self.best_block.number, self.best_block.hash)
 		}
 	}
 }
 
-impl<Block: BlockT> Debug for NextBlock<Block> {
+impl<Block: BlockT> Debug for Payload<Block> {
 	fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
 		write!(f, "{}", self)
 	}
-}
-
-#[derive(Debug, Clone, Encode, Decode)]
-pub struct Payload<Block: BlockT> {
-	pub new_block: NewBlock<Block>,
-	pub next_block: NextBlock<Block>,
 }
 
 // Hotstuff Proposal
@@ -266,15 +237,19 @@ impl<Block: BlockT> Proposal<Block> {
 	pub fn parent_hash(&self) -> Block::Hash {
 		self.qc.proposal_hash
 	}
-
-	pub fn digest(&self) -> Block::Hash {
+	
+	pub fn part_digest(&self) -> Block::Hash {
 		let mut data = self.author.encode();
-		data.append(&mut self.payload.encode());
 		data.append(&mut self.view.encode());
 		data.append(&mut self.timestamp.encode());
 		data.append(&mut self.qc.proposal_hash.encode());
 		data.append(&mut self.qc.timestamp.encode());
+		<<Block::Header as HeaderT>::Hashing as HashT>::hash_of(&data)
+	}
 
+	pub fn digest(&self) -> Block::Hash {
+		let mut data = self.part_digest().encode();
+		data.append(&mut self.payload.digest().encode());
 		<<Block::Header as HeaderT>::Hashing as HashT>::hash_of(&data)
 	}
 
@@ -284,7 +259,7 @@ impl<Block: BlockT> Proposal<Block> {
 			.find(|authority| authority.0 == self.author)
 			.ok_or(HotstuffError::UnknownAuthority(self.author.to_owned()))?;
 
-		self.signature.as_ref().ok_or(NullSignature).and_then(|signature| {
+		self.signature.as_ref().ok_or(HotstuffError::NullSignature).and_then(|signature| {
 			if !AuthorityPair::verify(signature, self.digest(), &self.author) {
 				return Err(HotstuffError::InvalidSignature(self.author.to_owned()));
 			}
@@ -326,9 +301,9 @@ impl<Block: BlockT> Vote<Block> {
 			.find(|authority| authority.0 == self.voter)
 			.ok_or(HotstuffError::UnknownAuthority(self.voter.to_owned()))?;
 
-		self.signature.as_ref().ok_or(NullSignature).and_then(|signature| {
+		self.signature.as_ref().ok_or(HotstuffError::NullSignature).and_then(|signature| {
 			if !AuthorityPair::verify(signature, self.digest(), &self.voter) {
-				return Err(InvalidSignature(self.voter.to_owned()));
+				return Err(HotstuffError::InvalidSignature(self.voter.to_owned()));
 			}
 			Ok(())
 		})
@@ -359,9 +334,9 @@ impl<Block: BlockT> Timeout<Block> {
 			.find(|authority| authority.0 == self.voter)
 			.ok_or(HotstuffError::UnknownAuthority(self.voter.to_owned()))?;
 
-		self.signature.as_ref().ok_or(NullSignature).and_then(|signature| {
+		self.signature.as_ref().ok_or(HotstuffError::NullSignature).and_then(|signature| {
 			if !AuthorityPair::verify(signature, self.digest(), &self.voter) {
-				return Err(InvalidSignature(self.voter.to_owned()));
+				return Err(HotstuffError::InvalidSignature(self.voter.to_owned()));
 			}
 			Ok(())
 		})?;
@@ -395,14 +370,14 @@ impl<Block: BlockT> TC<Block> {
 
 		for (authority_id, _, _) in self.votes.iter() {
 			if used.contains(authority_id) {
-				return Err(AuthorityReuse(authority_id.clone()));
+				return Err(HotstuffError::AuthorityReuse(authority_id.clone()));
 			}
 			used.insert(authority_id.clone());
 			grant_votes += 1;
 		}
 
 		if grant_votes <= (authorities.len() * 2 / 3) {
-			return Err(InsufficientQuorum);
+			return Err(HotstuffError::InsufficientQuorum);
 		}
 		let mut final_high_qc_view = 0;
 
@@ -412,7 +387,7 @@ impl<Block: BlockT> TC<Block> {
 			data.append(&mut high_qc_view.encode());
 			let digest = <<Block::Header as HeaderT>::Hashing as HashT>::hash_of(&data);
 			if !AuthorityPair::verify(signature, digest, voter) {
-				return Err(InvalidSignature(voter.clone()));
+				return Err(HotstuffError::InvalidSignature(voter.clone()));
 			}
 			final_high_qc_view = final_high_qc_view.max(*high_qc_view);
 		}
@@ -443,19 +418,35 @@ impl<Block: BlockT> PeerAuthority<Block> {
 		let digest = self.digest();
 		match &self.signature {
 			Some(signature) => if !AuthorityPair::verify(signature, digest, &self.authority) {
-				Err(InvalidSignature(self.authority.clone()))
+				Err(HotstuffError::InvalidSignature(self.authority.clone()))
 			} else {
 				Ok(())
 			},
-			None => Err(NullSignature),
+			None => Err(HotstuffError::NullSignature),
 		}
+	}
+}
+
+#[derive(Clone, Copy, Debug, Encode, Decode)]
+pub enum ProposalKey<B: BlockT> {
+	View(ViewNumber),
+	Digest(B::Hash),
+}
+
+impl<B: BlockT> ProposalKey<B> {
+	pub fn view(view: ViewNumber) -> ProposalKey<B> {
+		Self::View(view)
+	}
+
+	pub fn digest(digest: B::Hash) -> ProposalKey<B> {
+		Self::Digest(digest)
 	}
 }
 
 #[derive(Debug, Clone, Encode, Decode)]
 pub enum ProposalReq<Block: BlockT> {
-	Hashes(Vec<Block::Hash>),
-	View(ViewNumber, Option<ViewNumber>),
+	Range(ProposalKey<Block>, ProposalKey<Block>),
+	Keys(Vec<ProposalKey<Block>>),
 }
 
 #[derive(Debug, Clone, Encode, Decode)]
@@ -473,16 +464,16 @@ impl<Block: BlockT> ProposalRequest<Block> {
 
 	pub fn verify(&self, authorities: &AuthorityList) -> Result<(), HotstuffError> {
 		if authorities.iter().find(|(a, _)| a == &self.authority).is_none() {
-			return Err(NotAuthority);
+			return Err(HotstuffError::NotAuthority);
 		}
 		let digest = self.digest();
 		match &self.signature {
 			Some(signature) => if !AuthorityPair::verify(signature, digest, &self.authority) {
-				Err(InvalidSignature(self.authority.clone()))
+				Err(HotstuffError::InvalidSignature(self.authority.clone()))
 			} else {
 				Ok(())
 			},
-			None => Err(NullSignature),
+			None => Err(HotstuffError::NullSignature),
 		}
 	}
 }
@@ -496,12 +487,155 @@ pub enum ConsensusMessage<B: BlockT> {
 	Timeout(Timeout<B>),
 	TC(TC<B>),
 	SyncRequest(B::Hash, AuthorityId),
-	BlockImport(BlockInfo<B>),
+	BlockImport(B::Header),
 }
 
 impl<Block: BlockT> ConsensusMessage<Block> {
 	pub fn gossip_topic() -> Block::Hash {
 		// TODO maybe use Lazy then just call hash once.
 		<<Block::Header as HeaderT>::Hashing as HashT>::hash(b"hotstuff/consensus")
+	}
+}
+
+#[derive(Clone, Debug, Encode, Decode, PartialEq)]
+pub struct PayloadClaim<Block: BlockT> {
+	pub best_block: BlockInfo<Block>,
+	pub extrinsics_root: Block::Hash,
+	pub stage: ConsensusStage,
+}
+
+impl<Block: BlockT> PayloadClaim<Block> {
+	pub fn is_next(&self, parent: &Self) -> bool {
+		if self.best_block != parent.best_block || self.extrinsics_root != parent.extrinsics_root {
+			return false;
+		}
+		match (parent.stage, self.stage) {
+			(ConsensusStage::Prepare, ConsensusStage::PreCommit)
+				| (ConsensusStage::PreCommit, ConsensusStage::Commit) => true,
+			_ => false
+		}
+	}
+
+	pub fn digest(
+		&self,
+		block_number: <Block::Header as HeaderT>::Number,
+	) -> Block::Hash {
+		let mut data = self.best_block.encode();
+		data.append(&mut block_number.encode());
+		data.append(&mut self.extrinsics_root.encode());
+		data.append(&mut self.stage.encode());
+		<<Block::Header as HeaderT>::Hashing as HashT>::hash_of(&data)
+	}
+}
+
+#[derive(Debug, Clone, Encode, Decode)]
+pub struct ProposalClaim<B: BlockT> {
+	pub part_digest: B::Hash,
+	pub payload_claim: PayloadClaim<B>,
+	pub qc: QC<B>,
+}
+
+impl<B: BlockT> ProposalClaim<B> {
+	pub fn verify(
+		&self, 
+		authorities: &AuthorityList,
+		block_number: <B::Header as HeaderT>::Number,
+	) -> Result<(), HotstuffError> {
+		if self.qc.proposal_hash == B::Hash::default() {
+			return Err(HotstuffError::VerifyClaim("Claim qc should not be default".into()));
+		}
+		let proposal_digest = {
+			let mut data = self.part_digest.encode();
+			data.append(&mut self.payload_claim.digest(block_number).encode());
+			<<B::Header as HeaderT>::Hashing as HashT>::hash_of(&data)
+		};
+		if proposal_digest != self.qc.proposal_hash {
+			return Err(HotstuffError::VerifyClaim("Incorrect proposal hash".into()));
+		}
+		self.qc.verify(authorities)
+	}
+}
+
+#[derive(Debug, Clone, Encode, Decode)]
+pub struct BlockCommit<B: BlockT> {
+	pub prepare: ProposalClaim<B>,
+	pub precommit: ProposalClaim<B>,
+	pub commit: ProposalClaim<B>,
+}
+
+impl<B: BlockT> BlockCommit<B> {
+	pub fn generate(prepare: (&Proposal<B>, QC<B>), precommit: (&Proposal<B>, QC<B>), commit: (&Proposal<B>, QC<B>)) -> Option<Self> {
+		if prepare.0.payload.stage != ConsensusStage::Prepare || prepare.0.payload.extrinsic.is_none() {
+			return None;
+		}
+		if precommit.0.payload.stage != ConsensusStage::PreCommit {
+			return None;
+		}
+		if commit.0.payload.stage != ConsensusStage::Commit {
+			return None;
+		}
+		let prepare = ProposalClaim {
+			part_digest: prepare.0.part_digest(),
+			payload_claim: prepare.0.payload.claim(),
+			qc: prepare.1
+		};
+		let precommit = ProposalClaim {
+			part_digest: precommit.0.part_digest(),
+			payload_claim: precommit.0.payload.claim(),
+			qc: precommit.1
+		};
+		let commit = ProposalClaim {
+			part_digest: commit.0.part_digest(),
+			payload_claim: commit.0.payload.claim(),
+			qc: commit.1
+		};
+		if !precommit.payload_claim.is_next(&prepare.payload_claim) ||  !commit.payload_claim.is_next(&precommit.payload_claim) {
+			return None;
+		}
+		
+		Some(BlockCommit { prepare, precommit, commit })
+	}
+
+	pub fn verify_qc(&self, authorities: &AuthorityList) -> Result<(), HotstuffError> {
+		self.prepare.qc.verify(authorities)?;
+		self.precommit.qc.verify(authorities)?;
+		self.commit.qc.verify(authorities)?;
+		Ok(())
+	}
+	
+	pub fn verify(
+		&self,
+		authorities: &AuthorityList,
+		block_number: <B::Header as HeaderT>::Number,
+		// check_extrinsic_root: Option<B::Hash>,
+	) -> Result<(), HotstuffError> {
+		if !self.precommit.payload_claim.is_next(&self.prepare.payload_claim)
+			|| !self.commit.payload_claim.is_next(&self.precommit.payload_claim)
+		{
+			return Err(HotstuffError::VerifyClaim("Inconsistent payload claim".into()));
+		}
+		if self.prepare.payload_claim.stage != ConsensusStage::Prepare
+			|| self.precommit.payload_claim.stage != ConsensusStage::PreCommit
+			|| self.commit.payload_claim.stage != ConsensusStage::Commit
+		{
+			return Err(HotstuffError::VerifyClaim("Incorrect payload claim stage".into()));
+		}
+		// if let Some(extrinsic_root) = check_extrinsic_root {
+		// 	if extrinsic_root != self.commit.payload_claim.extrinsics_root {
+		// 		return Err(HotstuffError::VerifyClaim("Check extrinsic_root failed".into()));
+		// 	}
+		// }
+		self.prepare.verify(authorities, block_number)?;
+		self.precommit.verify(authorities, block_number)?;
+		self.commit.verify(authorities, block_number)?;
+		Ok(())
+	}
+
+	pub fn commit_time(&self) -> &Timestamp {
+		&self.commit.qc.timestamp
+	}
+
+	pub fn base_block(&self) -> &BlockInfo<B> {
+		&self.commit.payload_claim.best_block
 	}
 }

@@ -16,6 +16,7 @@ async-trait = "0.1.57"
 parking_lot = "0.12.1"
 thiserror = "1.0"
 
+frame-system = { path = "../../frame/system" }
 prometheus-endpoint = { package = "substrate-prometheus-endpoint", path = "../../utils/prometheus" }
 sc-basic-authorship = { path = "../../client/basic-authorship" }
 sc-utils = { path = "../../client/utils" }

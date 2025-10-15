@@ -28,6 +28,8 @@ use frame_support::{
 };
 use hotstuff_primitives::{AuthorityIndex, ConsensusLog, Slot, HOTSTUFF_ENGINE_ID};
 use log;
+use frame_support::dispatch::DispatchResultWithPostInfo;
+use frame_system::pallet_prelude::OriginFor;
 use sp_runtime::{
 	generic::DigestItem,
 	traits::{IsMember, Member, SaturatedConversion, Saturating, Zero},
@@ -171,6 +173,31 @@ pub mod pallet {
 	impl<T: Config> GenesisBuild<T> for GenesisConfig<T> {
 		fn build(&self) {
 			Pallet::<T>::initialize_authorities(&self.authorities);
+		}
+	}
+
+	#[pallet::call]
+	impl<T: Config> Pallet<T> {
+		#[pallet::call_index(0)]
+		#[pallet::weight(0)]
+		pub fn change_authorities_immediate(
+			origin: OriginFor<T>,
+			new_authorities: Vec<T::AuthorityId>,
+		) -> DispatchResultWithPostInfo {
+			ensure_root(origin)?;
+			let last_authorities = Self::authorities();
+			if last_authorities != new_authorities {
+				if new_authorities.len() as u32 > T::MaxAuthorities::get() {
+					log::warn!(
+						target: LOG_TARGET,
+						"next authorities list larger than {}, truncating",
+						T::MaxAuthorities::get(),
+					);
+				}
+				let bounded = <BoundedVec<_, T::MaxAuthorities>>::truncate_from(new_authorities);
+				Self::change_authorities(bounded);
+			}
+			Ok(().into())
 		}
 	}
 }
