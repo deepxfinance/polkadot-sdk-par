@@ -1,21 +1,15 @@
 // Hotstuff block store, just a easy key-value store.
-use std::{marker::PhantomData, sync::Arc};
-
-use sc_client_api::Backend;
+use std::sync::Arc;
+use sc_client_api::AuxStore;
 use sp_blockchain::Error;
-use sp_runtime::traits::Block as BlockT;
 
-use crate::client::ClientForHotstuff;
-
-pub struct Store<Block: BlockT, BE: Backend<Block>, C: ClientForHotstuff<Block, BE>> {
+pub struct Store<C: AuxStore> {
 	backend: Arc<C>,
-	_p1: PhantomData<Block>,
-	_p2: PhantomData<BE>,
 }
 
-impl<Block: BlockT, BE: Backend<Block>, C: ClientForHotstuff<Block, BE>> Store<Block, BE, C> {
+impl<C: AuxStore> Store<C> {
 	pub fn new(backend: Arc<C>) -> Self {
-		Self { backend, _p1: PhantomData, _p2: PhantomData }
+		Self { backend }
 	}
 
 	pub fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, Error> {
@@ -24,6 +18,12 @@ impl<Block: BlockT, BE: Backend<Block>, C: ClientForHotstuff<Block, BE>> Store<B
 
 	pub fn set(&mut self, key: &[u8], value: &[u8]) -> Result<(), Error> {
 		self.backend.insert_aux(&[(key, value)], &[])
+	}
+
+	pub fn revert(&mut self, insert: &[(Vec<u8>, Vec<u8>)], delete: &[Vec<u8>]) -> Result<(), Error> {
+		let insert: Vec<_> = insert.iter().map(|(k, v)| (k.as_slice(), v.as_slice())).collect();
+		let delete: Vec<_> = delete.iter().map(|k| k.as_slice()).collect();
+		self.backend.insert_aux(insert.as_slice(), delete.as_slice())
 	}
 }
 

@@ -13,6 +13,7 @@ pub mod store;
 pub mod synchronizer;
 pub mod import_queue;
 pub mod executor;
+pub mod revert;
 
 pub use client::{block_import, LinkHalf};
 pub use import::HotstuffBlockImport;

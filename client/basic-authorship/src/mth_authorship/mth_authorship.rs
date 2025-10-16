@@ -136,7 +136,7 @@ impl<A, B, C, MBH, E> ProposerFactory<A, B, C, DisableProofRecording, MBH, E> {
             Ok(tx) => tx.parse().expect("`MTH_DEFAULT_ROUND_TX` should be a usize"),
             Err(_) => 0,
         };
-        info!(
+        debug!(
             target: LOG_TARGET,
             "ProposerFactory init soft_deadline_percent: {soft_deadline_percent:?}, pool_deadline_percent: {pool_deadline_percent:?}, merge_deadline_percent: {merge_deadline_percent:?}, thread_limit: {thread_limit}, millis_tx_rate: {millis_tx_rate:?}, default_round_tx: {default_round_tx}",
         );

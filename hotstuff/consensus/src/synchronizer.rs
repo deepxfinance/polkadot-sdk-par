@@ -8,11 +8,12 @@ use std::{
 use log::debug;
 use tokio::time::{interval, Instant, Interval};
 
-use sc_client_api::Backend;
+use sc_client_api::AuxStore;
+use sp_blockchain::HeaderBackend;
 use sp_core::{Decode, Encode};
 use sp_runtime::traits::Block as BlockT;
 
-use crate::{client::ClientForHotstuff, message::Proposal, primitives::{HotstuffError, ViewNumber}, store::Store, CLIENT_LOG_TARGET};
+use crate::{message::Proposal, primitives::{HotstuffError, ViewNumber}, store::Store, CLIENT_LOG_TARGET};
 use crate::message::ProposalKey;
 
 pub const HIGH_VIEW_KEY: &str = "hots_high_view";
@@ -49,17 +50,16 @@ pub fn view_key(view: ViewNumber) -> Vec<u8> {
 }
 
 // Synchronizer synchronizes replicas to the same view.
-pub struct Synchronizer<B: BlockT, BE: Backend<B>, C: ClientForHotstuff<B, BE>> {
-	store: Store<B, BE, C>,
+pub struct Synchronizer<B: BlockT, C: AuxStore + HeaderBackend<B>> {
+	store: Store<C>,
 	high_view: ViewNumber,
 	high_digest: B::Hash,
 }
 
-impl<B, BE, C> Synchronizer<B, BE, C>
+impl<B, C> Synchronizer<B, C>
 where
 	B: BlockT,
-	BE: Backend<B>,
-	C: ClientForHotstuff<B, BE>,
+	C: AuxStore + HeaderBackend<B>,
 {
 	pub fn new(client: Arc<C>) -> Self {
 		let store = Store::new(client);
@@ -75,7 +75,7 @@ where
 		}
 	}
 
-	fn save_high_proposal(&mut self, view: ViewNumber , digest: B::Hash) -> Result<(), HotstuffError> {
+	fn save_high_proposal(&mut self, view: ViewNumber, digest: B::Hash) -> Result<(), HotstuffError> {
 		if view >= self.high_view {
 			if view == self.high_view {
 				// TODO should we allow same proposal cover same view?
@@ -187,5 +187,43 @@ where
 		proposal: &Proposal<B>,
 	) -> Result<Option<Proposal<B>>, HotstuffError> {
 		self.get_proposal(ProposalKey::digest(proposal.parent_hash()))
+	}
+
+	pub fn revert(&mut self, to_view: ViewNumber, to_digest: B::Hash) -> Result<(ViewNumber, B::Hash), HotstuffError> {
+		if let Some(to_proposal) = self.get_proposal(ProposalKey::digest(to_digest))? {
+			if to_proposal.view != to_view {
+				return Err(HotstuffError::Other(format!("revert incorrect to_view {to_view} with to_digest {to_digest}")));
+			}
+		}
+		let mut view = self.high_view;
+		let mut delete = vec![];
+		let mut insert = vec![];
+		let mut final_high_digest = B::Hash::default();
+		loop {
+			if view <= to_view {
+				// update hig_view and high_digest.
+				if let Some(digest) = self.get_digest(view)? {
+					final_high_digest = digest;
+					insert.push((HIGH_VIEW_KEY.as_bytes().to_vec(), (view, digest).encode()));
+					break;
+				} else if view == 0 {
+					// clear high_view and high_digest
+					delete.push(HIGH_VIEW_KEY.as_bytes().to_vec());
+					break;
+				}
+			} else {
+				// delete:
+				// 1. view -> digest
+				// 2. digest -> proposal
+				if let Some(digest) = self.get_digest(view)? {
+					delete.push(view_key(view));
+					delete.push(digest.as_ref().to_vec());
+				}
+			}
+			view = view.saturating_sub(1);
+		}
+		self.store.revert(&insert, &delete)
+			.map_err(|e| HotstuffError::Other(format!("revert delete failed for {e:?}")))?;
+		Ok((view, final_high_digest))
 	}
 }

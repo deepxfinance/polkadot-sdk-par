@@ -381,7 +381,7 @@ pub struct ConsensusWorker<
     local_timer: Timer,
     slot_duration: SlotDuration,
     blocks_ahead_best: <B::Header as HeaderT>::Number,
-    synchronizer: Synchronizer<B, BE, C>,
+    synchronizer: Synchronizer<B, C>,
     consensus_msg_tx: Sender<(bool, ConsensusMessage<B>)>,
     consensus_msg_rx: Receiver<(bool, ConsensusMessage<B>)>,
     executor_tx: UnboundedSender<ExecutorMission<B>>,
@@ -392,6 +392,7 @@ pub struct ConsensusWorker<
     /// consensus success block waiting to execute.
     processed: BlockCommit<B>,
     processed_extrinsic: Option<(Vec<Vec<B::Extrinsic>>, Vec<B::Extrinsic>)>,
+    phantom: PhantomData<BE>,
 }
 
 impl<B, BE, C, N, S, PF, Error> ConsensusWorker<B, BE, C, N, S, PF, Error>
@@ -412,7 +413,7 @@ where
         client: Arc<C>,
         sync: S,
         network: HotstuffNetworkBridge<B, N, S>,
-        synchronizer: Synchronizer<B, BE, C>,
+        synchronizer: Synchronizer<B, C>,
         proposer_factory: Arc<RwLock<PF>>,
         local_timer_duration: u64,
         slot_duration: SlotDuration,
@@ -450,6 +451,7 @@ where
             processing_block: None,
             processed,
             processed_extrinsic: None,
+            phantom: PhantomData,
         }
     }
 
@@ -1221,7 +1223,7 @@ where
     let LinkHalf { client, .. } = link;
     let authorities = get_authorities_from_client::<B, BE, C>(client.clone());
 
-    let synchronizer = Synchronizer::<B, BE, C>::new(client.clone());
+    let synchronizer = Synchronizer::<B, C>::new(client.clone());
     let high_proposal = synchronizer.get_high_proposal().unwrap();
     let consensus_state = ConsensusState::<B>::new(keystore, high_proposal, authorities.clone(), Vec::new());
     let peer_authority = consensus_state.make_peer_authority(network.local_peer_id().to_base58());
