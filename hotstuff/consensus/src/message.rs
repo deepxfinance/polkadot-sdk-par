@@ -2,7 +2,7 @@ use std::{collections::HashSet, marker::PhantomData};
 use std::fmt::{Debug, Display, Formatter};
 use codec::{Decode, Encode};
 use sp_core::Pair;
-use sp_runtime::traits::{Block as BlockT, Hash as HashT, Header as HeaderT, Zero};
+use sp_runtime::traits::{Block as BlockT, Hash as HashT, Header as HeaderT};
 use sp_timestamp::Timestamp;
 
 use hotstuff_primitives::{AuthorityId, AuthorityList, AuthorityPair, AuthoritySignature};
@@ -138,7 +138,7 @@ impl<Block: BlockT> Payload<Block> {
 
 	pub fn empty() -> Self {
 		Self {
-			best_block: BlockInfo { number: Zero::zero(), hash: Default::default() },
+			best_block: Default::default(),
 			block_number: 0u32.into(),
 			extrinsics_root: Block::Hash::default(),
 			extrinsic: None,
@@ -154,7 +154,6 @@ impl<Block: BlockT> Payload<Block> {
 		PayloadClaim {
 			best_block: self.best_block.clone(),
 			extrinsics_root: self.extrinsics_root.clone(),
-			stage: self.stage,
 		}
 	}
 
@@ -178,6 +177,24 @@ impl<Block: BlockT> Payload<Block> {
 			return false;
 		}
 		true
+	}
+
+	pub fn is_next(&self, parent: &Option<Self>) -> bool {
+		if self.extrinsic.is_some() && self.stage == ConsensusStage::Prepare {
+			return true;
+		}
+		if let Some(parent) = parent {
+			return match (parent.stage, self.stage) {
+				(ConsensusStage::Prepare, ConsensusStage::PreCommit)
+				| (ConsensusStage::PreCommit, ConsensusStage::Commit) => {
+					parent.block_number == self.block_number
+						&& parent.extrinsics_root == self.extrinsics_root
+						&& self.best_block == self.best_block
+				},
+				_ => false,
+			}
+		}
+		false
 	}
 }
 
@@ -501,29 +518,25 @@ impl<Block: BlockT> ConsensusMessage<Block> {
 pub struct PayloadClaim<Block: BlockT> {
 	pub best_block: BlockInfo<Block>,
 	pub extrinsics_root: Block::Hash,
-	pub stage: ConsensusStage,
 }
 
 impl<Block: BlockT> PayloadClaim<Block> {
-	pub fn is_next(&self, parent: &Self) -> bool {
-		if self.best_block != parent.best_block || self.extrinsics_root != parent.extrinsics_root {
-			return false;
-		}
-		match (parent.stage, self.stage) {
-			(ConsensusStage::Prepare, ConsensusStage::PreCommit)
-				| (ConsensusStage::PreCommit, ConsensusStage::Commit) => true,
-			_ => false
+	pub fn empty() -> Self {
+		Self {
+			best_block: Default::default(),
+			extrinsics_root: Default::default(),
 		}
 	}
 
 	pub fn digest(
 		&self,
 		block_number: <Block::Header as HeaderT>::Number,
+		stage: ConsensusStage,
 	) -> Block::Hash {
 		let mut data = self.best_block.encode();
 		data.append(&mut block_number.encode());
 		data.append(&mut self.extrinsics_root.encode());
-		data.append(&mut self.stage.encode());
+		data.append(&mut stage.encode());
 		<<Block::Header as HeaderT>::Hashing as HashT>::hash_of(&data)
 	}
 }
@@ -531,22 +544,28 @@ impl<Block: BlockT> PayloadClaim<Block> {
 #[derive(Debug, Clone, Encode, Decode)]
 pub struct ProposalClaim<B: BlockT> {
 	pub part_digest: B::Hash,
-	pub payload_claim: PayloadClaim<B>,
 	pub qc: QC<B>,
 }
 
 impl<B: BlockT> ProposalClaim<B> {
+	pub fn empty() -> Self {
+		Self {
+			part_digest: Default::default(),
+			qc: Default::default(),
+		}
+	}
+
 	pub fn verify(
 		&self, 
 		authorities: &AuthorityList,
-		block_number: <B::Header as HeaderT>::Number,
+		payload_claim_digest: B::Hash,
 	) -> Result<(), HotstuffError> {
 		if self.qc.proposal_hash == B::Hash::default() {
 			return Err(HotstuffError::VerifyClaim("Claim qc should not be default".into()));
 		}
 		let proposal_digest = {
 			let mut data = self.part_digest.encode();
-			data.append(&mut self.payload_claim.digest(block_number).encode());
+			data.append(&mut payload_claim_digest.encode());
 			<<B::Header as HeaderT>::Hashing as HashT>::hash_of(&data)
 		};
 		if proposal_digest != self.qc.proposal_hash {
@@ -558,12 +577,24 @@ impl<B: BlockT> ProposalClaim<B> {
 
 #[derive(Debug, Clone, Encode, Decode)]
 pub struct BlockCommit<B: BlockT> {
+	pub block_number: <B::Header as HeaderT>::Number,
+	pub payload_claim: PayloadClaim<B>,
 	pub prepare: ProposalClaim<B>,
 	pub precommit: ProposalClaim<B>,
 	pub commit: ProposalClaim<B>,
 }
 
 impl<B: BlockT> BlockCommit<B> {
+	pub fn empty() -> Self {
+		Self {
+			block_number: 0u32.into(),
+			payload_claim: PayloadClaim::empty(),
+			prepare: ProposalClaim::empty(),
+			precommit: ProposalClaim::empty(),
+			commit: ProposalClaim::empty(),
+		}
+	}
+
 	pub fn generate(prepare: (&Proposal<B>, QC<B>), precommit: (&Proposal<B>, QC<B>), commit: (&Proposal<B>, QC<B>)) -> Option<Self> {
 		if prepare.0.payload.stage != ConsensusStage::Prepare || prepare.0.payload.extrinsic.is_none() {
 			return None;
@@ -574,26 +605,27 @@ impl<B: BlockT> BlockCommit<B> {
 		if commit.0.payload.stage != ConsensusStage::Commit {
 			return None;
 		}
+		let prepare_payload_claim = prepare.0.payload.claim();
+		let precommit_payload_claim = precommit.0.payload.claim();
+		let payload_claim = commit.0.payload.claim();
+		if prepare_payload_claim != precommit_payload_claim  || precommit_payload_claim != payload_claim {
+			return None;
+		}
+		let block_number = commit.0.payload.block_number;
 		let prepare = ProposalClaim {
 			part_digest: prepare.0.part_digest(),
-			payload_claim: prepare.0.payload.claim(),
 			qc: prepare.1
 		};
 		let precommit = ProposalClaim {
 			part_digest: precommit.0.part_digest(),
-			payload_claim: precommit.0.payload.claim(),
 			qc: precommit.1
 		};
 		let commit = ProposalClaim {
 			part_digest: commit.0.part_digest(),
-			payload_claim: commit.0.payload.claim(),
 			qc: commit.1
 		};
-		if !precommit.payload_claim.is_next(&prepare.payload_claim) ||  !commit.payload_claim.is_next(&precommit.payload_claim) {
-			return None;
-		}
 		
-		Some(BlockCommit { prepare, precommit, commit })
+		Some(BlockCommit { block_number, payload_claim, prepare, precommit, commit })
 	}
 
 	pub fn verify_qc(&self, authorities: &AuthorityList) -> Result<(), HotstuffError> {
@@ -607,28 +639,18 @@ impl<B: BlockT> BlockCommit<B> {
 		&self,
 		authorities: &AuthorityList,
 		block_number: <B::Header as HeaderT>::Number,
-		// check_extrinsic_root: Option<B::Hash>,
 	) -> Result<(), HotstuffError> {
-		if !self.precommit.payload_claim.is_next(&self.prepare.payload_claim)
-			|| !self.commit.payload_claim.is_next(&self.precommit.payload_claim)
-		{
-			return Err(HotstuffError::VerifyClaim("Inconsistent payload claim".into()));
+		if block_number != self.block_number {
+			return Err(HotstuffError::VerifyClaim("Incorrect block number".into()));
 		}
-		if self.prepare.payload_claim.stage != ConsensusStage::Prepare
-			|| self.precommit.payload_claim.stage != ConsensusStage::PreCommit
-			|| self.commit.payload_claim.stage != ConsensusStage::Commit
-		{
-			return Err(HotstuffError::VerifyClaim("Incorrect payload claim stage".into()));
-		}
-		// if let Some(extrinsic_root) = check_extrinsic_root {
-		// 	if extrinsic_root != self.commit.payload_claim.extrinsics_root {
-		// 		return Err(HotstuffError::VerifyClaim("Check extrinsic_root failed".into()));
-		// 	}
-		// }
-		self.prepare.verify(authorities, block_number)?;
-		self.precommit.verify(authorities, block_number)?;
-		self.commit.verify(authorities, block_number)?;
+		self.prepare.verify(authorities, self.payload_claim.digest(self.block_number, ConsensusStage::Prepare))?;
+		self.precommit.verify(authorities, self.payload_claim.digest(self.block_number, ConsensusStage::PreCommit))?;
+		self.commit.verify(authorities, self.payload_claim.digest(self.block_number, ConsensusStage::Commit))?;
 		Ok(())
+	}
+
+	pub fn prepare_time(&self) -> &Timestamp {
+		&self.prepare.qc.timestamp
 	}
 
 	pub fn commit_time(&self) -> &Timestamp {
@@ -636,6 +658,6 @@ impl<B: BlockT> BlockCommit<B> {
 	}
 
 	pub fn base_block(&self) -> &BlockInfo<B> {
-		&self.commit.payload_claim.best_block
+		&self.payload_claim.best_block
 	}
 }

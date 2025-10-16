@@ -12,6 +12,7 @@ use futures::{Future, StreamExt};
 use tokio::sync::oneshot::{Receiver, Sender};
 use tokio::sync::RwLock;
 use hotstuff_primitives::digests::CompatibleDigestItem;
+use hotstuff_primitives::HOTSTUFF_ENGINE_ID;
 use sc_basic_authorship::BlockPropose;
 use sc_client_api::{
 	client::{FinalityNotifications, ImportNotifications},
@@ -24,7 +25,8 @@ use sp_api::TransactionFor;
 use sp_blockchain::BlockStatus;
 use sp_consensus::{BlockOrigin, Environment, Error as ConsensusError, Proposer};
 use sp_runtime::{generic::BlockId, traits::{Block as BlockT, Header as HeaderT, NumberFor, One}, Digest, Justification};
-use crate::{client::ClientForHotstuff, primitives::{HotstuffError, HotstuffError::*}, CLIENT_LOG_TARGET};
+use crate::{client::ClientForHotstuff, find_block_commit, primitives::{HotstuffError, HotstuffError::*}, CLIENT_LOG_TARGET};
+use crate::message::BlockCommit;
 
 pub struct BlockNotification<B: BlockT> {
 	pub origin: BlockOrigin,
@@ -191,14 +193,14 @@ where
 		let hash = block.post_hash();
 		log::trace!(
 			target: CLIENT_LOG_TARGET,
-			"ImportBlock({:?}): {}(parent: {:?}, body: {:?}, digests: {}, post_digests: {}, justifications: {}, finalized: {}, action: {})",
+			"ImportBlock({:?}): {}(parent: {:?}, body: {:?}, digests: {}, post_digests: {}, justifications: {:?}, finalized: {}, action: {})",
 			block.origin,
 			block.header.number(),
 			block.header.parent_hash(),
 			block.body.as_ref().map(|e| e.len()),
 			block.header.digest().logs().len(),
 			block.post_digests.len(),
-			block.justifications.is_some(),
+			block.justifications.as_ref().map(|justifications| justifications.encode().len()),
 			block.finalized,
 			match block.state_action {
 				StateAction::ApplyChanges(StorageChanges::Changes(_)) => "ApplyChanges(Changes)",
@@ -209,33 +211,10 @@ where
 			},
 		);
         self.lock(block.origin, *block.header.number()).await;
-		match self.inner.status(hash) {
+		let justifications = block.justifications.take();
+		let block_commit = find_block_commit::<Block>(&block.post_header());
+		let import_result = match self.inner.status(hash) {
 			Ok(BlockStatus::InChain) => {
-				// TODO should we support re-import same block?
-				// if self.role.is_authority() {
-				// 	return Ok(ImportResult::AlreadyInChain);
-				// }
-				// if let Ok(BlockStatus::InChain) = self.inner.status(*block.header.parent_hash()) {
-				// 	// Strip justifications when re-importing an existing block.
-				// 	let _justifications = block.justifications.take();
-				// 	if matches!(block.origin, BlockOrigin::ConsensusBroadcast | BlockOrigin::Own)
-				// 		&& !matches!(block.state_action, StateAction::Execute | StateAction::ExecuteIfPossible)
-				// 	{
-				// 		// Block from local/local_consensus with calculated changes do not need check.
-				// 	} else if matches!(block.state_action, StateAction::Execute | StateAction::ExecuteIfPossible) {
-				// 		let proposal = match calculate_block(&block) {
-				// 			Ok((proposal, _groups)) => proposal,
-				// 			Err(e) => {
-				// 				log::warn!(target: CLIENT_LOG_TARGET, "ImportBlock({:?}): {} failed for {e}", block.origin, block.header.number());
-				// 				return Err(e);
-				// 			}
-				// 		};
-				// 		block.state_action = StateAction::ApplyChanges(StorageChanges::Changes(proposal.storage_changes));
-				// 	}
-				// 	(&*self.inner).import_block(block).await
-				// } else {
-				// 	Ok(ImportResult::UnknownParent)
-				// }
                 self.unlock(block.origin, *block.header.number()).await;
 				Ok(ImportResult::AlreadyInChain)
 			},
@@ -256,12 +235,10 @@ where
 								return Err(e);
 							}
 						};
-						if self.role.is_authority() {
-							if let Err(e) = check_header::<Block>(&block.header, &proposal.block.header()) {
-								log::warn!(target: CLIENT_LOG_TARGET, "ImportBlock({:?}): {} failed for {e}", block.origin, block.header.number());
-                                self.unlock(block.origin, *block.header.number()).await;
-								return Err(ConsensusError::ClientImport(format!("Check header with calculated: {e}")));
-							}
+						if let Err(e) = check_header::<Block>(&block.header, &proposal.block.header()) {
+							log::warn!(target: CLIENT_LOG_TARGET, "ImportBlock({:?}): {} failed for {e}", block.origin, block.header.number());
+							self.unlock(block.origin, *block.header.number()).await;
+							return Err(ConsensusError::ClientImport(format!("Check header with calculated: {e}")));
 						}
 						block.state_action = StateAction::ApplyChanges(StorageChanges::Changes(proposal.storage_changes));
 					}
@@ -276,7 +253,28 @@ where
 				}
 			},
 			Err(e) => Err(ConsensusError::ClientImport(e.to_string())),
+		};
+		// try to finalize base block
+		if let Some(Some(encoded_commit)) = justifications.as_ref().map(|j| j.get(HOTSTUFF_ENGINE_ID)) {
+			let commit: BlockCommit<Block> = match Decode::decode(&mut &encoded_commit[..]) {
+				Ok(commit) => commit,
+				Err(e) => return Err(ConsensusError::ClientImport(e.to_string())),
+			};
+			let finalize_block = commit.base_block();
+			if self.inner.info().finalized_number < finalize_block.number {
+				if let Err(e) = self.inner.finalize_block(finalize_block.hash, Some((HOTSTUFF_ENGINE_ID, encoded_commit.clone())), true) {
+					log::warn!(target: CLIENT_LOG_TARGET, "[ImportBlock] FinalizeBlock #{} ({}) failed for {e:?}", finalize_block.number, finalize_block.hash);
+				}
+			}
+		} else if let Some(commit) = block_commit {
+			let finalize_block = commit.base_block();
+			if self.inner.info().finalized_number < finalize_block.number {
+				if let Err(e) = self.inner.finalize_block(finalize_block.hash, Some((HOTSTUFF_ENGINE_ID, commit.encode())), true) {
+					log::warn!(target: CLIENT_LOG_TARGET, "[ImportBlock] FinalizeBlock #{} ({}) failed for {e:?}", finalize_block.number, finalize_block.hash);
+				}
+			}
 		}
+		import_result
 	}
 }
 
@@ -358,6 +356,15 @@ pub(crate) struct PeerReport {
 pub struct BlockInfo<B: BlockT> {
 	pub hash: B::Hash,
 	pub number: <B::Header as HeaderT>::Number,
+}
+
+impl<B: BlockT> Default for BlockInfo<B> {
+	fn default() -> Self {
+		BlockInfo {
+			hash: Default::default(),
+			number: 0u32.into(),
+		}
+	}
 }
 
 // A queue cache the best block from the client.

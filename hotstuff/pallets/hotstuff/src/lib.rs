@@ -263,7 +263,7 @@ impl<T: pallet::Config> Pallet<T> {
 		{
 			// we double the minimum block-period so each author can always propose within
 			// the majority of its slot.
-			<T as pallet_timestamp::Config>::MinimumPeriod::get().saturating_mul(3u32.into())
+			<T as pallet_timestamp::Config>::MinimumPeriod::get().saturating_mul(2u32.into())
 		}
 	}
 

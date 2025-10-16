@@ -190,7 +190,6 @@ pub fn new_full(config: Configuration) -> Result<TaskManager, ServiceError> {
 		);
 	}
 
-	let role = config.role.clone();
 	// let force_authoring = config.force_authoring;
 	// let backoff_authoring_blocks: Option<()> = None;
 	let prometheus_registry = config.prometheus_registry().cloned();
@@ -221,61 +220,59 @@ pub fn new_full(config: Configuration) -> Result<TaskManager, ServiceError> {
 		telemetry: telemetry.as_mut(),
 	})?;
 
-	if role.is_authority() {
-		// Create hotstuff consensus voter & network.
-		let proposer_factory: ProposerFactory = ProposerFactory::new(
-			task_manager.spawn_handle(),
-			client.clone(),
-			transaction_pool,
-			prometheus_registry.as_ref(),
-			telemetry.as_ref().map(|x| x.handle()),
-			<ExecutorDispatch as sc_executor::NativeExecutionDispatch>::native_version(),
-		);
-		let slot_duration = hotstuff_consensus::slot_duration(&*client)?;
-		let (voter, hotstuff_network, block_authorship_task) = hotstuff_consensus::consensus::start_hotstuff(
-			network,
-			hotstuff_link,
-			sync_service.clone(),
-			hotstuff_block_import,
-			sync_service.clone(),
-			proposer_factory,
-			hotstuff_protocol_name,
-			keystore_container.keystore(),
-			move |_, extra_args: Timestamp| async move {
-				let timestamp = sp_timestamp::InherentDataProvider::new(extra_args);
-				let slot =
-					hotstuff_primitives::inherents::InherentDataProvider::from_timestamp_and_slot_duration(
-						*timestamp,
-						slot_duration,
-					);
+	// Create hotstuff consensus voter & network.
+	let proposer_factory: ProposerFactory = ProposerFactory::new(
+		task_manager.spawn_handle(),
+		client.clone(),
+		transaction_pool,
+		prometheus_registry.as_ref(),
+		telemetry.as_ref().map(|x| x.handle()),
+		<ExecutorDispatch as sc_executor::NativeExecutionDispatch>::native_version(),
+	);
+	let slot_duration = hotstuff_consensus::slot_duration(&*client)?;
+	let (voter, hotstuff_network, block_authorship_task) = hotstuff_consensus::consensus::start_hotstuff(
+		network,
+		hotstuff_link,
+		sync_service.clone(),
+		hotstuff_block_import,
+		sync_service.clone(),
+		proposer_factory,
+		hotstuff_protocol_name,
+		keystore_container.keystore(),
+		move |_, extra_args: Timestamp| async move {
+			let timestamp = sp_timestamp::InherentDataProvider::new(extra_args);
+			let slot =
+				hotstuff_primitives::inherents::InherentDataProvider::from_timestamp_and_slot_duration(
+					*timestamp,
+					slot_duration,
+				);
 
-				Ok((slot, timestamp))
-			},
-			select_chain,
-			slot_duration,
-		)?;
+			Ok((slot, timestamp))
+		},
+		select_chain,
+		slot_duration,
+	)?;
 
-		// Start hotstuff consensus voter
-		task_manager
-			.spawn_essential_handle()
-			.spawn_blocking("hotstuff block voter", None, voter);
+	// Start hotstuff consensus voter
+	task_manager
+		.spawn_essential_handle()
+		.spawn_blocking("hotstuff block voter", None, voter);
 
-		// Start hotstuff consensus network
-		task_manager.spawn_essential_handle().spawn_blocking(
-			"hotstuff network",
+	// Start hotstuff consensus network
+	task_manager.spawn_essential_handle().spawn_blocking(
+		"hotstuff network",
+		None,
+		hotstuff_network,
+	);
+
+	// Start hotstuff block executor
+	task_manager
+		.spawn_essential_handle()
+		.spawn_blocking(
+			"hotstuff block executor",
 			None,
-			hotstuff_network,
+			block_authorship_task,
 		);
-
-		// Start hotstuff block authorship
-		task_manager
-			.spawn_essential_handle()
-			.spawn_blocking(
-				"hotstuff block authorship",
-				None,
-				block_authorship_task,
-			);
-	}
 
 	network_starter.start_network();
 	Ok(task_manager)
