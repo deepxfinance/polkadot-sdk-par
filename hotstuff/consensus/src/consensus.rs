@@ -6,9 +6,9 @@ use std::{
     task::{Context, Poll},
 };
 use std::marker::PhantomData;
-use std::ops::Add;
 use std::str::FromStr;
 use std::thread::JoinHandle;
+use std::time::Duration;
 use async_recursion::async_recursion;
 use futures::{channel::mpsc::Receiver as Recv, Future, StreamExt};
 
@@ -17,7 +17,7 @@ use log::{debug, error, info, trace, warn};
 use tokio::sync::mpsc::{channel, unbounded_channel, Receiver, Sender, UnboundedSender};
 use tokio::sync::RwLock;
 use frame_system::extrinsics_data_root;
-use sc_basic_authorship::BlockPropose;
+use sc_basic_authorship::{BlockPropose, GroupTransaction, BlockOracle};
 use sc_client_api::{Backend, CallExecutor, ExecutionStrategy};
 use sc_network::types::ProtocolName;
 use sc_network_gossip::TopicNotification;
@@ -52,6 +52,7 @@ use sp_inherents::CreateInherentDataProviders;
 use sp_runtime::traits::Zero;
 use sp_runtime::transaction_validity::TransactionSource;
 use sp_timestamp::Timestamp;
+use crate::oracle::HotsOracle;
 
 #[cfg(test)]
 #[path = "tests/consensus_tests.rs"]
@@ -372,6 +373,7 @@ pub struct ConsensusWorker<
     S: SyncingT<B> + Sync + 'static,
     PF: Environment<B, Error = Error> + Send + Sync + 'static,
     Error: std::error::Error + Send + From<ConsensusError> + 'static,
+    O: BlockOracle<B> + HotsOracle + Sync + Send + 'static,
 > {
     state: ConsensusState<B>,
 
@@ -386,6 +388,7 @@ pub struct ConsensusWorker<
     consensus_msg_rx: Receiver<(bool, ConsensusMessage<B>)>,
     executor_tx: UnboundedSender<ExecutorMission<B>>,
     proposer_factory: Arc<RwLock<PF>>,
+    oracle: Arc<O>,
     /// Tmp cache for not voted proposal(should be verified and qc mission is handled).
     pending_proposal: Option<Proposal<B>>,
     processing_block: Option<Payload<B>>,
@@ -395,7 +398,7 @@ pub struct ConsensusWorker<
     phantom: PhantomData<BE>,
 }
 
-impl<B, BE, C, N, S, PF, Error> ConsensusWorker<B, BE, C, N, S, PF, Error>
+impl<B, BE, C, N, S, PF, Error, O> ConsensusWorker<B, BE, C, N, S, PF, Error, O>
 where
     B: BlockT,
     BE: Backend<B>,
@@ -404,8 +407,9 @@ where
     N: NetworkT<B> + Sync + 'static,
     S: SyncingT<B> + Sync + 'static,
     PF: Environment<B, Error = Error> + Send + Sync + 'static,
-    PF::Proposer: Proposer<B, Error = Error, Transaction = sp_api::TransactionFor<C, B>> + BlockPropose<B>,
+    PF::Proposer: Proposer<B, Error = Error, Transaction = sp_api::TransactionFor<C, B>> + BlockPropose<B> + GroupTransaction<B>,
     Error: std::error::Error + Send + From<ConsensusError> + 'static,
+    O: BlockOracle<B> + HotsOracle + Sync + Send + 'static,
 {
     #![allow(clippy::too_many_arguments)]
     pub fn new(
@@ -417,6 +421,7 @@ where
         proposer_factory: Arc<RwLock<PF>>,
         local_timer_duration: u64,
         slot_duration: SlotDuration,
+        oracle: Arc<O>,
         blocks_ahead_best: <B::Header as HeaderT>::Number,
         consensus_msg_tx: Sender<(bool, ConsensusMessage<B>)>,
         consensus_msg_rx: Receiver<(bool, ConsensusMessage<B>)>,
@@ -425,6 +430,9 @@ where
         if local_timer_duration <= slot_duration.as_millis() {
             let slot_duration_millis = slot_duration.as_millis();
             panic!("HOTSTUFF_DURATION({local_timer_duration}) should greater than slot_duration({slot_duration_millis})!!! Please set env `HOTSTUFF_DURATION` greater than {slot_duration_millis}!!!");
+        }
+        if blocks_ahead_best > 2u32.into() {
+            panic!("HOTSTUFF_BLOCKS_AHEAD({blocks_ahead_best}) should only be 1 or 2!!! Please restart with correct environment!!!");
         }
         let best_header = client.header(client.info().best_hash).unwrap().expect("Best header should be present");
         let processed = if !best_header.number().is_zero() {
@@ -447,6 +455,7 @@ where
             _sync: sync,
             synchronizer,
             proposer_factory,
+            oracle,
             pending_proposal: None,
             processing_block: None,
             processed,
@@ -543,7 +552,7 @@ where
             return Ok(());
         }
         let from = if local { "local" } else { "network" };
-        debug!(
+        trace!(
             target: CLIENT_LOG_TARGET,
             "~~ handle_timeout from {from}. view {}, author {}, high_qc.view {}, self.view {}",
 			timeout.view,
@@ -684,7 +693,7 @@ where
         self.processing_block = Some(proposal.payload.clone());
 
         if let Some(vote) = self.state.make_vote(&proposal) {
-            debug!(target: CLIENT_LOG_TARGET, "~~ handle proposal from {from}. make vote. view {}", vote.view);
+            trace!(target: CLIENT_LOG_TARGET, "~~ handle proposal from {from}. make vote. view {}", vote.view);
             // If the current authority is the leader of the next view, it directly processes the
             // vote. Otherwise, it sends the vote to the next leader.
             if self.state.is_next_leader() {
@@ -706,7 +715,7 @@ where
 
     pub async fn handle_vote(&mut self, vote: &Vote<B>, local: bool) -> Result<(), HotstuffError> {
         let from = if local { "local" } else { "network" };
-        debug!(target: CLIENT_LOG_TARGET, "~~ handle_vote from {from}. self.view {}, vote.view {}, vote.author {}, vote.hash {}",
+        trace!(target: CLIENT_LOG_TARGET, "~~ handle_vote from {from}. self.view {}, vote.view {}, vote.author {}, vote.hash {}",
             self.state.view(),
             vote.view,
             vote.voter,
@@ -718,7 +727,7 @@ where
         }
 
         if let Some(mut qc) = self.state.add_vote(vote)? {
-            debug!(target: CLIENT_LOG_TARGET, "~~ handle_vote from {from}. QC.view {}, proposal_hash {}, self.view {}", qc.view, qc.proposal_hash, self.state.view());
+            trace!(target: CLIENT_LOG_TARGET, "~~ handle_vote from {from}. QC.view {}, proposal_hash {}, self.view {}", qc.view, qc.proposal_hash, self.state.view());
             if self.state.is_leader_for(self.state.view().max(qc.view + 1)) {
                 self.trigger_qc_mission(&mut qc, true).await?;
                 self.handle_qc(&qc);
@@ -773,17 +782,26 @@ where
                     }
                     if local {
                         // if from local, we should make time delay for min slot_duration.
-                        let last_commit_time = if self.processed.block_number > 0u32.into() {
+                        let last_commit_time = if self.processed.block_number.saturating_add(1u32.into()) == new_block_number {
                             *self.processed.commit_time()
-                        } else if self.client.info().best_number > 0u32.into() {
+                        } else if self.client.info().best_number.saturating_add(1u32.into()) == new_block_number {
                             match self.client.header(self.client.info().best_hash).map_err(|e| HotstuffError::ClientError(e.to_string()))? {
-                                Some(best_header) => *find_block_commit::<B>(&best_header)
-                                    .expect("Best Header should have block commit")
-                                    .commit_time(),
-                                None => Default::default(),
+                                Some(best_header) => if *best_header.number() > 0u32.into() {
+                                    *find_block_commit::<B>(&best_header)
+                                        .expect("Best Header should have block commit")
+                                        .commit_time()
+                                } else {
+                                    Default::default()
+                                },
+                                None => {
+                                    return Err(HotstuffError::ClientError(
+                                        format!("No block header for {} {}", self.client.info().best_number, self.client.info().best_hash))
+                                    );
+                                },
                             }
                         } else {
-                            Default::default()
+                            warn!(target: CLIENT_LOG_TARGET, "Can't get last commit time for new block {} slot. skip ", new_block_number);
+                            return Ok(());
                         };
                         let min_qc_time = last_commit_time.as_millis() + self.slot_duration.as_millis();
                         let current = Timestamp::current().as_millis();
@@ -796,16 +814,6 @@ where
                     let slot = InherentType::from_timestamp(qc.timestamp, self.slot_duration);
                     let processed_slot = InherentType::from_timestamp(*self.processed.commit_time(), self.slot_duration);
                     if slot > processed_slot {
-                        // send execute block mission to a block execute queue and execute/import it.
-                        info!(
-                            target: CLIENT_LOG_TARGET,
-                            "^^_^^. block {} slot {slot} timestamp {} can be execute with full proposal: [{}, {}, {}]",
-                            qc_proposal.payload.block_number,
-                            qc.timestamp,
-                            qc.proposal_hash,
-                            qc_proposal.parent_hash(),
-                            parent.parent_hash(),
-                        );
                         let commit = match BlockCommit::generate(
                             (&grandpa, parent.qc.clone()),
                             (&parent, qc_proposal.qc.clone()),
@@ -814,6 +822,16 @@ where
                             Some(commit) => commit,
                             None => return Ok(()),
                         };
+                        // send execute block mission to a block execute queue and execute/import it.
+                        info!(
+                            target: CLIENT_LOG_TARGET,
+                            "^^_^^. block {} slot {slot} timestamp {} can be execute with full proposal: [{}, {}, {}]",
+                            qc_proposal.payload.block_number,
+                            qc.timestamp,
+                            parent.parent_hash(),
+                            qc_proposal.parent_hash(),
+                            qc.proposal_hash,
+                        );
                         if self.executor_tx.send(ExecutorMission::Consensus(commit.clone(), grandpa.payload.clone())).is_err() {
                             error!(target: CLIENT_LOG_TARGET, "~~ trigger_qc_mission from {from}. block {new_block_number} execute mission send failed");
                         }
@@ -902,7 +920,7 @@ where
                 self.state.increase_last_proposed_view();
             }
             None => {
-                debug!(target: CLIENT_LOG_TARGET, "~~ generate_proposal. can't get next proposal.")
+                trace!(target: CLIENT_LOG_TARGET, "~~ generate_proposal. can't get next proposal.")
             }
         }
 
@@ -979,17 +997,23 @@ where
         let except: Vec<&B::Extrinsic> = exclude
             .map(|(groups, single)| [groups.iter().flatten().collect::<Vec<&B::Extrinsic>>(), single.iter().collect()].concat())
             .unwrap_or_default();
-        let local_timer_period = self.local_timer.period();
-        let mut extrinsic = BlockPropose::<B>::extrinsic(
+        let mut extrinsic = match GroupTransaction::<B>::extrinsic(
             &proposer,
-            // time wait for pool response.
-            local_timer_period.checked_div(10).unwrap_or_default(),
-            // execute time limit to estimate extrinsic number. We currently set `2 * slot_duration`. `slot_duration` is min_block_time.
-            std::time::Instant::now().add(std::time::Duration::from_millis(self.slot_duration.as_millis().saturating_mul(2))),
-            // TODO SHOULD add block size limit
+            *parent_header.number(),
+            // time wait for pool response. (slot_duration / 10)
+            std::time::Duration::from_millis(self.slot_duration.as_millis()).checked_div(10).unwrap_or_default(),
+            // time for pool get transactions. (HotstuffDuration / 10)
+            self.local_timer.period() / 10,
+            None,
             None,
             except,
-        ).await;
+        ).await {
+            Ok(extrinsic) => extrinsic,
+            Err(e) => {
+                warn!(target: CLIENT_LOG_TARGET, "GroupTransaction base on {} failed for {e:?}", parent_header.number());
+                return (Payload::empty(), start.elapsed().as_micros());
+            }
+        };
         // sort by extrinsic length ascending order for merge.
         extrinsic.0.sort_by(|a, b| a.len().cmp(&b.len()));
         let mut extrinsic_data : Vec<Vec<u8>>= extrinsic.0
@@ -1039,12 +1063,20 @@ where
         }
         if let Some((mut groups, single)) = payload.extrinsic.clone() {
             let start = std::time::Instant::now();
-            groups.push(single);
+            if !single.is_empty() { groups.push(single); }
+            let mut extrinsic_data = vec![];
             let extrinsic: Vec<_> = groups
                 .into_iter()
-                .map(|e| e.into_iter().map(|e| (TransactionSource::External, e)).collect::<Vec<_>>())
+                .map(|e| e.into_iter().map(|e| {
+                    extrinsic_data.push(e.encode());
+                    (TransactionSource::External, e)
+                }).collect::<Vec<_>>())
                 .collect();
-            let mut check_tasks: Vec<JoinHandle<Result<(usize, u128), HotstuffError>>> = vec![];
+            let extrinsics_root = extrinsics_data_root::<<B::Header as HeaderT>::Hashing>(extrinsic_data);
+            if extrinsics_root != payload.extrinsics_root {
+                return Err(PayloadError::ExtrinsicErr(format!("Incorrect extrinsics_root/payload: {extrinsics_root}/{})", payload.extrinsics_root)).into());
+            }
+            let mut check_tasks: Vec<JoinHandle<Result<(usize, Duration), HotstuffError>>> = vec![];
             for thread_extrinsic in extrinsic {
                 let client = self.client.clone();
                 let task = std::thread::spawn(move || {
@@ -1063,7 +1095,7 @@ where
                             }
                         }
                     }
-                    Ok((length, thread_start.elapsed().as_millis()))
+                    Ok((length, thread_start.elapsed()))
                 });
                 check_tasks.push(task);
             }
@@ -1074,9 +1106,15 @@ where
                     .map_err(|e| HotstuffError::Payload(PayloadError::ExtrinsicErr(format!("validate_transactions meet err: {e:?}"))))??;
                 threads_verify.push(res);
             }
+            self.oracle.update_verify_times(&threads_verify);
             let check_extrinsic_time = start.elapsed().as_micros();
-            if check_extrinsic_time / 1000 >= self.local_timer.period().as_millis() {
-                warn!(target: CLIENT_LOG_TARGET, "check_payload extrinsic timeout: {check_extrinsic_time} micros(each length & millis: {threads_verify:?})");
+            if check_extrinsic_time / 1000 >= self.slot_duration.as_millis() as u128 {
+                let mut threads_verify = threads_verify
+                    .into_iter()
+                    .filter(|(n, _)| *n > 0)
+                    .map(|(n, time)| (n, time.as_millis())).collect::<Vec<_>>();
+                threads_verify.sort_by(|a, b| b.1.cmp(&a.1));
+                warn!(target: CLIENT_LOG_TARGET, "check_payload extrinsic exceed slot_duration({} millis): {check_extrinsic_time} micros(each length & millis: {threads_verify:?})", self.slot_duration.as_millis());
             }
         }
         Ok(false)
@@ -1174,7 +1212,7 @@ where
     }
 }
 
-impl<B, BE, C, N, S, PF, Error> Unpin for ConsensusWorker<B, BE, C, N, S, PF, Error>
+impl<B, BE, C, N, S, PF, Error, O> Unpin for ConsensusWorker<B, BE, C, N, S, PF, Error, O>
 where
     B: BlockT,
     BE: Backend<B>,
@@ -1184,15 +1222,17 @@ where
     PF: Environment<B, Error = Error> + Send + Sync + 'static,
     PF::Proposer: Proposer<B, Error = Error, Transaction = sp_api::TransactionFor<C, B>> + BlockPropose<B>,
     Error: std::error::Error + Send + From<ConsensusError> + 'static,
+    O: BlockOracle<B> + HotsOracle + Sync + Send + 'static,
 {
 }
 
-pub fn start_hotstuff<B, BE, C, N, S, SC, PF, Error, L, I, CIDP>(
+pub fn start_hotstuff<B, BE, C, N, S, SC, PF, Error, O, L, I, CIDP>(
     network: N,
     link: LinkHalf<B, C, SC>,
     sync: S,
     import: I,
     justification_sync_link: L,
+    oracle: Arc<O>,
     proposer_factory: PF,
     hotstuff_protocol_name: ProtocolName,
     keystore: KeystorePtr,
@@ -1212,13 +1252,17 @@ where
     C: ClientForHotstuff<B, BE> + Send + Sync + 'static,
     C::Api: hotstuff_primitives::HotstuffApi<B, AuthorityId>,
     PF: Environment<B, Error = Error> + Send + Sync + 'static,
-    PF::Proposer: Proposer<B, Error = Error, Transaction = TransactionFor<C, B>> + BlockPropose<B>,
+    PF::Proposer: Proposer<B, Error = Error, Transaction = TransactionFor<C, B>>
+        + BlockPropose<B, Transaction = TransactionFor<C, B>, Proof = <PF::Proposer as Proposer<B>>::Proof, Error = Error>
+        + GroupTransaction<B>
+        + Send + Sync + 'static,
     L: sc_consensus::JustificationSyncLink<B>,
     I: BlockImport<B, Transaction = TransactionFor<C, B>> + ImportLock<B> + Send + Sync + 'static,
     Error: std::error::Error + Send + From<ConsensusError> + 'static,
     CIDP: CreateInherentDataProviders<B, Timestamp> + Send + 'static,
     CIDP::InherentDataProviders: InherentDataProviderExt + Send,
     SC: SelectChain<B>,
+    O: BlockOracle<B> + HotsOracle + Sync + Send + 'static,
 {
     let LinkHalf { client, .. } = link;
     let authorities = get_authorities_from_client::<B, BE, C>(client.clone());
@@ -1245,9 +1289,9 @@ where
             blocks_ahead_best = ahead;
         }
     }
-    let proposer_factory = Arc::new(RwLock::new(proposer_factory));
     let (executor_tx, executor_rx) = unbounded_channel();
-    let consensus_worker = ConsensusWorker::<B, BE, C, N, S, PF, Error>::new(
+    let proposer_factory = Arc::new(RwLock::new(proposer_factory));
+    let consensus_worker = ConsensusWorker::<B, BE, C, N, S, PF, Error, O>::new(
         consensus_state,
         client.clone(),
         sync,
@@ -1256,6 +1300,7 @@ where
         proposer_factory.clone(),
         local_timer_duration,
         slot_duration,
+        oracle.clone(),
         blocks_ahead_best.into(),
         consensus_msg_tx.clone(),
         consensus_msg_rx,
@@ -1266,6 +1311,8 @@ where
     let mut block_executor = BlockExecutor::new(
         client,
         import,
+        slot_duration,
+        oracle,
         proposer_factory,
         justification_sync_link,
         create_inherent_data_providers,

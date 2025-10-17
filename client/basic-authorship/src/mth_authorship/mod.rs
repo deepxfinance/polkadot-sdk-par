@@ -1,10 +1,15 @@
 pub mod mth_authorship;
 pub mod merge_system;
+pub mod groups;
+pub mod executor;
+pub mod execute_info;
+pub mod oracle;
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use std::time::Duration;
 use codec::Decode;
-use sp_api::ApiExt;
+use sp_api::{ApiExt, HeaderT};
 use sp_consensus::Proposal;
 use sp_spot_api::SpotRuntimeApi;
 use sp_perp_api::PerpRuntimeApi;
@@ -15,6 +20,7 @@ pub use mth_authorship::*;
 use sp_core::ExecutionContext;
 use sp_inherents::InherentData;
 use sp_runtime::Digest;
+use crate::mth_authorship::execute_info::BlockExecuteInfo;
 
 /// Extended merge help trat for better handle state merge.
 pub trait MultiThreadBlockBuilder<B, Block: BlockT, Api>: MergeChange<StorageKey, Option<StorageValue>> + Default {
@@ -25,55 +31,66 @@ pub trait MultiThreadBlockBuilder<B, Block: BlockT, Api>: MergeChange<StorageKey
     fn copy_state(&self) -> Self;
 }
 
-/// Get extrinsic by grouped.
 #[async_trait::async_trait]
-pub trait BlockPropose<Block: BlockT>: sp_consensus::Proposer<Block> {
-    /// return all parallel extrinsic and single thread extrinsic
+pub trait GroupTransaction<Block: BlockT> {
     async fn extrinsic(
         &self,
-        wait_pool: std::time::Duration,
-        deadline: std::time::Instant,
-        block_size_limit: Option<usize>,
+        parent: <Block::Header as HeaderT>::Number,
+        // time limit for waiting transaction_pool response before start get transaction.
+        wait_time: Duration,
+        // time limit to get transactions from pool(this includes `wait_pool`).
+        pool_time: Duration,
+        init_block_size: Option<usize>,
+        init_proof_size: Option<usize>,
         except: Vec<&Block::Extrinsic>,
-    ) -> (Vec<Vec<Block::Extrinsic>>, Vec<Block::Extrinsic>);
+    ) -> Result<(Vec<Vec<Block::Extrinsic>>, Vec<Block::Extrinsic>), String>;
+}
+
+/// Get extrinsic by grouped.
+#[async_trait::async_trait]
+pub trait BlockPropose<Block: BlockT> {
+    type Transaction;
+    type Proof;
+    type Error;
 
     async fn propose_block(
         self,
-        block_size_limit: Option<usize>,
+        source: &str,
+        parent_hash: Block::Hash,
+        parent_number: <<Block as BlockT>::Header as HeaderT>::Number,
+        max_duration: Duration,
+        linear_execute_time: Duration,
+        estimated_merge_time: Duration,
         inherent_data: InherentData,
         inherent_digests: Digest,
         extrinsic: (Vec<Vec<Block::Extrinsic>>, Vec<Block::Extrinsic>),
+        round_tx: usize,
+        allow_extend: bool,
         merge_in_thread_order: bool,
-    )
-        -> Result<
-            (
-                Proposal<
-                    Block,
-                    <Self as sp_consensus::Proposer<Block>>::Transaction, <Self as sp_consensus::Proposer<Block>>::Proof
-                >,
-                Vec<u32>
-            ),
-            <Self as sp_consensus::Proposer<Block>>::Error
-        >;
+        limit_execution_time: bool,
+    ) -> Result<
+        (Proposal<Block, Self::Transaction, Self::Proof>, BlockExecuteInfo<Block>),
+        Self::Error
+    >;
 
-    async fn execute_block_for_changes(
+    async fn execute_block_for_import(
         &self,
         source: &str,
         context: ExecutionContext,
         parent_hash: Block::Hash,
+        parent_number: <<Block as BlockT>::Header as HeaderT>::Number,
         inherent_digests: Digest,
         extrinsic: Vec<Block::Extrinsic>,
         groups: Vec<u32>,
+        round_tx: usize,
+        linear_execute_time: Duration,
+        estimated_merge_time: Duration,
+        allow_extend: bool,
         merge_in_thread_order: bool,
+        limit_execution_time: bool,
     ) -> Result<
-        (
-            Proposal<
-                Block,
-                <Self as sp_consensus::Proposer<Block>>::Transaction, <Self as sp_consensus::Proposer<Block>>::Proof
-            >,
-            Vec<u32>
-        ),
-        <Self as sp_consensus::Proposer<Block>>::Error
+        (Proposal<Block, Self::Transaction, Self::Proof>, BlockExecuteInfo<Block>),
+        Self::Error
     >;
 }
 

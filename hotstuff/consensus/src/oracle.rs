@@ -1,0 +1,150 @@
+use std::env;
+use std::marker::PhantomData;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+use sc_basic_authorship::{BlockExecuteInfo, BlockOracle};
+use sp_api::BlockT;
+use sp_runtime::Percent;
+
+pub trait HotsOracle {
+    /// update verify speed by verify results(transaction number and time(micros)).
+    fn update_verify_times(&self, verify_times: &Vec<(usize, Duration)>);
+    /// estimate verify transaction time limit.
+    fn verify_time_limit(&self) -> Duration;
+    /// estimate transaction verify number(which is used for transaction propose).
+    fn thread_verify_limit(&self) -> Option<usize>;
+}
+
+#[derive(Default)]
+pub struct HotstuffOracle<B: BlockT, O: BlockOracle<B>> {
+    pub inner: Arc<O>,
+    /// max hotstuff time decide extrinsic verify time tolerance(default 200 millis).
+    pub hotstuff_duration: Duration,
+    /// `hotstuff_duration * verify_percent` estimates extrinsic verify time.
+    pub verify_percent: Arc<Mutex<Percent>>,
+    /// state recording last verify extrinsic speed.
+    pub verify_time_per_tx: Arc<Mutex<Duration>>,
+    phantom: PhantomData<B>,
+}
+
+impl<B: BlockT, O: BlockOracle<B>> HotstuffOracle<B, O> {
+    pub fn new(inner: Arc<O>) -> Self {
+        // default same with block_duration. only necessary set for Hotstuff consensus.
+        let mut hotstuff_duration = inner.block_duration();
+        if let Ok(value) = env::var("HOTSTUFF_DURATION") {
+            if let Ok(duration) = value.parse::<u64>() {
+                hotstuff_duration = Duration::from_millis(duration);
+            }
+        }
+        let mut verify_percent = Percent::from_percent(75);
+        if let Ok(value) = env::var("HOTSTUFF_VERIFY_PERCENT") {
+            if let Ok(percent) = value.parse::<u8>() {
+                verify_percent = Percent::from_percent(percent);
+            }
+        }
+        Self {
+            inner,
+            hotstuff_duration,
+            verify_percent: Arc::new(Mutex::new(verify_percent)),
+            verify_time_per_tx: Arc::new(Mutex::new(Duration::from_micros(200))),
+            phantom: PhantomData,
+        }
+    }
+}
+
+impl<B: BlockT, O: BlockOracle<B>> HotsOracle for HotstuffOracle<B, O> {
+    // each value at input should be (verify_number, verify_micros)
+    fn update_verify_times(&self, verify_times: &Vec<(usize, Duration)>) {
+        // TODO update verify_percent by full_time and hotstuff_duration?
+        let mut total_number = 0;
+        let mut total_time = Duration::default();
+        for (number, time) in verify_times {
+            if *number == 0 {
+                continue;
+            }
+            total_number += *number;
+            total_time += *time;
+        }
+        if total_number > 0 {
+            let time_per_verify = total_time / total_number as u32;
+            let pre_verify_time_per_tx = *self.verify_time_per_tx.lock().unwrap();
+            if pre_verify_time_per_tx != time_per_verify {
+                *self.verify_time_per_tx.lock().unwrap() = time_per_verify;
+                log::debug!(target: "oracle_hotstuff", "[Update] verify_time_per_tx: {} micros", time_per_verify.as_micros());
+            }
+        }
+    }
+
+    fn verify_time_limit(&self) -> Duration {
+        // Default we use 75%  `HotstuffDuration` for verify extrinsic
+        Duration::from_micros(self.verify_percent.lock().unwrap().mul_floor(self.hotstuff_duration.as_micros() as u64))
+    }
+
+    /// verify time should < slot_duration to finish consensus
+    /// limited extrinsic number for thread verify time.
+    fn thread_verify_limit(&self) -> Option<usize> {
+        let verify_time_per_tx = *self.verify_time_per_tx.lock().unwrap();
+        if verify_time_per_tx == Duration::default() {
+            return None;
+        }
+        // During full consensus process, verify extrinsic takes most time.
+        Some(self.verify_time_limit().as_micros() as usize / verify_time_per_tx.as_micros() as usize)
+    }
+}
+
+impl<B: BlockT, O: BlockOracle<B>> BlockOracle<B> for  HotstuffOracle<B, O> {
+    fn update_block_duration(&self, time: Duration) {
+        self.inner.update_block_duration(time);
+    }
+
+    fn update_execute_info(&self, info: &BlockExecuteInfo<B>) {
+        self.inner.update_execute_info(info);
+    }
+
+    fn block_duration(&self) -> Duration {
+        self.inner.block_duration()
+    }
+
+    fn thread_limit(&self) -> usize {
+        self.inner.thread_limit()
+    }
+
+    fn round_tx(&self) -> usize {
+        self.inner.round_tx()
+    }
+
+    fn linear_execute_time(&self) -> Duration {
+        self.inner.linear_execute_time()
+    }
+
+    fn min_single_tx(&self) -> usize {
+        self.inner.min_single_tx()
+    }
+
+    fn pool_time(&self) -> Duration {
+        self.inner.pool_time()
+    }
+
+    fn merge_time(&self) -> Duration {
+        self.inner.merge_time()
+    }
+
+    fn thread_execution_limit(&self) -> Option<usize> {
+        self.inner.thread_execution_limit()
+    }
+
+    fn linear_tx_limit(&self) -> usize {
+        match (self.thread_verify_limit(), self.thread_execution_limit()) {
+            (None, execution_limit) => execution_limit,
+            (verify_limit, None) => verify_limit,
+            (Some(verify_limit), Some(execution_limit)) => {
+                Some(verify_limit.min(execution_limit))
+            }
+        }
+            .unwrap_or(200)
+    }
+
+    fn block_size_limit(&self) -> usize {
+        self.inner.block_size_limit()
+    }
+}

@@ -24,7 +24,7 @@ use sc_network_common::role::Role;
 use sp_api::TransactionFor;
 use sp_blockchain::BlockStatus;
 use sp_consensus::{BlockOrigin, Environment, Error as ConsensusError, Proposer};
-use sp_runtime::{generic::BlockId, traits::{Block as BlockT, Header as HeaderT, NumberFor, One}, Digest, Justification};
+use sp_runtime::{generic::BlockId, traits::{Block as BlockT, Header as HeaderT, NumberFor, One}, Digest, Justification, Saturating};
 use crate::{client::ClientForHotstuff, find_block_commit, primitives::{HotstuffError, HotstuffError::*}, CLIENT_LOG_TARGET};
 use crate::message::BlockCommit;
 
@@ -138,7 +138,8 @@ where
 		BlockImport<Block, Error = ConsensusError, Transaction = TransactionFor<Client, Block>>,
 	TransactionFor<Client, Block>: 'static,
     PF: Environment<Block, Error = Error> + Send + Sync + 'static,
-    PF::Proposer: Proposer<Block, Error = Error, Transaction = TransactionFor<Client, Block>> + BlockPropose<Block>,
+    PF::Proposer: Proposer<Block, Error = Error, Transaction = TransactionFor<Client, Block>>
+		+ BlockPropose<Block, Transaction = TransactionFor<Client, Block>, Error = Error>,
     Error: std::error::Error + Send + From<ConsensusError> + 'static,
 {
 	type Error = ConsensusError;
@@ -177,14 +178,23 @@ where
 					.init(&parent_header)
 					.await
 					.map_err(|e| ConsensusError::ClientImport(format!("init proposer: {e:?}")))?
-					.execute_block_for_changes(
+					.execute_block_for_import(
 						"ImportBlock",
 						block.origin.into(),
 						*block.header.parent_hash(),
+						block.header.number().saturating_sub(1u32.into()),
 						inherent_digest,
 						block.body.clone().unwrap_or_default(),
 						groups,
+						// For check block, we should execute all transactions success by BlockBuilder::put_batch.
+						usize::MAX,
+						// doesn't work since `limit_execution_time` is false
+						std::time::Duration::from_secs(10),
+						// doesn't work since `limit_execution_time` is false
+						std::time::Duration::from_secs(5),
+						false,
 						true,
+						false,
 					)
 					.await
 					.map_err(|e| Self::Error::ClientImport(format!("Execute block error {e:?}")))
@@ -227,20 +237,22 @@ where
 					} else if matches!(block.state_action, StateAction::Execute | StateAction::ExecuteIfPossible)
 						|| self.role.is_authority()
 					{
-						let proposal = match calculate_block(&block) {
-							Ok((proposal, _groups)) => proposal,
-							Err(e) => {
-								log::warn!(target: CLIENT_LOG_TARGET, "ImportBlock({:?}): {} failed for {e}", block.origin, block.header.number());
-                                self.unlock(block.origin, *block.header.number()).await;
-								return Err(e);
-							}
+						let result = match calculate_block(&block) {
+							Ok((proposal, _info)) => {
+								if let Err(e) = check_header::<Block>(&block.header, &proposal.block.header()) {
+									Err(ConsensusError::ClientImport(format!("Check header with calculated: {e}")))
+								} else {
+									block.state_action = StateAction::ApplyChanges(StorageChanges::Changes(proposal.storage_changes));
+									Ok(())
+								}
+							},
+							Err(e) => Err(e),
 						};
-						if let Err(e) = check_header::<Block>(&block.header, &proposal.block.header()) {
+						if let Err(e) = result {
 							log::warn!(target: CLIENT_LOG_TARGET, "ImportBlock({:?}): {} failed for {e}", block.origin, block.header.number());
 							self.unlock(block.origin, *block.header.number()).await;
-							return Err(ConsensusError::ClientImport(format!("Check header with calculated: {e}")));
+							return Err(e);
 						}
-						block.state_action = StateAction::ApplyChanges(StorageChanges::Changes(proposal.storage_changes));
 					}
                     let header = block.header.clone();
 					let origin = block.origin;
@@ -400,10 +412,6 @@ impl<B: BlockT> PendingFinalizeBlockQueue<B> {
 			finalize_notification: client.finality_notification_stream(),
 			inner: Arc::new(Mutex::new(VecDeque::new())),
 		})
-	}
-
-	pub fn queue(&self) -> Arc<Mutex<VecDeque<BlockInfo<B>>>> {
-		self.inner.clone()
 	}
 }
 

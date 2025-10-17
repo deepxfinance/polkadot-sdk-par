@@ -14,6 +14,7 @@ pub mod synchronizer;
 pub mod import_queue;
 pub mod executor;
 pub mod revert;
+pub mod oracle;
 
 pub use client::{block_import, LinkHalf};
 pub use import::HotstuffBlockImport;

@@ -8,6 +8,8 @@ use sc_service::{error::Error as ServiceError, Configuration, TaskManager};
 use sc_telemetry::{Telemetry, TelemetryWorker};
 use hotstuff_primitives::AuthorityPair as HotstuffPair;
 use std::sync::Arc;
+use hotstuff_consensus::oracle::HotstuffOracle;
+use sc_basic_authorship::ExecutionOracle;
 use sp_consensus::DisableProofRecording;
 use sp_timestamp::Timestamp;
 use crate::extend_extrinsic::ExtendTx;
@@ -44,6 +46,7 @@ type ProposerFactory = sc_basic_authorship::MTHProposerFactory<
 	FullBackend,
 	FullClient,
 	DisableProofRecording,
+	HotstuffOracle<Block, ExecutionOracle<Block>>,
 	MergeHandler<FullBackend, Block>,
 	ExtendTx,
 >;
@@ -104,6 +107,7 @@ pub fn new_partial(
 		task_manager.spawn_handle(),
 		client.clone(),
 		transaction_pool.clone(),
+		Arc::new(HotstuffOracle::new(Arc::new(ExecutionOracle::new(None)))),
 		None,
 		None,
 		<ExecutorDispatch as sc_executor::NativeExecutionDispatch>::native_version(),
@@ -221,10 +225,12 @@ pub fn new_full(config: Configuration) -> Result<TaskManager, ServiceError> {
 	})?;
 
 	// Create hotstuff consensus voter & network.
+	let hotstuff_oracle = Arc::new(HotstuffOracle::new(Arc::new(ExecutionOracle::new(None))));
 	let proposer_factory: ProposerFactory = ProposerFactory::new(
 		task_manager.spawn_handle(),
 		client.clone(),
-		transaction_pool,
+		transaction_pool.clone(),
+		hotstuff_oracle.clone(),
 		prometheus_registry.as_ref(),
 		telemetry.as_ref().map(|x| x.handle()),
 		<ExecutorDispatch as sc_executor::NativeExecutionDispatch>::native_version(),
@@ -236,6 +242,7 @@ pub fn new_full(config: Configuration) -> Result<TaskManager, ServiceError> {
 		sync_service.clone(),
 		hotstuff_block_import,
 		sync_service.clone(),
+		hotstuff_oracle,
 		proposer_factory,
 		hotstuff_protocol_name,
 		keystore_container.keystore(),

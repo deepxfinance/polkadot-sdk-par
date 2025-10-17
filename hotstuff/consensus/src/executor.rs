@@ -1,19 +1,20 @@
 use std::collections::HashMap;
 use std::marker::PhantomData;
 use std::sync::Arc;
+use std::time::Duration;
 use codec::Encode;
 use log::{debug, warn};
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::sync::RwLock;
 use hotstuff_primitives::digests::CompatibleDigestItem;
 use hotstuff_primitives::HOTSTUFF_ENGINE_ID;
-use sc_basic_authorship::BlockPropose;
+use sc_basic_authorship::{BlockOracle, BlockPropose};
 use sc_client_api::Backend;
 use sc_consensus::{BlockImport, BlockImportParams, ForkChoiceStrategy, StateAction};
 use sc_consensus_slots::{InherentDataProviderExt, StorageChanges};
 use sp_api::{BlockT, HeaderT, TransactionFor};
 use sp_consensus::{BlockOrigin, Environment, Error as ConsensusError, Proposer, SelectChain};
-use sp_consensus_slots::Slot;
+use sp_consensus_slots::{Slot, SlotDuration};
 use sp_inherents::{CreateInherentDataProviders, InherentDataProvider};
 use sp_runtime::{Digest, DigestItem, Saturating};
 use sp_timestamp::Timestamp;
@@ -21,13 +22,14 @@ use crate::client::ClientForHotstuff;
 use crate::{find_consensus_logs, CLIENT_LOG_TARGET};
 use crate::import::ImportLock;
 use crate::message::{BlockCommit, Payload};
+use crate::oracle::HotsOracle;
 
 pub enum ExecutorMission<B: BlockT> {
     Consensus(BlockCommit<B>, Payload<B>),
     Cancel(<B::Header as HeaderT>::Number),
 }
 
-pub struct BlockExecutor<C: ClientForHotstuff<B, BE>, B: BlockT, I, PF, L: sc_consensus::JustificationSyncLink<B>, BE: Backend<B>, CIDP, SC> {
+pub struct BlockExecutor<C: ClientForHotstuff<B, BE>, B: BlockT, I, PF, L: sc_consensus::JustificationSyncLink<B>, BE: Backend<B>, CIDP, SC, O> {
     pub client: Arc<C>,
     pub proposer_factory: Arc<RwLock<PF>>,
     pub import: I,
@@ -35,27 +37,34 @@ pub struct BlockExecutor<C: ClientForHotstuff<B, BE>, B: BlockT, I, PF, L: sc_co
     pub create_inherent_data_providers: CIDP,
     pub select_chain: SC,
     pub last_slot: Slot,
+    pub slot_duration: SlotDuration,
+    pub oracle: Arc<O>,
     pub executor_rx: UnboundedReceiver<ExecutorMission<B>>,
     pub missions: HashMap<<B::Header as HeaderT>::Number, (BlockCommit<B>, Payload<B>)>,
     pub block_size_limit: Option<usize>,
     phantom_data: PhantomData<BE>,
 }
 
-impl<C, B: BlockT, I, PF, L, BE: Backend<B>, Error, CIDP, SC> BlockExecutor<C, B, I, PF, L, BE, CIDP, SC>
+impl<C, B: BlockT, I, PF, L, BE: Backend<B>, Error, CIDP, SC, O> BlockExecutor<C, B, I, PF, L, BE, CIDP, SC, O>
 where
     C: ClientForHotstuff<B, BE> + Send + Sync + 'static,
     I: BlockImport<B, Transaction = TransactionFor<C, B>> + ImportLock<B> + Send + Sync + 'static,
     PF: Environment<B, Error = Error> + Send + Sync + 'static,
-    PF::Proposer: Proposer<B, Error = Error, Transaction = TransactionFor<C, B>> + BlockPropose<B>,
+    PF::Proposer: Proposer<B, Error = Error, Transaction = TransactionFor<C, B>>
+        + BlockPropose<B, Transaction = TransactionFor<C, B>, Error = Error>
+        + Send + Sync + 'static,
     L: sc_consensus::JustificationSyncLink<B>,
     Error: std::error::Error + Send + From<ConsensusError> + 'static,
     CIDP: CreateInherentDataProviders<B, Timestamp> + Send + 'static,
     CIDP::InherentDataProviders: InherentDataProviderExt + Send,
     SC: SelectChain<B>,
+    O: BlockOracle<B> + HotsOracle + Sync + Send + 'static,
 {
     pub fn new(
         client: Arc<C>,
         import: I,
+        slot_duration: SlotDuration,
+        oracle: Arc<O>,
         proposer_factory: Arc<RwLock<PF>>,
         justification_sync_link: L,
         create_inherent_data_providers: CIDP,
@@ -64,12 +73,14 @@ where
     ) -> Self {
         Self {
             client,
+            oracle,
             proposer_factory,
             import,
             justification_sync_link,
             create_inherent_data_providers,
             select_chain,
             last_slot: 0.into(),
+            slot_duration,
             executor_rx,
             missions: HashMap::new(),
             block_size_limit: None,
@@ -163,13 +174,23 @@ where
                     .expect("get best header")
                     .expect("no expected best header");
                 let proposer = self.proposer_factory.write().await.init(&parent_header).await.expect("proposer init");
-                let (proposal, groups) = match BlockPropose::<B>::propose_block(
+                // let (proposal, groups, avg_execute_time) = match BlockPropose::<B>::propose_block(
+                let (proposal, info) = match BlockPropose::<B>::propose_block(
                     proposer,
-                    self.block_size_limit,
+                    "Consensus",
+                    best_hash,
+                    best_block,
+                    // actually we must execute all transactions, but we still limit time.
+                    Duration::from_millis(self.slot_duration.as_millis() * 6),
+                    self.oracle.linear_execute_time(),
+                    self.oracle.merge_time(),
                     inherent_data,
                     Digest { logs },
                     extrinsic,
+                    self.oracle.round_tx(),
                     true,
+                    true,
+                    false,
                 ).await {
                     Ok(propose) => propose,
                     Err(e) => {
@@ -178,6 +199,7 @@ where
                         continue;
                     }
                 };
+                self.oracle.update_execute_info(&info);
                 // generate import params
                 let (block, _storage_proof) = (proposal.block, proposal.proof);
                 let (header, body) = block.deconstruct();
@@ -185,7 +207,7 @@ where
                     header,
                     body.clone(),
                     proposal.storage_changes,
-                    groups,
+                    info.groups(),
                     commit,
                 ).await {
                     Ok(import_params) => import_params,
