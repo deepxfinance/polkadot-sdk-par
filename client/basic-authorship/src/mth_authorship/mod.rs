@@ -34,16 +34,21 @@ pub trait BlockPropose<Block: BlockT>: sp_consensus::Proposer<Block> {
         wait_pool: std::time::Duration,
         deadline: std::time::Instant,
         block_size_limit: Option<usize>,
+        thread_tx_limit: Option<usize>,
         except: Vec<&Block::Extrinsic>,
     ) -> (Vec<Vec<Block::Extrinsic>>, Vec<Block::Extrinsic>);
 
     async fn propose_block(
         self,
+        source: &str,
+        max_duration: std::time::Duration,
         block_size_limit: Option<usize>,
         inherent_data: InherentData,
         inherent_digests: Digest,
         extrinsic: (Vec<Vec<Block::Extrinsic>>, Vec<Block::Extrinsic>),
+        millis_tx_rate: Option<usize>,
         merge_in_thread_order: bool,
+        limit_execution_time: bool,
     )
         -> Result<
             (
@@ -51,7 +56,8 @@ pub trait BlockPropose<Block: BlockT>: sp_consensus::Proposer<Block> {
                     Block,
                     <Self as sp_consensus::Proposer<Block>>::Transaction, <Self as sp_consensus::Proposer<Block>>::Proof
                 >,
-                Vec<u32>
+                Vec<u32>,
+                u128,
             ),
             <Self as sp_consensus::Proposer<Block>>::Error
         >;
@@ -65,13 +71,15 @@ pub trait BlockPropose<Block: BlockT>: sp_consensus::Proposer<Block> {
         extrinsic: Vec<Block::Extrinsic>,
         groups: Vec<u32>,
         merge_in_thread_order: bool,
+        limit_execution_time: bool,
     ) -> Result<
         (
             Proposal<
                 Block,
                 <Self as sp_consensus::Proposer<Block>>::Transaction, <Self as sp_consensus::Proposer<Block>>::Proof
             >,
-            Vec<u32>
+            Vec<u32>,
+            u128,
         ),
         <Self as sp_consensus::Proposer<Block>>::Error
     >;

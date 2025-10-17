@@ -217,7 +217,18 @@ impl<Block: BlockT> Display for Payload<Block> {
 
 impl<Block: BlockT> Debug for Payload<Block> {
 	fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-		write!(f, "{}", self)
+		if self.is_empty() {
+			write!(f, "Empty")
+		} else {
+			write!(f, "{}:{}:{:?}:", self.stage, self.block_number, self.extrinsics_root)?;
+			let groups = self.groups();
+			if !groups.is_empty() {
+				write!(f, "{groups:?}")?;
+			} else {
+				write!(f, "None")?;
+			}
+			write!(f, "({}:{:?})", self.best_block.number, self.best_block.hash)
+		}
 	}
 }
 
@@ -399,7 +410,6 @@ impl<Block: BlockT> TC<Block> {
 		let mut final_high_qc_view = 0;
 
 		for (voter, signature, high_qc_view) in self.votes.iter() {
-
 			let mut data = self.view.encode();
 			data.append(&mut high_qc_view.encode());
 			let digest = <<Block::Header as HeaderT>::Hashing as HashT>::hash_of(&data);

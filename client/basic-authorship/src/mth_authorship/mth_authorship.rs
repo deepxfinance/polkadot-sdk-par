@@ -386,7 +386,15 @@ where
 /// this number of transactions before quitting for real.
 /// It allows us to increase block utilization.
 const MAX_SKIPPED_TRANSACTIONS: usize = 8;
-type MergeType<A, B> = (Vec<usize>, OverlayedChanges, Option<ProofRecorder<B>>, Vec<<B as BlockT>::Extrinsic>, Vec<<A as TransactionPool>::Hash>, EndProposingReason);
+type MergeType<A, B> = (
+    Vec<usize>,
+    OverlayedChanges,
+    Option<ProofRecorder<B>>,
+    Vec<<B as BlockT>::Extrinsic>,
+    Vec<<A as TransactionPool>::Hash>,
+    EndProposingReason,
+    u128,
+);
 
 impl<A, B, Block, C, PR, MBH, E> Proposer<B, Block, C, A, PR, MBH, E>
 where
@@ -426,6 +434,7 @@ where
             deadline.saturating_duration_since((self.now)()) / 10,
             deadline.clone(),
             block_size_limit,
+            None,
             block_builder.estimated_header_size + block_builder.extrinsics.encoded_size(),
             if self.include_proof_in_block_size_estimation {
                 block_builder.api.proof_recorder().map(|pr| pr.estimate_encoded_size()).unwrap_or(0)
@@ -466,6 +475,7 @@ where
             block_builder,
             max_duration,
             block_size_limit,
+            self.millis_tx_rate,
             extrinsic_count,
             pool_time,
             extrinsic_group
@@ -474,6 +484,7 @@ where
                 .collect(),
             single_group.iter().map(|(i, tx)| (*i, Some(tx.hash().clone()), tx.data().clone())).collect(),
             false,
+            true,
         )
             .await
             .map(|r| r.0)
@@ -489,12 +500,14 @@ where
         mut block_builder: BlockBuilder<'a, Block, C, B>,
         max_duration: time::Duration,
         block_size_limit: usize,
+        millis_tx_rate: usize,
         extrinsic_count: usize,
         pool_time: (u128, u128, u128),
         extrinsic_group: Vec<Vec<(usize, Option<<A as TransactionPool>::Hash>, Block::Extrinsic)>>,
         single_group: Vec<(usize, Option<<A as TransactionPool>::Hash>, Block::Extrinsic)>,
         merge_in_thread_order: bool,
-    ) -> Result<(Proposal<Block, backend::TransactionFor<B, Block>, PR::Proof>, Vec<u32>), sp_blockchain::Error> {
+        limit_execution_time: bool,
+    ) -> Result<(Proposal<Block, backend::TransactionFor<B, Block>, PR::Proof>, Vec<u32>, u128), sp_blockchain::Error> {
         let mut native = true;
         // if native version not latest, we can only execute in single thread.
         let onchain_version = CallApiAt::runtime_version_at(&*self.client, self.parent_hash)
@@ -531,17 +544,20 @@ where
             single_applied,
             single_invalid,
             final_end_reason,
-            groups_executed
+            groups_executed,
+            ave_execute_time,
         ) = self.multi_single_process(
             self.parent_number + One::one(),
             &mut block_builder,
             deadline,
+            millis_tx_rate,
             self.soft_deadline_percent.mul_floor(max_duration.as_micros()),
             &self.merge_deadline_percent,
             extrinsic_group,
             single_group,
             inherents.clone(),
             merge_in_thread_order,
+            limit_execution_time,
         ).await?;
         self.transaction_pool.remove_invalid(&mth_invalid);
         self.transaction_pool.remove_invalid(&single_invalid);
@@ -589,14 +605,18 @@ where
 
             metrics.report_end_proposing_reason(final_end_reason);
         });
-
+        let limit_millis_info = if limit_execution_time {
+            format!("/{}", max_duration.as_millis())
+        } else {
+            "".to_string()
+        };
         info!(
             target: LOG_TARGET,
-			"🎁 [{source}] Prepared block for proposing of {} [{}/{} ms ({}({}) {mth_time}({extra_merge_time}) {single_exe_time} {finalize_exe_time})ms] \
+			"🎁 [{source}] Prepared block for proposing of {} [{}{} ms ({}({}) {mth_time}({extra_merge_time}) {single_exe_time} {finalize_exe_time})ms] \
 			[hash: {:?}; parent_hash: {}; native: {native}; extrinsics [({mth_applied}/{})/({single_applied}/{})/{}], threads {thread_number}]",
 			block.header().number(),
 			propose_with_start.elapsed().as_millis(),
-            max_duration.as_millis(),
+            limit_millis_info,
             pool_time.2,
             pool_time.0,
 			<Block as BlockT>::Hash::from(block.header().hash()),
@@ -623,7 +643,7 @@ where
             );
         });
 
-        Ok((Proposal { block, proof, storage_changes }, groups))
+        Ok((Proposal { block, proof, storage_changes }, groups, ave_execute_time))
     }
 
     async fn group_transactions_from_pool(
@@ -631,6 +651,7 @@ where
         wait_pool: time::Duration,
         deadline: time::Instant,
         block_size_limit: usize,
+        thread_tx_limit: Option<usize>,
         mut block_size: usize,
         mut proof_size: usize,
         thread_limit: usize,
@@ -658,7 +679,7 @@ where
         let left_micros: u64 = deadline.saturating_duration_since(pool_timer).as_micros().saturated_into();
         let execute_percent = self.soft_deadline_percent.saturating_sub(self.pool_deadline_percent).saturating_sub(self.merge_deadline_percent);
         let execute_time = execute_percent.mul_floor(left_micros) / 1000;
-        let thread_tx_limit = execute_time as usize * self.millis_tx_rate;
+        let thread_tx_limit = thread_tx_limit.unwrap_or(execute_time as usize * self.millis_tx_rate);
         let tx_limit = thread_tx_limit * thread_limit;
         let pool_time = time::Duration::from_micros(self.pool_deadline_percent.mul_floor(left_micros));
         let pool_deadline = time::Instant::now() + pool_time;
@@ -725,16 +746,21 @@ where
         block: <<Block as BlockT>::Header as HeaderT>::Number,
         block_builder: &mut BlockBuilder<'a, Block, C, B>,
         block_deadline: time::Instant,
+        millis_tx_rate: usize,
         multi_single_micros: u128,
         merge_deadline_percent: &Percent,
         multi_groups: Vec<Vec<(usize, Option<<A as TransactionPool>::Hash>, Block::Extrinsic)>>,
         single_group: Vec<(usize, Option<<A as TransactionPool>::Hash>, Block::Extrinsic)>,
         inherents: Vec<Block::Extrinsic>,
         merge_in_thread_order: bool,
-    ) -> Result<(usize, u128, usize, Vec<<A as TransactionPool>::Hash>, u128, u128, usize, Vec<<A as TransactionPool>::Hash>, EndProposingReason, Vec<u32>), sp_blockchain::Error> {
+        limit_execution_time: bool,
+    ) -> Result<
+        (usize, u128, usize, Vec<<A as TransactionPool>::Hash>, u128, u128, usize, Vec<<A as TransactionPool>::Hash>, EndProposingReason, Vec<u32>, u128),
+        sp_blockchain::Error
+    > {
         let mut executed_groups = vec![];
         if multi_groups.is_empty() && single_group.is_empty() {
-            return Ok((0, 0, 0, Vec::new(), 0, 0, 0, Vec::new(), EndProposingReason::NoMoreTransactions, vec![0]))
+            return Ok((0, 0, 0, Vec::new(), 0, 0, 0, Vec::new(), EndProposingReason::NoMoreTransactions, vec![0], 0))
         }
         let calculate_start = time::Instant::now();
         let mut max_mth_length = 0u32;
@@ -762,7 +788,15 @@ where
             execute_time / 1000,
         );
 
-        let (mth_time, mth_applied, mth_invalid_hash, extra_merge_time, mut final_end_reason, threads_executed) = if !multi_groups.is_empty() {
+        let (
+            mth_time,
+            mth_applied,
+            mth_invalid_hash,
+            extra_merge_time,
+            mut final_end_reason,
+            threads_executed,
+            mth_avg_execute_time,
+        ) = if !multi_groups.is_empty() {
             let initial_applied = block_builder.extrinsics.len();
             let (merge_tx, merge_rx) = mpsc::channel(thread_number);
             let mut mbh = MBH::default();
@@ -775,10 +809,18 @@ where
                 inherents.clone(),
                 multi_groups,
                 merge_tx.clone(),
+                millis_tx_rate,
+                limit_execution_time,
             );
 
             // 5. merge all threads' changes to main block builder.
-            let (mth_unqueue_invalid, end_reason, extra_merge_time, threads_executed) = self.merge_threads_result(
+            let (
+                mth_unqueue_invalid,
+                end_reason,
+                extra_merge_time,
+                threads_executed,
+                avg_execute_time,
+            ) = self.merge_threads_result(
                 mth_execute_time.as_millis() + mth_merge_time.as_millis(),
                 block_builder,
                 &mbh,
@@ -788,19 +830,20 @@ where
                 merge_tx,
                 merge_rx,
                 merge_in_thread_order,
+                limit_execution_time,
             ).await?;
             self.transaction_pool.remove_invalid(&mth_unqueue_invalid);
             let mth_applied = block_builder.extrinsics.len() - initial_applied;
             assert_eq!(mth_applied, threads_executed.iter().map(|l| *l as usize).sum::<usize>());
-            (calculate_start.elapsed().as_millis(), mth_applied, mth_unqueue_invalid, extra_merge_time, end_reason, threads_executed)
+            (calculate_start.elapsed().as_millis(), mth_applied, mth_unqueue_invalid, extra_merge_time, end_reason, threads_executed, avg_execute_time)
         } else {
-            (0, 0, Vec::new(), 0, EndProposingReason::NoMoreTransactions, vec![])
+            (0, 0, Vec::new(), 0, EndProposingReason::NoMoreTransactions, vec![], 0)
         };
         executed_groups.extend(threads_executed);
 
         // 6. execute all single thread transactions.
         let single_exe_start = time::Instant::now();
-        let (single_invalid, end_reason) = Self::execute_one_thread_txs(
+        let (single_invalid, end_reason, single_avg_execute_time) = Self::execute_one_thread_txs(
             self.parent_number + One::one(),
             block_deadline,
             single_deadline,
@@ -811,6 +854,7 @@ where
             self.default_round_tx,
             self.millis_tx_rate,
             false,
+            limit_execution_time,
         );
         let single_exe_time = single_exe_start.elapsed().as_millis();
         if !block_builder.extrinsics.is_empty() || !single_invalid.is_empty() {
@@ -819,7 +863,24 @@ where
         let single_applied = block_builder.extrinsics.len().saturating_sub(mth_applied).saturating_sub(inherents.len());
         executed_groups.push(single_applied as u32);
 
-        Ok((thread_number, mth_time, mth_applied, mth_invalid_hash, extra_merge_time, single_exe_time, single_applied, single_invalid, final_end_reason, executed_groups))
+        let ave_execute_time = match (mth_avg_execute_time, single_avg_execute_time) {
+            (0, _) => single_avg_execute_time,
+            (_ , 0) => mth_avg_execute_time,
+            _ => (mth_avg_execute_time + single_avg_execute_time) / 2
+        };
+        Ok((
+            thread_number,
+            mth_time,
+            mth_applied,
+            mth_invalid_hash,
+            extra_merge_time,
+            single_exe_time,
+            single_applied,
+            single_invalid,
+            final_end_reason,
+            executed_groups,
+            ave_execute_time,
+        ))
     }
 
     fn spawn_execute_groups(
@@ -830,6 +891,8 @@ where
         inherents: Vec<<Block as BlockT>::Extrinsic>,
         extrinsic_group: Vec<Vec<(usize, Option<<A as TransactionPool>::Hash>, Block::Extrinsic)>>,
         merge_tx: Sender<(MergeType<A, Block>, bool)>,
+        millis_tx_rate: usize,
+        limit_execution_time: bool,
     ) {
         let (init_changes, _, init_recorder) = block_builder.api.take_all_changes();
         for (i, pending_txs) in extrinsic_group.into_iter().enumerate() {
@@ -842,7 +905,6 @@ where
             let init_recorder = init_recorder.clone();
             let thread_client = self.client.clone();
             let default_round_tx = self.default_round_tx;
-            let millis_tx_rate = self.millis_tx_rate;
             let block = self.parent_number + One::one();
             let mut res_tx = merge_tx.clone();
             self.spawn_handle.spawn_blocking(
@@ -861,7 +923,7 @@ where
                             return;
                         }
                     };
-                    let (unqueue_invalid, end_reason) = Self::execute_one_thread_txs(
+                    let (unqueue_invalid, end_reason, avg_execute_time) = Self::execute_one_thread_txs(
                         block.clone(),
                         block_deadline,
                         mth_execute_deadline,
@@ -872,10 +934,11 @@ where
                         default_round_tx,
                         millis_tx_rate,
                         false,
+                        limit_execution_time,
                     );
 
                     let (overlay, _, recorder) = thread_builder.api.take_all_changes();
-                    let changes = (vec![i + 1], overlay, recorder, thread_builder.extrinsics.clone(), unqueue_invalid, end_reason);
+                    let changes = (vec![i + 1], overlay, recorder, thread_builder.extrinsics.clone(), unqueue_invalid, end_reason, avg_execute_time);
                     if res_tx.start_send((changes, false)).is_err() {
                         trace!("Could not send block production result to proposer!");
                     }
@@ -895,9 +958,11 @@ where
         default_round_tx: usize,
         millis_tx_rate: usize,
         extend: bool,
-    ) -> (Vec<<A as TransactionPool>::Hash>, EndProposingReason) {
+        limit_execution_time: bool,
+    ) -> (Vec<<A as TransactionPool>::Hash>, EndProposingReason, u128) {
+        let mut avg_execute_time = 0;
         if pending_txs.is_empty() {
-            return (Vec::new(), EndProposingReason::NoMoreTransactions);
+            return (Vec::new(), EndProposingReason::NoMoreTransactions, avg_execute_time);
         }
         let mut thread_name = "single".to_string();
         if thread > 0 {
@@ -910,6 +975,7 @@ where
                 block_builder.push(inherent).unwrap();
             }
         }
+        let all_tx_number = pending_txs.len();
         let mut unqueue_invalid = Vec::new();
         let initial_applied = block_builder.extrinsics.len();
         let total_tx = pending_txs.len();
@@ -928,14 +994,18 @@ where
             if pending_txs.is_empty() {
                 break (EndProposingReason::NoMoreTransactions, "NoMoreTransactions")
             }
-            if time::Instant::now() > thread_deadline {
+            if time::Instant::now() > thread_deadline && limit_execution_time {
                 break (EndProposingReason::HitDeadline, "HitThreadDeadline")
             }
             let mut execute_txs = pending_txs[..tx_number].to_vec();
             pending_txs = pending_txs[tx_number..].to_vec();
             let batch_txs = execute_txs.iter().map(|(_, _, e)| e.clone()).collect();
-            let batch_start = time::Instant::now();
-            let timeout = thread_deadline.duration_since(batch_start);
+            let timeout = if limit_execution_time {
+                let batch_start = time::Instant::now();
+                thread_deadline.duration_since(batch_start)
+            } else {
+                time::Duration::from_secs(u64::MAX)
+            };
             let (results, rollback, stale_or_futures) = block_builder.push_batch(batch_txs, timeout);
             let invalid_nonce_length = stale_or_futures.len();
             total_nonce_err_tx += invalid_nonce_length;
@@ -979,13 +1049,30 @@ where
             }
         };
         let applied = block_builder.extrinsics.len() - initial_applied;
-        Self::thread_finish_log(extend, block, &thread_name, thread_start, thread_time, reason, &block_builder, applied, unqueue_invalid.len(), total_nonce_err_tx, total_tx, round_execute_collect);
-
+        Self::thread_finish_log(
+            extend,
+            block,
+            &thread_name,
+            thread_start,
+            thread_time,
+            reason,
+            &block_builder,
+            applied,
+            unqueue_invalid.len(),
+            total_nonce_err_tx,
+            total_tx,
+            round_execute_collect,
+            limit_execution_time,
+        );
+        // calculate average execute_time
+        if all_tx_number - pending_txs.len() > 0 {
+            avg_execute_time = thread_start.elapsed().as_micros() / (all_tx_number - pending_txs.len()) as u128;
+        }
         // execute extend extrinsics which must execute finish.
         if !extend {
             let extend_extrinsics = E::extend_extrinsic(&*block_builder.api, block_builder.parent_hash);
             let round_tx_number = extend_extrinsics.len();
-            let (_extend_unqueue_invalid, _extend_end_reason) = Self::execute_one_thread_txs(
+            let (_extend_unqueue_invalid, _extend_end_reason, _extend_avg_execute_time) = Self::execute_one_thread_txs(
                 block,
                 block_deadline,
                 block_deadline,
@@ -996,10 +1083,11 @@ where
                 round_tx_number,
                 millis_tx_rate,
                 true,
+                limit_execution_time,
             );
         }
 
-        (unqueue_invalid, end_reason)
+        (unqueue_invalid, end_reason, avg_execute_time)
     }
 
     fn thread_finish_log(
@@ -1015,6 +1103,7 @@ where
         total_nonce_err_tx: usize,
         total_tx: usize,
         round_execute_collect: Vec<usize>,
+        limit_execution_time: bool,
     ) {
         let times = |block_builder: &BlockBuilder<Block, C, B>, _thread: &String| -> (Vec<[u128; 4]>, Vec<(String, [u128; 4], usize)>, u128, u128, u128) {
             let mut execute_map: HashMap<String, ([u128; 4], usize)> = HashMap::new();
@@ -1054,11 +1143,16 @@ where
             (*txs, avg, avg.saturating_sub(avg_io), avg_io, avg_rb, avg_w)
         }).collect::<Vec<_>>();
         trace!(target: LOG_TARGET, "[Execute Block {block}] Thread {thread_name} extra: {extra}({commit_time}/{rollback_time}) nanos, times(min/avg/max/count): {times:?}");
+        let limit_millis_info = if limit_execution_time {
+            format!("/{}", thread_time.as_millis())
+        } else {
+            "".to_string()
+        };
         debug!(
             target: LOG_TARGET,
-            "[Execute Block {block}] Thread {thread_name} {reason}({}/{} ms) {applied}/{}/{total_nonce_err_tx}/{total_tx} executed in {} rounds([(num, avg, avg_exe, avg_io, avg_rb, avg_w)]: {round_with_times:?}).",
+            "[Execute Block {block}] Thread {thread_name} {reason}({}{} ms) {applied}/{}/{total_nonce_err_tx}/{total_tx} executed in {} rounds([(num, avg, avg_exe, avg_io, avg_rb, avg_w)]: {round_with_times:?}).",
             thread_start.elapsed().as_millis(),
-            thread_time.as_millis(),
+            limit_millis_info,
             invalid.saturating_sub(total_nonce_err_tx),
             round_execute_collect.len(),
         );
@@ -1075,9 +1169,11 @@ where
         merge_tx: Sender<(MergeType<A, Block>, bool)>,
         mut merge_rx: Receiver<(MergeType<A, Block>, bool)>,
         merge_in_thread_order: bool,
-    ) -> Result<(Vec<<A as TransactionPool>::Hash>, EndProposingReason, u128, Vec<u32>), sp_blockchain::Error> {
+        limit_execution_time: bool,
+    ) -> Result<(Vec<<A as TransactionPool>::Hash>, EndProposingReason, u128, Vec<u32>, u128), sp_blockchain::Error> {
         let mut threads_executed = HashMap::new();
         let mut mth_merge = std::env::var("MTH_MERGE").unwrap_or("false".into()).parse().unwrap_or(false);
+        if merge_in_thread_order { mth_merge = false; }
         let allow_rollback = std::env::var("MTH_MERGE_ROLLBACK").unwrap_or("true".into()).parse().unwrap_or(true);
         let mut merge_count = 0usize;
         let mut extra_merge_count = (time::Instant::now(), thread_number);
@@ -1128,7 +1224,7 @@ where
                     // sort by merge weight ascending order.
                     merge_box.sort_by(|a, b| a.0.cmp(&b.0));
                 }
-                if merge_count + 1 == thread_number || time::Instant::now() > mth_finish_deadline {
+                if merge_count + 1 == thread_number || (limit_execution_time && time::Instant::now() > mth_finish_deadline) {
                     let (_, mut changes) = merge_box.pop().unwrap();
                     if merge_count + 1 < thread_number {
                         warn!(
@@ -1146,11 +1242,12 @@ where
                     block_builder.api.set_recorder(changes.2);
                     block_builder.extrinsics = changes.3;
                     let extra_merge_time = extra_merge_count.0.elapsed().as_millis();
-                    let executed: Vec<_> = (1..=thread_number)
-                        .filter_map(|t| threads_executed.get(&t).cloned())
+                    let executed: Vec<_> = changes.0
+                        .iter()
+                        .filter_map(|t| threads_executed.get(t).cloned())
                         .filter(|l| *l > 0)
                         .collect();
-                    return Ok((changes.4, changes.5, extra_merge_time, executed));
+                    return Ok((changes.4, changes.5, extra_merge_time, executed, changes.6));
                 }
                 loop {
                     if merge_box.len() >= 2 {
@@ -1256,6 +1353,14 @@ where
         to.3.extend(from.3[inherents_len..].to_vec());
         to.4.extend(from.4.clone());
         to.5 = from.5;
+        // update average execute time.
+        if from.6 > 0 {
+            if to.6 > 0 {
+                to.6 = (to.6 + from.6) / 2
+            } else {
+                to.6 = from.6
+            }
+        }
         Ok((to, to_threads, from.0))
     }
 
@@ -1393,6 +1498,7 @@ where
         wait_pool: time::Duration,
         deadline: time::Instant,
         block_size_limit: Option<usize>,
+        thread_tx_limit: Option<usize>,
         excepts: Vec<&Block::Extrinsic>,
     ) -> (Vec<Vec<Block::Extrinsic>>, Vec<Block::Extrinsic>) {
         let block_size_limit = block_size_limit.unwrap_or(self.default_block_size_limit);
@@ -1400,6 +1506,7 @@ where
             wait_pool,
             deadline,
             block_size_limit,
+            thread_tx_limit,
             0,
             0,
             self.thread_limit,
@@ -1419,24 +1526,28 @@ where
 
     async fn propose_block(
         self,
+        source: &str,
+        max_duration: std::time::Duration,
         block_size_limit: Option<usize>,
         inherent_data: InherentData,
         inherent_digests: Digest,
         extrinsic: (Vec<Vec<Block::Extrinsic>>, Vec<Block::Extrinsic>),
+        millis_tx_rate: Option<usize>,
         merge_in_thread_order: bool,
+        limit_execution_time: bool,
     ) -> Result<
             (
                 Proposal<
                     Block,
                     <Self as sp_consensus::Proposer<Block>>::Transaction, <Self as sp_consensus::Proposer<Block>>::Proof
                 >,
-                Vec<u32>
+                Vec<u32>,
+                u128,
             ),
             <Self as sp_consensus::Proposer<Block>>::Error
         >
     {
         info!(target: LOG_TARGET, "🙌 Starting consensus session on top of parent {}({:?})", self.parent_number, self.parent_hash);
-        let max_duration = time::Duration::from_secs(3);
         let mut block_builder =
             self.client.new_block_at(self.parent_hash.clone(), inherent_digests.clone(), PR::ENABLED, None)?;
         let extrinsic_count = extrinsic.0.iter().map(|g| g.len()).sum::<usize>() + extrinsic.1.len();
@@ -1452,7 +1563,7 @@ where
             );
         });
         self.execute_block(
-            "Construct",
+            source,
             time::Instant::now(),
             time::Instant::now() + max_duration,
             inherents,
@@ -1460,6 +1571,7 @@ where
             block_builder,
             max_duration,
             block_size_limit.unwrap_or(self.default_block_size_limit),
+            millis_tx_rate.unwrap_or(self.millis_tx_rate),
             extrinsic_count,
             (0, 0, 0),
             extrinsic.0
@@ -1468,6 +1580,7 @@ where
                 .collect(),
             extrinsic.1.into_iter().enumerate().map(|(i, tx)| (i, Some(<<<Block as BlockT>::Header as Header>::Hashing as traits::Hash>::hash(&tx.encode())), tx)).collect(),
             merge_in_thread_order,
+            limit_execution_time,
         )
             .await
     }
@@ -1481,13 +1594,15 @@ where
         extrinsic: Vec<Block::Extrinsic>,
         groups: Vec<u32>,
         merge_in_thread_order: bool,
+        limit_execution_time: bool,
     ) -> Result<
             (
                 Proposal<
                     Block,
                     <Self as sp_consensus::Proposer<Block>>::Transaction, <Self as sp_consensus::Proposer<Block>>::Proof
                 >,
-                Vec<u32>
+                Vec<u32>,
+                u128,
             ),
             <Self as sp_consensus::Proposer<Block>>::Error
         >
@@ -1519,6 +1634,7 @@ where
             block_builder,
             max_duration,
             usize::MAX,
+            self.millis_tx_rate,
             extrinsic_count,
             (0, 0, 0),
             multi_groups
@@ -1527,6 +1643,7 @@ where
                 .collect(),
             single.into_iter().enumerate().map(|(i, tx)| (i, Some(<<<Block as BlockT>::Header as Header>::Hashing as traits::Hash>::hash(&tx.encode())), tx)).collect(),
             merge_in_thread_order,
+            limit_execution_time,
         )
             .await
     }
@@ -1606,7 +1723,7 @@ impl<K: PartialEq + Eq + Hash + Clone, V> ConflictGroup<K, V>  {
             self.key_group.insert(key.clone(), gid);
         }
         if !tmp_move_groups.is_empty() {
-            debug!(target: LOG_TARGET, "ConflictGroup move to group {gid} with groups: {tmp_move_groups:?}");
+            trace!(target: LOG_TARGET, "ConflictGroup move to group {gid} with groups: {tmp_move_groups:?}");
         }
         // insert tx to gid
         if let Some(values) = self.group.get_mut(&gid) {

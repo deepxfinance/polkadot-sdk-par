@@ -185,6 +185,7 @@ where
 						block.body.clone().unwrap_or_default(),
 						groups,
 						true,
+						false,
 					)
 					.await
 					.map_err(|e| Self::Error::ClientImport(format!("Execute block error {e:?}")))
@@ -228,7 +229,7 @@ where
 						|| self.role.is_authority()
 					{
 						let proposal = match calculate_block(&block) {
-							Ok((proposal, _groups)) => proposal,
+							Ok((proposal, _groups, _avg_execute_time)) => proposal,
 							Err(e) => {
 								log::warn!(target: CLIENT_LOG_TARGET, "ImportBlock({:?}): {} failed for {e}", block.origin, block.header.number());
                                 self.unlock(block.origin, *block.header.number()).await;
@@ -400,10 +401,6 @@ impl<B: BlockT> PendingFinalizeBlockQueue<B> {
 			finalize_notification: client.finality_notification_stream(),
 			inner: Arc::new(Mutex::new(VecDeque::new())),
 		})
-	}
-
-	pub fn queue(&self) -> Arc<Mutex<VecDeque<BlockInfo<B>>>> {
-		self.inner.clone()
 	}
 }
 
