@@ -503,8 +503,8 @@ where
         millis_tx_rate: usize,
         extrinsic_count: usize,
         pool_time: (u128, u128, u128),
-        extrinsic_group: Vec<Vec<(usize, Option<<A as TransactionPool>::Hash>, Block::Extrinsic)>>,
-        single_group: Vec<(usize, Option<<A as TransactionPool>::Hash>, Block::Extrinsic)>,
+        mut extrinsic_group: Vec<Vec<(usize, Option<<A as TransactionPool>::Hash>, Block::Extrinsic)>>,
+        mut single_group: Vec<(usize, Option<<A as TransactionPool>::Hash>, Block::Extrinsic)>,
         merge_in_thread_order: bool,
         limit_execution_time: bool,
     ) -> Result<(Proposal<Block, backend::TransactionFor<B, Block>, PR::Proof>, Vec<u32>, u128), sp_blockchain::Error> {
@@ -514,6 +514,10 @@ where
             .map_err(|e| sp_blockchain::Error::RuntimeApiError(e))?;
         if !onchain_version.can_call_with(&self.native_version.runtime_version) {
             native = false;
+        }
+        if extrinsic_group.len() == 1 {
+            single_group = [extrinsic_group[0].clone(), single_group].concat();
+            extrinsic_group.clear();
         }
         // 1. initialize main thread block_builder by inherent transactions.
         let inherent_length = inherents.len();
@@ -1179,7 +1183,7 @@ where
         let mut extra_merge_count = (time::Instant::now(), thread_number);
         let mut merge_box: Vec<(u32, MergeType<A, Block>)> = vec![];
         let pool = futures::executor::ThreadPoolBuilder::new()
-            .pool_size(cmp::min(thread_number / 2, num_cpus::get()))
+            .pool_size(cmp::min((thread_number / 2).max(1), num_cpus::get()))
             .create()
             .expect("Failed to build groups merge pool");
         loop {
