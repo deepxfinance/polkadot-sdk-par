@@ -23,7 +23,7 @@ use sc_network::{PeerId, ReputationChange};
 use sc_network_common::role::Role;
 use sp_api::TransactionFor;
 use sp_blockchain::BlockStatus;
-use sp_consensus::{BlockOrigin, Environment, Error as ConsensusError, Proposer};
+use sp_consensus::{BlockOrigin, Error as ConsensusError};
 use sp_runtime::{generic::BlockId, traits::{Block as BlockT, Header as HeaderT, NumberFor, One}, Digest, Justification, Saturating};
 use crate::{client::ClientForHotstuff, find_block_commit, primitives::{HotstuffError, HotstuffError::*}, CLIENT_LOG_TARGET};
 use crate::message::BlockCommit;
@@ -43,21 +43,21 @@ pub trait ImportLock<B: BlockT> {
     async fn unlock(&self, origin: BlockOrigin, number: <B::Header as HeaderT>::Number);
 }
 
-pub struct HotstuffBlockImport<Backend, Block: BlockT, Client, PF> {
+pub struct HotstuffBlockImport<Backend, Block: BlockT, Client, E> {
 	inner: Arc<Client>,
 	role: Role,
-	proposer_factory: Arc<RwLock<PF>>,
+	executor: Arc<E>,
     import_lock: Arc<RwLock<HashMap<<Block::Header as HeaderT>::Number, BlockNotification<Block>>>>,
 	backend: PhantomData<Backend>,
 	_phantom: PhantomData<Block>,
 }
 
-impl<Backend, Block: BlockT, Client, PF> Clone for HotstuffBlockImport<Backend, Block, Client, PF> {
+impl<Backend, Block: BlockT, Client, E> Clone for HotstuffBlockImport<Backend, Block, Client, E> {
 	fn clone(&self) -> Self {
 		HotstuffBlockImport {
 			inner: self.inner.clone(),
 			role: self.role.clone(),
-			proposer_factory: self.proposer_factory.clone(),
+			executor: self.executor.clone(),
             import_lock: self.import_lock.clone(),
 			backend: PhantomData,
 			_phantom: PhantomData,
@@ -66,11 +66,11 @@ impl<Backend, Block: BlockT, Client, PF> Clone for HotstuffBlockImport<Backend, 
 }
 
 #[async_trait::async_trait]
-impl<Backend, Block: BlockT, Client, PF> ImportLock<Block> for HotstuffBlockImport<Backend, Block, Client, PF>
+impl<Backend, Block: BlockT, Client, E> ImportLock<Block> for HotstuffBlockImport<Backend, Block, Client, E>
 where
     Backend: Send + Sync,
     Client: Send + Sync + 'static,
-    PF: Send + Sync,
+    E: Send + Sync,
 {
     async fn lock(&self, origin: BlockOrigin, number: <Block::Header as HeaderT>::Number) {
 		// if locked by same origin, return for continue import.
@@ -116,12 +116,12 @@ where
     }
 }
 
-impl<Backend, Block: BlockT, Client, PF> HotstuffBlockImport<Backend, Block, Client, PF> {
-	pub fn new(inner: Arc<Client>, role: Role, proposer_factory: Arc<RwLock<PF>>) -> HotstuffBlockImport<Backend, Block, Client, PF> {
+impl<Backend, Block: BlockT, Client, E> HotstuffBlockImport<Backend, Block, Client, E> {
+	pub fn new(inner: Arc<Client>, role: Role, executor: Arc<E>) -> HotstuffBlockImport<Backend, Block, Client, E> {
 		HotstuffBlockImport {
             inner,
             role,
-            proposer_factory,
+            executor,
             backend: PhantomData,
             import_lock: Arc::new(RwLock::new(HashMap::new())),
             _phantom: PhantomData,
@@ -130,16 +130,14 @@ impl<Backend, Block: BlockT, Client, PF> HotstuffBlockImport<Backend, Block, Cli
 }
 
 #[async_trait::async_trait]
-impl<BE, Block: BlockT, Client, PF, Error> BlockImport<Block> for HotstuffBlockImport<BE, Block, Client, PF>
+impl<BE, Block: BlockT, Client, E, Error> BlockImport<Block> for HotstuffBlockImport<BE, Block, Client, E>
 where
 	BE: Backend<Block>,
 	Client: ClientForHotstuff<Block, BE> + 'static,
 	for<'a> &'a Client:
 		BlockImport<Block, Error = ConsensusError, Transaction = TransactionFor<Client, Block>>,
 	TransactionFor<Client, Block>: 'static,
-    PF: Environment<Block, Error = Error> + Send + Sync + 'static,
-    PF::Proposer: Proposer<Block, Error = Error, Transaction = TransactionFor<Client, Block>>
-		+ BlockPropose<Block, Transaction = TransactionFor<Client, Block>, Error = Error>,
+    E: BlockPropose<Block, Transaction = TransactionFor<Client, Block>, Error = Error> + Send + Sync + 'static,
     Error: std::error::Error + Send + From<ConsensusError> + 'static,
 {
 	type Error = ConsensusError;
@@ -165,19 +163,10 @@ where
 			}
 			let inherent_digest = Digest { logs: vec![post_digests.logs()[0].clone()] };
 			let groups: Vec<u32> = post_digests.logs()[post_digests_len - 2].as_hotstuff_seal().ok_or(ConsensusError::ClientImport("Invalid post_digests for groups".into()))?;
-			let parent_header = self.inner
-				.header(*block.header.parent_hash())
-				.map_err(|e| ConsensusError::ClientImport(format!("Get header for {:?} failed: {e:?}", block.header.parent_hash())))?
-				.ok_or(ConsensusError::ClientImport(format!("No header for {:?}", block.header.parent_hash())))?;
 			// TODO !!!MUST should we check actual extrinsic_root in header with BlockCommit in header.digest?
 			futures::executor::block_on(async {
 				self
-					.proposer_factory
-					.write()
-					.await
-					.init(&parent_header)
-					.await
-					.map_err(|e| ConsensusError::ClientImport(format!("init proposer: {e:?}")))?
+					.executor
 					.execute_block_for_import(
 						"ImportBlock",
 						block.origin.into(),
@@ -290,11 +279,11 @@ where
 	}
 }
 
-impl<BE, Block: BlockT, Client, PF> HotstuffBlockImport<BE, Block, Client, PF>
+impl<BE, Block: BlockT, Client, E> HotstuffBlockImport<BE, Block, Client, E>
 where
 	BE: Backend<Block>,
 	Client: ClientForHotstuff<Block, BE>,
-    PF: Send + Sync + 'static,
+    E: Send + Sync + 'static,
 {
 	/// Import a block justification and finalize the block.
 	///
@@ -326,12 +315,12 @@ where
 }
 
 #[async_trait::async_trait]
-impl<BE, Block: BlockT, Client, PF> JustificationImport<Block>
-	for HotstuffBlockImport<BE, Block, Client, PF>
+impl<BE, Block: BlockT, Client, E> JustificationImport<Block>
+	for HotstuffBlockImport<BE, Block, Client, E>
 where
 	BE: Backend<Block>,
 	Client: ClientForHotstuff<Block, BE>,
-    PF: Send + Sync + 'static,
+    E: Send + Sync + 'static,
 {
 	type Error = ConsensusError;
 

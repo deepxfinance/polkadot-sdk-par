@@ -2,7 +2,6 @@
 use std::{marker::PhantomData, sync::Arc};
 
 use codec::Decode;
-use tokio::sync::RwLock;
 use sc_client_api::{AuxStore, Backend, BlockchainEvents, CallExecutor, ExecutionStrategy, ExecutorProvider, Finalizer, LockImportRun, StorageProvider};
 use sc_consensus::BlockImport;
 use sp_api::{ProvideRuntimeApi, TransactionFor};
@@ -119,14 +118,14 @@ where
 
 /// Make block importer and link half necessary to tie the background voter
 /// to it.
-pub fn block_import<BE, Block: BlockT, Client, SC, PF, Error>(
+pub fn block_import<BE, Block: BlockT, Client, SC, E, Error>(
     role: Role,
     client: Arc<Client>,
-    proposer_factory: PF,
+    executor: E,
     genesis_authorities_provider: &dyn GenesisAuthoritySetProvider<Block>,
 ) -> Result<
     (
-        HotstuffBlockImport<BE, Block, Client, PF>,
+        HotstuffBlockImport<BE, Block, Client, E>,
         LinkHalf<Block, Client, SC>,
     ),
     ClientError,
@@ -134,8 +133,7 @@ pub fn block_import<BE, Block: BlockT, Client, SC, PF, Error>(
 where
     BE: Backend<Block> + 'static,
     Client: ClientForHotstuff<Block, BE> + 'static,
-    PF: Environment<Block, Error = Error> + Send + Sync + 'static,
-    PF::Proposer: Proposer<Block, Error = Error, Transaction = TransactionFor<Client, Block>> + BlockPropose<Block>,
+    E: BlockPropose<Block, Transaction = TransactionFor<Client, Block>, Error = Error> + Send + Sync + 'static,
     Error: std::error::Error + Send + From<ConsensusError> + 'static,
 {
     let chain_info = client.info();
@@ -159,7 +157,7 @@ where
     )?;
 
     Ok((
-        HotstuffBlockImport::new(client.clone(), role, Arc::new(RwLock::new(proposer_factory))),
+        HotstuffBlockImport::new(client.clone(), role, Arc::new(executor)),
         LinkHalf {
             client,
             select_chain: None,

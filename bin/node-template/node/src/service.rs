@@ -51,6 +51,15 @@ type ProposerFactory = sc_basic_authorship::MTHProposerFactory<
 	ExtendTx,
 >;
 
+type BlockExecutor = sc_basic_authorship::BlockExecutor<
+	FullBackend,
+	FullClient,
+	FullPool,
+	DisableProofRecording,
+	MergeHandler<FullBackend, Block>,
+	ExtendTx,
+>;
+
 pub fn new_partial(
 	config: &Configuration,
 ) -> Result<
@@ -61,7 +70,7 @@ pub fn new_partial(
 		sc_consensus::DefaultImportQueue<Block, FullClient>,
 		FullPool,
 		(
-			hotstuff_consensus::HotstuffBlockImport<FullBackend, Block, FullClient, ProposerFactory>,
+			hotstuff_consensus::HotstuffBlockImport<FullBackend, Block, FullClient, BlockExecutor>,
 			//LinkHalf is something like `client`, `backend`, `network`, and other components needed by the Hotstuff consensus.
 			hotstuff_consensus::LinkHalf<Block, FullClient, FullSelectChain>,
 			Option<Telemetry>,
@@ -103,17 +112,16 @@ pub fn new_partial(
 		task_manager.spawn_essential_handle(),
 		client.clone(),
 	);
-	let proposer_factory: ProposerFactory = ProposerFactory::new(
-		task_manager.spawn_handle(),
+	let executor = BlockExecutor::new(
+		Box::new(task_manager.spawn_handle()),
 		client.clone(),
 		transaction_pool.clone(),
-		Arc::new(HotstuffOracle::new(Arc::new(ExecutionOracle::new(None)))),
-		None,
-		None,
 		<ExecutorDispatch as sc_executor::NativeExecutionDispatch>::native_version(),
+		Default::default(),
+		None,
 	);
 
-	let (hotstuff_block_import, hotstuff_link) = hotstuff_consensus::block_import(config.role.clone(), client.clone(), proposer_factory, &client)?;
+	let (hotstuff_block_import, hotstuff_link) = hotstuff_consensus::block_import(config.role.clone(), client.clone(), executor, &client)?;
 
 	let slot_duration = hotstuff_consensus::slot_duration(&*client)?;
 	let import_queue =
