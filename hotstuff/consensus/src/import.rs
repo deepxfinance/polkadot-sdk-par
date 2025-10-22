@@ -263,14 +263,14 @@ where
 			};
 			let finalize_block = commit.base_block();
 			if self.inner.info().finalized_number < finalize_block.number {
-				if let Err(e) = self.inner.finalize_block(finalize_block.hash, Some((HOTSTUFF_ENGINE_ID, encoded_commit.clone())), true) {
+				if let Err(e) = self.inner.finalize_block(finalize_block.hash, Some((HOTSTUFF_ENGINE_ID, encoded_commit.clone())), false) {
 					log::warn!(target: CLIENT_LOG_TARGET, "[ImportBlock] FinalizeBlock #{} ({}) failed for {e:?}", finalize_block.number, finalize_block.hash);
 				}
 			}
 		} else if let Some(commit) = block_commit {
 			let finalize_block = commit.base_block();
 			if self.inner.info().finalized_number < finalize_block.number {
-				if let Err(e) = self.inner.finalize_block(finalize_block.hash, Some((HOTSTUFF_ENGINE_ID, commit.encode())), true) {
+				if let Err(e) = self.inner.finalize_block(finalize_block.hash, None, false) {
 					log::warn!(target: CLIENT_LOG_TARGET, "[ImportBlock] FinalizeBlock #{} ({}) failed for {e:?}", finalize_block.number, finalize_block.hash);
 				}
 			}

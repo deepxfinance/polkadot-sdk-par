@@ -105,13 +105,18 @@ where
         Ok(import_block)
     }
 
-    fn try_finalize_block(&mut self, commit: &BlockCommit<B>) {
+    fn try_finalize_block(&mut self, parent: &B::Header, commit: &BlockCommit<B>) {
         // try to finalize block
         let finalize_block = commit.base_block();
         if self.client.info().finalized_number >= finalize_block.number {
             return;
         }
-        if let Err(e) = self.client.finalize_block(finalize_block.hash, Some((HOTSTUFF_ENGINE_ID, commit.encode())), true) {
+        // insert justification if authorities change.
+        let mut justification = None;
+        if !find_consensus_logs::<B>(parent).is_empty() {
+            justification = Some((HOTSTUFF_ENGINE_ID, commit.encode()));
+        }
+        if let Err(e) = self.client.finalize_block(finalize_block.hash, justification, true) {
             warn!(target: CLIENT_LOG_TARGET, "[Consensus] FinalizeBlock #{} ({}) failed for {e:?}", finalize_block.number, finalize_block.hash);
         }
     }
@@ -130,7 +135,7 @@ where
             let next_block_number = best_block.saturating_add(1u32.into());
             self.missions.remove(&best_block);
             if let Some((commit, mut payload)) = self.missions.remove(&next_block_number) {
-                self.try_finalize_block(&commit);
+                self.try_finalize_block(&chain_head, &commit);
                 if payload.extrinsic.is_none() {
                     warn!(target: CLIENT_LOG_TARGET, "[Execute] Next block number: {} skipped for None extrinsic", payload.block_number);
                     self.import.unlock(BlockOrigin::ConsensusBroadcast, payload.block_number).await;
@@ -218,11 +223,7 @@ where
                             *header.number(),
                             &self.justification_sync_link,
                         );
-                        if !find_consensus_logs::<B>(&header).is_empty() {
-                            // if imported block have any ConsensusLog(authorities change)
-                            // we should not execute following blocks(may be re-processed).
-                            break;
-                        }
+                        // Since we allow ahead consensus, we do not skip following block event authorities changes.
                     },
                     Err(err) => {
                         warn!(target: CLIENT_LOG_TARGET, "[Execute] Error with block {} built on {best_hash:?}: {err}", payload.block_number);
