@@ -195,10 +195,14 @@ impl<B: BlockT> ConsensusState<B> {
     }
 
     pub fn make_vote(&mut self, proposal: &Proposal<B>) -> Option<Vote<B>> {
-        if !self.is_authority() { return None; }
+        if !self.is_authority() {
+            trace!(target:"Hotstuff", "make_vote proposal view {}, skip vote for not authority!!!", proposal.view);
+            return None;
+        }
         let author_id = self.local_authority_id.as_ref()?;
 
         if proposal.view <= self.last_voted_view {
+            debug!(target:"Hotstuff", "make_vote proposal view {}, last_voted_view {}, skip vote for proposal!!!", proposal.view, self.last_voted_view);
             return None;
         }
 
@@ -657,7 +661,7 @@ where
         if !local {
             if let Some(tc) = proposal.tc.as_ref() {
                 self.handle_qc(&tc.high_qc);
-                if tc.view > self.state.view() {
+                if tc.view >= self.state.view() {
                     self.advance_view(tc.view);
                     self.processing_block = None;
                 }
@@ -672,12 +676,14 @@ where
 
     async fn vote_for_proposal(&mut self, proposal: Proposal<B>, check_payload: bool, from: &str) -> Result<(), HotstuffError> {
         if proposal.view != self.state.view() {
+            warn!(target:"Hotstuff", "proposal view {}, local view {}, skip vote for proposal!!!", proposal.view, self.state.view());
             return Ok(());
         }
         if check_payload {
             match self.check_payload(&proposal.payload, &self.processing_block) {
                 Ok(true) => {
                     self.pending_proposal = Some(proposal);
+                    debug!(target:"Hotstuff", "check_payload no state to check, skip vote for proposal to pending!!!");
                     return Ok(())
                 },
                 Ok(false) => (),
