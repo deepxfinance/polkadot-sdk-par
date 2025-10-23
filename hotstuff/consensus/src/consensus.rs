@@ -393,9 +393,10 @@ pub struct ConsensusWorker<
     execution_oracle: Arc<ExecutionOracle>,
     /// Tmp cache for not voted proposal(should be verified and qc mission is handled).
     pending_proposal: Option<Proposal<B>>,
-    processing_block: Option<Payload<B>>,
+    processing: Option<Payload<B>>,
+    processed: Payload<B>,
     /// consensus success block waiting to execute.
-    processed: BlockCommit<B>,
+    commit: BlockCommit<B>,
     processed_extrinsic: Option<(Vec<Vec<B::Extrinsic>>, Vec<B::Extrinsic>)>,
     phantom: PhantomData<BE>,
 }
@@ -436,13 +437,14 @@ where
             panic!("HOTSTUFF_BLOCKS_AHEAD({blocks_ahead_best}) should only be 1 or 2!!! Please restart with correct environment!!!");
         }
         let best_header = client.header(client.info().best_hash).unwrap().expect("Best header should be present");
-        let processed = if !best_header.number().is_zero() {
-            let commit = find_block_commit::<B>(&best_header).expect("Best block should have BlockCommit!!!");
-            commit
+        let commit = if !best_header.number().is_zero() {
+            find_block_commit::<B>(&best_header).expect("Best block should have BlockCommit!!!")
         } else {
             BlockCommit::empty()
         };
         info!(target: CLIENT_LOG_TARGET, "Start consensus worker with local_timer_duration: {local_timer_duration} millis, slot_duration: {} millis", slot_duration.as_millis());
+        let mut processed = Payload::empty();
+        processed.stage = ConsensusStage::Commit;
         Self {
             state: consensus_state,
             network,
@@ -458,8 +460,9 @@ where
             proposer_factory,
             execution_oracle,
             pending_proposal: None,
-            processing_block: None,
+            processing: None,
             processed,
+            commit,
             processed_extrinsic: None,
             phantom: PhantomData,
         }
@@ -663,7 +666,7 @@ where
                 self.handle_qc(&tc.high_qc);
                 if tc.view >= self.state.view() {
                     self.advance_view(tc.view);
-                    self.processing_block = None;
+                    self.processing = None;
                 }
             }
             self.handle_qc(&proposal.qc);
@@ -680,10 +683,10 @@ where
             return Ok(());
         }
         if check_payload {
-            match self.check_payload(&proposal.payload, &self.processing_block) {
+            match self.check_payload(&proposal.payload) {
                 Ok(true) => {
                     self.pending_proposal = Some(proposal);
-                    debug!(target:"Hotstuff", "check_payload no state to check, skip vote for proposal to pending!!!");
+                    trace!(target:"Hotstuff", "check_payload no state to check, skip vote for proposal to pending!!!");
                     return Ok(())
                 },
                 Ok(false) => (),
@@ -693,7 +696,7 @@ where
                 }
             }
         }
-        self.processing_block = Some(proposal.payload.clone());
+        self.processing = Some(proposal.payload.clone());
 
         if let Some(vote) = self.state.make_vote(&proposal) {
             trace!(target: CLIENT_LOG_TARGET, "~~ handle proposal from {from}. make vote. view {}", vote.view);
@@ -767,9 +770,11 @@ where
                     return Ok(());
                 }
             };
+            // update processed payload here. Any Prepare/Precommit/Commit success stage will be recorded.
+            self.processed = qc_proposal.payload.clone();
             if !qc_proposal.payload.stage.finish()
                 || qc_proposal.payload.block_number <= self.client.info().best_number 
-                || qc_proposal.payload.block_number <= self.processed.block_number
+                || qc_proposal.payload.block_number <= self.commit.block_number
             {
                 return Ok(());
             }
@@ -777,16 +782,13 @@ where
             let new_block_number = qc_proposal.payload.block_number;
             match self.synchronizer.get_proposal_ancestors(&qc_proposal) {
                 Ok(Some((parent, grandpa))) => {
-                    if grandpa.payload.extrinsic.is_none() || qc_proposal.view != parent.view + 1 || parent.view != grandpa.view + 1 {
-                        return Ok(());
-                    }
-                    if !Payload::<B>::full_consensus(&qc_proposal.payload, &parent.payload, &grandpa.payload) {
+                    if grandpa.payload.extrinsic.is_none() || !Payload::<B>::full_consensus(&qc_proposal.payload, &parent.payload, &grandpa.payload) {
                         return Ok(());
                     }
                     if local {
                         // if from local, we should make time delay for min slot_duration.
-                        let last_commit_time = if self.processed.block_number.saturating_add(1u32.into()) == new_block_number {
-                            *self.processed.commit_time()
+                        let last_commit_time = if self.commit.block_number.saturating_add(1u32.into()) == new_block_number {
+                            *self.commit.commit_time()
                         } else if self.client.info().best_number.saturating_add(1u32.into()) == new_block_number {
                             match self.client.header(self.client.info().best_hash).map_err(|e| HotstuffError::ClientError(e.to_string()))? {
                                 Some(best_header) => if *best_header.number() > 0u32.into() {
@@ -815,7 +817,7 @@ where
                         }
                     }
                     let slot = InherentType::from_timestamp(qc.timestamp, self.slot_duration);
-                    let processed_slot = InherentType::from_timestamp(*self.processed.commit_time(), self.slot_duration);
+                    let processed_slot = InherentType::from_timestamp(*self.commit.commit_time(), self.slot_duration);
                     if slot > processed_slot {
                         let commit = match BlockCommit::generate(
                             (&grandpa, parent.qc.clone()),
@@ -838,13 +840,13 @@ where
                         if self.executor_tx.send(ExecutorMission::Consensus(commit.clone(), grandpa.payload.clone())).is_err() {
                             error!(target: CLIENT_LOG_TARGET, "~~ trigger_qc_mission from {from}. block {new_block_number} execute mission send failed");
                         }
-                        self.processed = commit;
+                        self.commit = commit;
                         self.processed_extrinsic = grandpa.payload.extrinsic.clone();
-                        if self.processing_block.is_some()
-                            && new_block_number >= self.processing_block.as_ref().unwrap().block_number
+                        if self.processing.is_some()
+                            && new_block_number >= self.processing.as_ref().unwrap().block_number
                         {
                             // clear here for local to get correct next proposal payload
-                            self.processing_block = None;
+                            self.processing = None;
                         }
                         // if full consensus for a new block success, reset timer.
                         self.local_timer.reset();
@@ -874,7 +876,7 @@ where
             self.advance_view(tc.view);
             self.local_timer.reset();
         }
-        self.processing_block = None;
+        self.processing = None;
 
         if self.state.is_leader() {
             debug!(
@@ -935,45 +937,28 @@ where
         let info = self.client.info();
         let best = info.best_number;
         let best_next = best.saturating_add(1u32.into());
-        if let Some(processing) = self.processing_block.as_ref() {
-            if processing.block_number < best_next {
-                let (get_payload, time) = self.get_payload(best_next, None).await;
-                trace!(target: CLIENT_LOG_TARGET, "~~ get_proposal_payload(next). processing: {}, best: {best}, new: {best_next} in {time} micros", processing.block_number);
-                payload = Some(get_payload);
-            } else {
-                // if processing_block is in Commit stage but not cleared. means we consensus failed(timeout,...). Restart consensus for this block
-                match processing.stage.next() {
-                    Some(next_stage) => {
-                        trace!(target: CLIENT_LOG_TARGET, "~~ get_proposal_payload(next). processing: {}, best: {best}", processing.block_number);
-                        payload = Some(Payload {
-                            best_block: processing.best_block.clone(),
-                            block_number: processing.block_number,
-                            extrinsics_root: processing.extrinsics_root,
-                            extrinsic: None,
-                            stage: next_stage,
-                        });
-                    },
-                    None => {
-                        // Restart to Prepare -> PreCommit -> Commit process. We may generate new block extrinsic here.
-                        let (get_payload, time) = self.get_payload(processing.block_number, None).await;
-                        trace!(target: CLIENT_LOG_TARGET, "~~ get_proposal_payload(next). re-processing: {}, best: {best} in {time} micros", processing.block_number);
-                        payload = Some(get_payload);
-                    }
-                }
-            }
-        } else {
+        // if processed is in Precommit stage but not updated, continue commit.
+        if let Some(next_stage) = self.processed.stage.next() {
+            trace!(target: CLIENT_LOG_TARGET, "~~ get_proposal_payload(next). processed: {}, best: {best}", self.processed.block_number);
+            payload = Some(Payload {
+                best_block: self.processed.best_block.clone(),
+                block_number: self.processed.block_number,
+                extrinsics_root: self.processed.extrinsics_root,
+                extrinsic: None,
+                stage: next_stage,
+            });
+        } else if self.commit.block_number < best.saturating_add(self.blocks_ahead_best) {
             // consensus for no more than best_block + blocks_ahead_best
-            if self.processed.block_number < best.saturating_add(self.blocks_ahead_best) {
-                let block_number = best_next.max(self.processed.block_number.saturating_add(1u32.into()));
-                let mut except_extrinsic = None;
-                if self.processed.block_number > best {
-                    // this processed block extrinsic are not executed, should exclude it for
-                    except_extrinsic = self.processed_extrinsic.as_ref();
-                }
-                let (get_payload, time) = self.get_payload(block_number, except_extrinsic).await;
-                trace!(target: CLIENT_LOG_TARGET, "~~ get_proposal_payload(next). best: {best}, processed: {}, new: {block_number} in {time} micros", self.processed.block_number);
-                payload = Some(get_payload);
+            let block_number = best_next
+                .max(self.commit.block_number.saturating_add(1u32.into()));
+            let mut except_extrinsic = None;
+            if self.commit.block_number > best {
+                // this processed block extrinsic are not executed, should exclude it for
+                except_extrinsic = self.processed_extrinsic.as_ref();
             }
+            let (get_payload, time) = self.get_payload(block_number, except_extrinsic).await;
+            trace!(target: CLIENT_LOG_TARGET, "~~ get_proposal_payload(next). best: {best}, processed: {}, new: {block_number} in {time} micros", self.commit.block_number);
+            payload = Some(get_payload);
         }
         payload
     }
@@ -1032,10 +1017,10 @@ where
     }
 
     // return if we should keep pending_proposal.
-    fn check_payload(&self, payload: &Payload<B>, processing: &Option<Payload<B>>) -> Result<bool, HotstuffError> {
+    fn check_payload(&self, payload: &Payload<B>) -> Result<bool, HotstuffError> {
         if payload.is_empty() { return Ok(false); }
-        if !payload.is_next(processing) {
-            return Err(PayloadError::BlockRollBack("Not expected next payload".to_string()).into());
+        if !payload.is_next(&self.processed) {
+            return Err(PayloadError::BlockRollBack(format!("processed: {}, new_payload: {}", self.processed, payload)).into());
         }
         let info = self.client.info();
         if payload.block_number > info.best_number.saturating_add(self.blocks_ahead_best) && self.state.is_authority() {
@@ -1055,8 +1040,8 @@ where
             Err(e) => return Err(HotstuffError::ClientError(e.to_string())),
         }
         // processed new_block. should not re-process it.
-        if payload.block_number <= self.processed.block_number {
-            return Err(PayloadError::BlockRollBack(format!("Next/Processed: {}/{}", payload.block_number, self.processed.block_number)).into());
+        if payload.block_number <= self.commit.block_number {
+            return Err(PayloadError::BlockRollBack(format!("Next/Processed: {}/{}", payload.block_number, self.commit.block_number)).into());
         }
         if let Some((mut groups, single)) = payload.extrinsic.clone() {
             let start = std::time::Instant::now();

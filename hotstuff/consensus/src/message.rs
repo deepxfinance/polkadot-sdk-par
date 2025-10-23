@@ -179,22 +179,22 @@ impl<Block: BlockT> Payload<Block> {
 		true
 	}
 
-	pub fn is_next(&self, parent: &Option<Self>) -> bool {
-		if self.extrinsic.is_some() && self.stage == ConsensusStage::Prepare {
+	pub fn is_next(&self, parent: &Self) -> bool {
+		if self.block_number < parent.block_number {
+			return false;
+		}
+		if self.extrinsic.is_some() && self.stage == ConsensusStage::Prepare && self.block_number > parent.block_number {
 			return true;
 		}
-		if let Some(parent) = parent {
-			return match (parent.stage, self.stage) {
-				(ConsensusStage::Prepare, ConsensusStage::PreCommit)
-				| (ConsensusStage::PreCommit, ConsensusStage::Commit) => {
-					parent.block_number == self.block_number
-						&& parent.extrinsics_root == self.extrinsics_root
-						&& self.best_block == self.best_block
-				},
-				_ => false,
-			}
+		match (parent.stage, self.stage) {
+			(ConsensusStage::Prepare, ConsensusStage::PreCommit)
+			| (ConsensusStage::PreCommit, ConsensusStage::Commit) => {
+				parent.block_number == self.block_number
+					&& parent.extrinsics_root == self.extrinsics_root
+					&& self.best_block == self.best_block
+			},
+			_ => false,
 		}
-		false
 	}
 }
 

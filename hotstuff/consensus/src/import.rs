@@ -178,7 +178,7 @@ where
 					.await
 					.map_err(|e| ConsensusError::ClientImport(format!("init proposer: {e:?}")))?
 					.execute_block_for_changes(
-						"ImportBlock",
+						&format!("{:?}", block.origin),
 						block.origin.into(),
 						*block.header.parent_hash(),
 						inherent_digest,
