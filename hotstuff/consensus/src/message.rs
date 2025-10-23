@@ -180,20 +180,20 @@ impl<Block: BlockT> Payload<Block> {
 	}
 
 	pub fn is_next(&self, parent: &Self) -> bool {
-		if self.block_number < parent.block_number {
-			return false;
-		}
-		if self.extrinsic.is_some() && self.stage == ConsensusStage::Prepare && self.block_number > parent.block_number {
-			return true;
-		}
-		match (parent.stage, self.stage) {
-			(ConsensusStage::Prepare, ConsensusStage::PreCommit)
-			| (ConsensusStage::PreCommit, ConsensusStage::Commit) => {
-				parent.block_number == self.block_number
-					&& parent.extrinsics_root == self.extrinsics_root
-					&& self.best_block == self.best_block
-			},
-			_ => false,
+		if self.block_number > parent.block_number {
+			true
+		} else if self.block_number < parent.block_number {
+			false
+		} else {
+			match (parent.stage, self.stage) {
+				(ConsensusStage::Prepare, ConsensusStage::PreCommit)
+				| (ConsensusStage::PreCommit, ConsensusStage::Commit) => {
+					parent.block_number == self.block_number
+						&& parent.extrinsics_root == self.extrinsics_root
+						&& self.best_block == self.best_block
+				},
+				_ => false,
+			}
 		}
 	}
 }
@@ -595,6 +595,14 @@ pub struct BlockCommit<B: BlockT> {
 }
 
 impl<B: BlockT> BlockCommit<B> {
+	pub fn digest(&self) -> B::Hash {
+		let mut data = self.block_number.encode();
+		data.append(&mut self.prepare.qc.digest().encode());
+		data.append(&mut self.precommit.qc.digest().encode());
+		data.append(&mut self.commit.qc.digest().encode());
+		<<B::Header as HeaderT>::Hashing as HashT>::hash_of(&data)
+	}
+
 	pub fn empty() -> Self {
 		Self {
 			block_number: 0u32.into(),

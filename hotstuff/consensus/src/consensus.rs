@@ -196,13 +196,13 @@ impl<B: BlockT> ConsensusState<B> {
 
     pub fn make_vote(&mut self, proposal: &Proposal<B>) -> Option<Vote<B>> {
         if !self.is_authority() {
-            trace!(target:"Hotstuff", "make_vote proposal view {}, skip vote for not authority!!!", proposal.view);
+            trace!(target: CLIENT_LOG_TARGET, "make_vote proposal view {}, skip vote for not authority!!!", proposal.view);
             return None;
         }
         let author_id = self.local_authority_id.as_ref()?;
 
         if proposal.view <= self.last_voted_view {
-            debug!(target:"Hotstuff", "make_vote proposal view {}, last_voted_view {}, skip vote for proposal!!!", proposal.view, self.last_voted_view);
+            trace!(target: CLIENT_LOG_TARGET, "make_vote proposal view {}, last_voted_view {}, skip vote for proposal!!!", proposal.view, self.last_voted_view);
             return None;
         }
 
@@ -621,6 +621,12 @@ where
     }
 
     pub async fn handle_block_import(&mut self, header: &B::Header) -> Result<(), HotstuffError> {
+        if let Some(commit) = find_block_commit::<B>(header) {
+            let (deleted, deleted_invalid) = self.synchronizer.clear_all_before(ProposalKey::View(commit.prepare.qc.view))?;
+            if !deleted.is_empty() || !deleted_invalid.is_empty() {
+                trace!(target: CLIENT_LOG_TARGET, "~~ handle_block_import. Block {} imported, delete proposals {deleted:?}, invalid proposals: {deleted_invalid:?}", header.number());
+            }
+        }
         if self.client.info().best_number > *header.number() {
             return Ok(());
         }
@@ -679,19 +685,19 @@ where
 
     async fn vote_for_proposal(&mut self, proposal: Proposal<B>, check_payload: bool, from: &str) -> Result<(), HotstuffError> {
         if proposal.view != self.state.view() {
-            warn!(target:"Hotstuff", "proposal view {}, local view {}, skip vote for proposal!!!", proposal.view, self.state.view());
+            trace!(target: CLIENT_LOG_TARGET, "proposal view {}, local view {}, skip vote for proposal!!!", proposal.view, self.state.view());
             return Ok(());
         }
         if check_payload {
             match self.check_payload(&proposal.payload) {
                 Ok(true) => {
                     self.pending_proposal = Some(proposal);
-                    trace!(target:"Hotstuff", "check_payload no state to check, skip vote for proposal to pending!!!");
+                    trace!(target: CLIENT_LOG_TARGET, "check_payload no state to check, skip vote for proposal to pending!!!");
                     return Ok(())
                 },
                 Ok(false) => (),
                 Err(e) => {
-                    debug!(target:"Hotstuff", "#^# Check proposal {} digest {} parent {} payload {} error: {e:?}", proposal.view, proposal.digest(), proposal.parent_hash(), proposal.payload);
+                    debug!(target: CLIENT_LOG_TARGET, "#^# Check proposal {} digest {} parent {} payload {} error: {e:?}", proposal.view, proposal.digest(), proposal.parent_hash(), proposal.payload);
                     return Ok(())
                 }
             }
@@ -830,11 +836,14 @@ where
                         // send execute block mission to a block execute queue and execute/import it.
                         info!(
                             target: CLIENT_LOG_TARGET,
-                            "^^_^^. block {} slot {slot} timestamp {} can be execute with full proposal: [{}, {}, {}]",
+                            "^^_^^. block {} slot {slot} timestamp {} can be execute with full proposal: [{}:{}, {}:{}, {}:{}]",
                             qc_proposal.payload.block_number,
                             qc.timestamp,
+                            grandpa.view,
                             parent.parent_hash(),
+                            parent.view,
                             qc_proposal.parent_hash(),
+                            qc.view,
                             qc.proposal_hash,
                         );
                         if self.executor_tx.send(ExecutorMission::Consensus(commit.clone(), grandpa.payload.clone())).is_err() {
@@ -899,7 +908,6 @@ where
         match self.get_proposal_payload().await {
             Some(payload) => {
                 if payload.is_empty() {
-                    debug!(target:"Hotstuff", "^^ invalid proposal, this not gossip");
                     return Ok(());
                 }
                 let proposal = match self.state.make_proposal(proposal_start, payload, tc)? {

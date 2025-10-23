@@ -19,7 +19,7 @@ use sp_runtime::{Digest, DigestItem, Percent, Saturating};
 use sp_runtime::generic::BlockId;
 use sp_timestamp::Timestamp;
 use crate::client::ClientForHotstuff;
-use crate::{find_consensus_logs, CLIENT_LOG_TARGET};
+use crate::{find_block_commit, find_consensus_logs, CLIENT_LOG_TARGET};
 use crate::import::ImportLock;
 use crate::message::{BlockCommit, Payload};
 
@@ -131,7 +131,6 @@ where
         for block in blocks {
             if let Some((commit, payload)) = self.missions.get(&block).cloned() {
                 let best_block = self.client.info().best_number;
-                self.try_finalize_block(&commit);
                 if payload.extrinsic.is_none() {
                     warn!(target: CLIENT_LOG_TARGET, "[Execute] Next block number: {} skipped for None extrinsic", commit.block_number);
                     self.import.unlock(BlockOrigin::ConsensusBroadcast, commit.block_number).await;
@@ -144,8 +143,20 @@ where
                     continue;
                 }
                 if commit.block_number <= best_block {
+                    if let Ok(Some(hash)) = self.client.block_hash_from_id(&BlockId::Number(commit.block_number)) {
+                        if let Ok(Some(header)) = self.client.header(hash) {
+                            if let Some(pre_commit) = find_block_commit::<B>(&header) {
+                                if commit.digest() == pre_commit.digest() {
+                                    debug!(target: CLIENT_LOG_TARGET, "[Execute] Same block {} with same commit already imported, skip.", commit.block_number);
+                                    applied.push(commit.block_number);
+                                    continue;
+                                }
+                            }
+                        }
+                    }
                     warn!(target: CLIENT_LOG_TARGET, "[Execute] Reorg re-importing block: {}", commit.block_number);
                 }
+                self.try_finalize_block(&commit);
                 let parent_hash = match self.client.block_hash_from_id(&BlockId::Number(commit.block_number.saturating_sub(1u32.into()))) {
                     Ok(Some(parent_hash)) => parent_hash,
                     Ok(None) => {

@@ -616,7 +616,7 @@ where
         };
         info!(
             target: LOG_TARGET,
-			"🎁 [{source}] Prepared block for proposing of {} [{}{} ms ({}({}) {mth_time}({extra_merge_time}) {single_exe_time} {finalize_exe_time})ms] \
+			"🎁 [{source}] Prepared block {} [{}{} ms ({}({}) {mth_time}({extra_merge_time}) {single_exe_time} {finalize_exe_time})ms] \
 			[hash: {:?}; parent_hash: {}; native: {native}; extrinsics [({mth_applied}/{})/({single_applied}/{})/{}], threads {thread_number}]",
 			block.header().number(),
 			propose_with_start.elapsed().as_millis(),
@@ -1569,7 +1569,7 @@ where
             <Self as sp_consensus::Proposer<Block>>::Error
         >
     {
-        info!(target: LOG_TARGET, "🙌 Starting consensus session on top of parent {}({:?})", self.parent_number, self.parent_hash);
+        info!(target: LOG_TARGET, "🙌 Starting execute on top of parent {}({:?})", self.parent_number, self.parent_hash);
         let mut block_builder =
             self.client.new_block_at(self.parent_hash.clone(), inherent_digests.clone(), PR::ENABLED, None)?;
         let extrinsic_count = extrinsic.0.iter().map(|g| g.len()).sum::<usize>() + extrinsic.1.len();
