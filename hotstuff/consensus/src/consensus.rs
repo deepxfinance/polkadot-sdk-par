@@ -585,7 +585,7 @@ where
     pub fn handle_greeting(&mut self, peer_authority: &PeerAuthority<B>) -> Result<(), HotstuffError> {
         peer_authority.verify()?;
         let peer_id = PeerId::from_str(&peer_authority.peer_id).map_err(|e| HotstuffError::Other(e.to_string()))?;
-        debug!(target: CLIENT_LOG_TARGET, "~~ handle_greeting. Authority {} with PeerId {}.", peer_authority.authority, peer_id.to_base58());
+        debug!(target: CLIENT_LOG_TARGET, "~~ handle_greeting. Authority {} with PeerId {}.", peer_authority.authority, peer_authority.peer_id);
         self.network.authorities.insert(peer_authority.authority.clone(), Some(peer_id));
         Ok(())
     }
@@ -914,9 +914,10 @@ where
                     Some(proposal) => proposal,
                     None => return Err(HotstuffError::NotAuthority),
                 };
-                debug!(target: CLIENT_LOG_TARGET, "~~ generate_proposal. view: {}, tc: {}, payload: {}",
+                debug!(target: CLIENT_LOG_TARGET, "~~ generate_proposal. view: {}({}), tc: {:?}, payload: {}",
                     proposal.view,
-                    proposal.tc.is_some(),
+                    proposal.qc.view,
+                    proposal.tc.as_ref().map(|tc| format!("{}({})", tc.view, tc.high_qc.view)),
                     proposal.payload,
                 );
                 let proposal_message = ConsensusMessage::Propose(proposal.clone());

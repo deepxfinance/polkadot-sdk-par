@@ -28,6 +28,8 @@ use sp_runtime::{generic::BlockId, traits::{Block as BlockT, Header as HeaderT, 
 use crate::{client::ClientForHotstuff, find_block_commit, primitives::{HotstuffError, HotstuffError::*}, CLIENT_LOG_TARGET};
 use crate::message::BlockCommit;
 
+const LOG_TARGET: &str = "hots_import";
+
 pub struct BlockNotification<B: BlockT> {
 	pub origin: BlockOrigin,
     pub notifier: Sender<()>,
@@ -96,7 +98,7 @@ where
         if let Some(receiver) = receiver {
             let _ = receiver.await;
         } else {
-			log::trace!(target: CLIENT_LOG_TARGET, "{origin:?} lock block {number}");
+			log::trace!(target: LOG_TARGET, "{origin:?} lock block {number}");
 		}
     }
 
@@ -108,10 +110,10 @@ where
 				lock.insert(number, notification);
 				return;
 			}
-            if let Err(e) = notification.notifier.send(()) {
-                log::warn!(target: CLIENT_LOG_TARGET, "notification for block {number} execution result failed {e:?}");
+            if let Err(_) = notification.notifier.send(()) {
+                log::warn!(target: LOG_TARGET, "notification for block {number} execution result failed");
             }
-			log::trace!(target: CLIENT_LOG_TARGET, "{origin:?} unlock block {number}");
+			log::trace!(target: LOG_TARGET, "{origin:?} unlock block {number}");
         }
     }
 }
@@ -192,8 +194,8 @@ where
 			})
 		};
 		let hash = block.post_hash();
-		log::trace!(
-			target: CLIENT_LOG_TARGET,
+		log::debug!(
+			target: LOG_TARGET,
 			"ImportBlock({:?}): {}(parent: {:?}, body: {:?}, digests: {}, post_digests: {}, justifications: {:?}, finalized: {}, action: {})",
 			block.origin,
 			block.header.number(),
@@ -231,13 +233,13 @@ where
 						let proposal = match calculate_block(&block) {
 							Ok((proposal, _groups, _avg_execute_time)) => proposal,
 							Err(e) => {
-								log::warn!(target: CLIENT_LOG_TARGET, "ImportBlock({:?}): {} failed for {e}", block.origin, block.header.number());
+								log::warn!(target: LOG_TARGET, "{:?}: {} failed for {e}", block.origin, block.header.number());
                                 self.unlock(block.origin, *block.header.number()).await;
 								return Err(e);
 							}
 						};
 						if let Err(e) = check_header::<Block>(&block.header, &proposal.block.header()) {
-							log::warn!(target: CLIENT_LOG_TARGET, "ImportBlock({:?}): {} failed for {e}", block.origin, block.header.number());
+							log::warn!(target: LOG_TARGET, "{:?}: {} failed for {e}", block.origin, block.header.number());
 							self.unlock(block.origin, *block.header.number()).await;
 							return Err(ConsensusError::ClientImport(format!("Check header with calculated: {e}")));
 						}
@@ -264,14 +266,14 @@ where
 			let finalize_block = commit.base_block();
 			if self.inner.info().finalized_number < finalize_block.number {
 				if let Err(e) = self.inner.finalize_block(finalize_block.hash, Some((HOTSTUFF_ENGINE_ID, encoded_commit.clone())), false) {
-					log::warn!(target: CLIENT_LOG_TARGET, "[ImportBlock] FinalizeBlock #{} ({}) failed for {e:?}", finalize_block.number, finalize_block.hash);
+					log::warn!(target: LOG_TARGET, "FinalizeBlock #{} ({}) failed for {e:?}", finalize_block.number, finalize_block.hash);
 				}
 			}
 		} else if let Some(commit) = block_commit {
 			let finalize_block = commit.base_block();
 			if self.inner.info().finalized_number < finalize_block.number {
 				if let Err(e) = self.inner.finalize_block(finalize_block.hash, None, false) {
-					log::warn!(target: CLIENT_LOG_TARGET, "[ImportBlock] FinalizeBlock #{} ({}) failed for {e:?}", finalize_block.number, finalize_block.hash);
+					log::warn!(target: LOG_TARGET, "FinalizeBlock #{} ({}) failed for {e:?}", finalize_block.number, finalize_block.hash);
 				}
 			}
 		}

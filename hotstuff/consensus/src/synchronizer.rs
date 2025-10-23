@@ -9,7 +9,6 @@ use log::debug;
 use tokio::time::{interval, Instant, Interval};
 
 use sc_client_api::AuxStore;
-use sp_api::metadata_ir::StorageEntryModifierIR::Default;
 use sp_blockchain::HeaderBackend;
 use sp_core::{Decode, Encode};
 use sp_runtime::traits::Block as BlockT;
