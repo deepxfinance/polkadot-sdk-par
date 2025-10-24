@@ -18,7 +18,7 @@ use sc_client_api::{
 	client::{FinalityNotifications, ImportNotifications},
 	Backend, BlockImportNotification,
 };
-use sc_consensus::{BlockCheckParams, BlockImport, BlockImportParams, ImportResult, JustificationImport, StateAction, StorageChanges};
+use sc_consensus::{BlockCheckParams, BlockImport, BlockImportParams, ForkChoiceStrategy, ImportResult, JustificationImport, StateAction, StorageChanges};
 use sc_network::{PeerId, ReputationChange};
 use sc_network_common::role::Role;
 use sp_api::TransactionFor;
@@ -50,8 +50,68 @@ pub struct HotstuffBlockImport<Backend, Block: BlockT, Client, PF> {
 	role: Role,
 	proposer_factory: Arc<RwLock<PF>>,
     import_lock: Arc<RwLock<HashMap<<Block::Header as HeaderT>::Number, BlockNotification<Block>>>>,
-	backend: PhantomData<Backend>,
-	_phantom: PhantomData<Block>,
+	phantom: PhantomData<(Backend, Block)>,
+}
+
+impl<BE, Block: BlockT, Client, PF, Error> HotstuffBlockImport<BE, Block, Client, PF>
+where
+	BE: Backend<Block>,
+	Client: ClientForHotstuff<Block, BE> + 'static,
+	for<'a> &'a Client:
+	BlockImport<Block, Error = ConsensusError, Transaction = TransactionFor<Client, Block>>,
+	TransactionFor<Client, Block>: 'static,
+	PF: Environment<Block, Error = Error> + Send + Sync + 'static,
+	PF::Proposer: Proposer<Block, Error = Error, Transaction = TransactionFor<Client, Block>> + BlockPropose<Block>,
+	Error: std::error::Error + Send + From<ConsensusError> + 'static,
+{
+	/// Return
+	/// 	1. if we should import this new block
+	/// 	2. if we should cover pre-imported same block number with different state by this new block.
+	pub fn should_import(&self, new_header: &Block::Header, new_commit: &Option<BlockCommit<Block>>)
+		-> Result<(bool, Option<(Block::Header, BlockCommit<Block>)>), sp_blockchain::Error>
+	{
+		let mut import = true;
+		let mut reorg = None;
+		if let Some(hash) = self.inner.block_hash_from_id(&BlockId::Number(*new_header.number()))? {
+			if let Some(pre_header) = self.inner.header(hash)? {
+				let pre_commit = find_block_commit::<Block>(&pre_header);
+				match (pre_commit, new_commit) {
+					(Some(pre_commit), Some(new_commit)) => {
+						if pre_commit.commit.qc.view > new_commit.commit.qc.view {
+							// new header is earlier, not import.
+							import = false;
+						} else if pre_commit.commit.qc.view < new_commit.commit.qc.view {
+							// new header is later, re-import this new block.
+							reorg = Some((pre_header, pre_commit));
+						} else {
+							// same commit view. not import again.
+							import = false
+						}
+					}
+					(Some(_), None) => import = false,
+					(None, Some(_)) => {
+						log::error!(
+							target: LOG_TARGET,
+							"Block {}:{} have no commit!!!",
+							pre_header.number(),
+							pre_header.hash(),
+						);
+					}
+					(None, None) => {
+						// pre_header not valid, remove
+						log::error!(
+							target: LOG_TARGET,
+							"Block {}:{} have no commit!!!",
+							pre_header.number(),
+							pre_header.hash(),
+						);
+						import = false;
+					},
+				}
+			}
+		}
+		Ok((import, reorg))
+	}
 }
 
 impl<Backend, Block: BlockT, Client, PF> Clone for HotstuffBlockImport<Backend, Block, Client, PF> {
@@ -61,8 +121,7 @@ impl<Backend, Block: BlockT, Client, PF> Clone for HotstuffBlockImport<Backend, 
 			role: self.role.clone(),
 			proposer_factory: self.proposer_factory.clone(),
             import_lock: self.import_lock.clone(),
-			backend: PhantomData,
-			_phantom: PhantomData,
+			phantom: PhantomData,
 		}
 	}
 }
@@ -124,9 +183,8 @@ impl<Backend, Block: BlockT, Client, PF> HotstuffBlockImport<Backend, Block, Cli
             inner,
             role,
             proposer_factory,
-            backend: PhantomData,
             import_lock: Arc::new(RwLock::new(HashMap::new())),
-            _phantom: PhantomData,
+            phantom: PhantomData,
         }
 	}
 }
@@ -222,7 +280,11 @@ where
 				Ok(ImportResult::AlreadyInChain)
 			},
 			Ok(BlockStatus::Unknown) => {
-				if let Ok(BlockStatus::InChain) = self.inner.status(*block.header.parent_hash()) {
+				let (import, reorg) = self.should_import(&block.header, &block_commit)
+					.map_err(|e| ConsensusError::ClientImport(e.to_string()))?;
+				if !import {
+					Ok(ImportResult::AlreadyInChain)
+				} else if let Ok(BlockStatus::InChain) = self.inner.status(*block.header.parent_hash()) {
 					if matches!(block.origin, BlockOrigin::ConsensusBroadcast | BlockOrigin::Own)
 						&& !matches!(block.state_action, StateAction::Execute | StateAction::ExecuteIfPossible)
 					{
@@ -247,8 +309,40 @@ where
 					}
                     let header = block.header.clone();
 					let origin = block.origin;
+					if let Some((pre, pre_commit)) = reorg {
+						log::info!(
+							target: LOG_TARGET,
+							"Try replace best block {}:{}({}) -> {}:{}({})",
+							pre.number(),
+							pre.hash(),
+							pre_commit.commit.qc.view,
+							header.number(),
+							header.hash(),
+							block_commit.as_ref().map(|bc| bc.commit.qc.view).unwrap_or(0),
+						);
+						// This ForkChoiceStrategy::Custom(true) will set `is_new_best` to true.
+						block.fork_choice = Some(ForkChoiceStrategy::Custom(true));
+					}
 					let result = (&*self.inner).import_block(block).await;
                     self.unlock(origin, *header.number()).await;
+					// if result.is_ok() {
+					// 	if let Some((prune, prune_commit)) = prune {
+					// 		let remove_info = format!(
+					// 			"Remove block {}:{}({}) for import lower block {}:{}({})",
+					// 			prune.number(),
+					// 			prune.hash(),
+					// 			prune_commit.commit.qc.view,
+					// 			header.number(),
+					// 			header.hash(),
+					// 			block_commit.as_ref().map(|bc| bc.commit.qc.view).unwrap_or(0),
+					// 		);
+					// 		if let Err(e) = self.backend.remove_leaf_block(prune.hash()) {
+					// 			log::error!(target: LOG_TARGET, "{remove_info} failed for {e:?}");
+					// 		} else {
+					// 			log::debug!(target: LOG_TARGET, "{remove_info} success");
+					// 		}
+					// 	}
+					// }
                     result
 				} else {
                     self.unlock(block.origin, *block.header.number()).await;

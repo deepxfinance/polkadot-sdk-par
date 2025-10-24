@@ -5,7 +5,7 @@ use std::{
 	task::{Context, Poll},
 	time::Duration,
 };
-use log::debug;
+use log::trace;
 use tokio::time::{interval, Instant, Interval};
 
 use sc_client_api::AuxStore;
@@ -94,7 +94,7 @@ where
 		let value = proposal.encode();
 		let key = proposal.digest();
 
-		debug!(target: CLIENT_LOG_TARGET, "~~ save_proposal {} {key} {:?}, parent: {}", proposal.view, proposal.payload, proposal.qc.proposal_hash);
+		trace!(target: CLIENT_LOG_TARGET, "~~ save_proposal {} {key} {}, parent: {}", proposal.view, proposal.payload, proposal.qc.proposal_hash);
 		// try save high_view and high_digest
 		self.save_high_proposal(proposal.view, key)?;
 		// save view -> digest

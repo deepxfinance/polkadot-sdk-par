@@ -116,7 +116,7 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
 /// This means the full Hotstuff consensus(Prepare/PreCommit/Commit) between two block should be g.e. than `MIN_MILLISECS_PER_BLOCK`
 ///
 /// Change this to adjust the block time.
-pub const MIN_MILLISECS_PER_BLOCK: u64 = 100;
+pub const MIN_MILLISECS_PER_BLOCK: u64 = 200;
 
 // NOTE: Currently it is not possible to change the slot duration after the chain has started.
 //       Attempting to do so will brick block production.

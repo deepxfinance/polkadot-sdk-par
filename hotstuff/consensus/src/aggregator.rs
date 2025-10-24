@@ -24,12 +24,29 @@ impl<B: Block> Aggregator<B> {
 		vote: Vote<B>,
 		authorities: &AuthorityList,
 	) -> Result<Option<QC<B>>, HotstuffError> {
-		self.votes_aggregator
-			.entry(vote.view)
-			.or_default()
-			.entry(vote.digest())
-			.or_default()
-			.append(vote, authorities)
+		let view = vote.view;
+		let view_room = self.votes_aggregator.entry(view).or_default();
+		let digest = vote.digest();
+		let digest_room = view_room.entry(digest).or_default();
+		if let Some(qc) = digest_room.append(vote, authorities)? {
+			view_room.remove(&digest);
+			if view_room.is_empty() {
+				self.votes_aggregator.remove(&view);
+			}
+			// remove all old view votes
+			let mut views = self.votes_aggregator.keys().cloned().collect::<Vec<_>>();
+			views.sort();
+			for old_view in views {
+				if old_view <= view {
+					self.votes_aggregator.remove(&old_view);
+				} else {
+					break;
+				}
+			}
+			Ok(Some(qc))
+		} else {
+			Ok(None)
+		}
 	}
 
 	pub fn add_timeout(
@@ -38,10 +55,24 @@ impl<B: Block> Aggregator<B> {
 		authorities: &AuthorityList,
 	) -> Result<Option<TC<B>>, HotstuffError> {
 		// Add the new timeout to our aggregator and see if we have a TC.
-		self.timeouts_aggregators
-			.entry(timeout.view)
-			.or_default()
-			.append(timeout.clone(), authorities)
+		let view = timeout.view;
+		let view_room = self.timeouts_aggregators.entry(timeout.view).or_default();
+		if let Some(tc) = view_room.append(timeout.clone(), authorities)? {
+			self.timeouts_aggregators.remove(&view);
+			// remove all old timeout votes
+			let mut views = self.timeouts_aggregators.keys().cloned().collect::<Vec<_>>();
+			views.sort();
+			for old_view in views {
+				if old_view <= view {
+					self.timeouts_aggregators.remove(&old_view);
+				} else {
+					break;
+				}
+			}
+			Ok(Some(tc))
+		} else {
+			Ok(None)
+		}
 	}
 }
 
@@ -75,6 +106,7 @@ impl QCMaker {
 		Ok(Some(QC::<B> {
 			proposal_hash: vote.proposal_hash,
 			view: vote.view,
+			stage: vote.stage,
 			votes: self.votes.clone(),
 			timestamp: Timestamp::current(),
 		}))

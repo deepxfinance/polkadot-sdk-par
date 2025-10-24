@@ -1188,24 +1188,6 @@ where
             .expect("Failed to build groups merge pool");
         loop {
             if let Some(res) = merge_rx.next().await {
-                if res.0.3.len() == 0 {
-                    let initial_changes = block_builder.api.take_all_changes().0;
-                    let initial_changes = initial_changes.changes().collect::<HashMap<_, _>>();
-                    let changes = res.0.1.changes().collect::<HashMap<_, _>>();
-                    let mut diff = vec![];
-                    let mut extra = vec![];
-                    for (k, v) in &changes {
-                        match initial_changes.get(k) {
-                            Some(ini) => if ini.value() != v.value() {
-                                diff.push(k.clone())
-                            },
-                            None => {
-                                extra.push(k.clone());
-                            }
-                        }
-                    }
-                    println!("empty thread {}, changes_len: {}/{} diff: {diff:?}, extra: {extra:?}", res.0.0[0], changes.len(), initial_changes.len());
-                }
                 if !res.1 && res.0.3.len() > inherents_len {
                     //record each thread executed
                     threads_executed.insert(res.0.0[0], (res.0.3.len() - inherents_len) as u32);
