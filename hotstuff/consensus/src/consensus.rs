@@ -164,7 +164,6 @@ impl<B: BlockT> ConsensusState<B> {
 
     pub fn make_proposal(
         &self,
-        timestamp: Timestamp,
         payload: Payload<B>,
         tc: Option<TC<B>>,
     ) -> Result<Option<Proposal<B>>, HotstuffError> {
@@ -175,7 +174,6 @@ impl<B: BlockT> ConsensusState<B> {
             tc,
             payload,
             self.view,
-            timestamp,
             author_id.clone(),
             None,
         );
@@ -471,12 +469,46 @@ where
         }
     }
 
+    // Try recover all unapplied commit.
+    pub async fn recover(&mut self) {
+        let latest = self.client.info().best_number;
+        let mut view = self.synchronizer.high_view();
+        let mut proposal_key = ProposalKey::digest(self.synchronizer.high_digest());
+        loop {
+            match self.synchronizer.get_proposal(proposal_key.clone()) {
+                Ok(Some(proposal)) => {
+                    trace!(target: CLIENT_LOG_TARGET, "[Recover] ~~ handle proposal {}:{} qc {}:{}", proposal.view, proposal.digest(), proposal.qc.view, proposal.qc.proposal_hash);
+                    if let Err(e) = self.trigger_qc_mission(&proposal.qc, true).await {
+                        error!(target: CLIENT_LOG_TARGET, "[Recover] ~~ trigger_qc_mission {}:{} failed for {e:?}", proposal.qc.view, proposal.qc.proposal_hash);
+                    }
+                    if proposal.payload.block_number <= latest.saturating_add(1u32.into()) {
+                        debug!(target: CLIENT_LOG_TARGET, "[Recover] Finish for proposal {}:{} payload block {} <= latest {latest} + 1", proposal.view, proposal.digest(), proposal.payload.block_number);
+                        break;
+                    }
+                    view = proposal.qc.view;
+                    proposal_key = ProposalKey::digest(proposal.qc.proposal_hash);
+                },
+                Ok(None) => {
+                    debug!(target: CLIENT_LOG_TARGET, "[Recover] No proposal for view {}", self.synchronizer.high_view());
+                    view -= 1;
+                    proposal_key = ProposalKey::view(view);
+                }
+                Err(e) => {
+                    error!(target: CLIENT_LOG_TARGET, "[Recover] Get high proposal {}:{} failed for {e:?}", self.synchronizer.high_view(), self.synchronizer.high_digest());
+                    return;
+                }
+            };
+            view -= 1;
+        }
+    }
+
     pub async fn run(mut self) {
         if let Some(ref id) = self.state.local_authority_id {
             info!(target: CLIENT_LOG_TARGET, "Local authority id is: {id}, start with view {}, high_qc {}", self.state.view, self.state.high_qc.view);
         } else {
             info!(target: CLIENT_LOG_TARGET, "Local is not authority, start with view {}, high_qc {}", self.state.view, self.state.high_qc.view);
         }
+        self.recover().await;
         self.local_timer.reset();
         loop {
             let _ = tokio::select! {
@@ -779,7 +811,6 @@ where
         }
     }
 
-
     // TODO better qc timestamp decide?
     async fn handle_qc_timestamp(&mut self, qc: &mut QC<B>) -> Result<(), HotstuffError> {
         if qc.stage != ConsensusStage::Commit { return Ok(()); }
@@ -825,46 +856,46 @@ where
     // If consensus success(reach Commit stage), generate BlockCommit and send execute mission.
     async fn trigger_qc_mission(&mut self, qc: &QC<B>, local: bool) -> Result<(), HotstuffError> {
         let from = if local { "local" } else { "network" };
+        if qc.proposal_hash == B::Hash::default() { return Ok(()) }
         // Try to get proposal ancestors to handle consensus finish.
-        if qc.proposal_hash != B::Hash::default() {
-            let qc_proposal = match self.synchronizer.get_proposal(ProposalKey::digest(qc.proposal_hash))? {
-                Some(p) => p,
-                None => {
-                    if let Some(req) = self.state.make_proposal_request(ProposalReq::Keys(vec![ProposalKey::digest(qc.proposal_hash)])) {
-                        self.network.send_to_authorities(None, req.encode())?;
-                    }
-                    debug!(target: CLIENT_LOG_TARGET, "Can't trigger qc mission for no proposal of qc: {}:{}", qc.view, qc.proposal_hash);
-                    return Ok(());
+        let qc_proposal = match self.synchronizer.get_proposal(ProposalKey::digest(qc.proposal_hash))? {
+            Some(p) => p,
+            None => {
+                if let Some(req) = self.state.make_proposal_request(ProposalReq::Keys(vec![ProposalKey::digest(qc.proposal_hash)])) {
+                    self.network.send_to_authorities(None, req.encode())?;
                 }
-            };
-            // update processed payload here. Any Prepare/Precommit/Commit success stage will be recorded.
-            self.processed = qc_proposal.payload.clone();
-            if !qc_proposal.payload.stage.finish()
-                || qc_proposal.payload.block_number <= self.client.info().best_number
-                || qc_proposal.payload.block_number <= self.commit.block_number
-            {
+                debug!(target: CLIENT_LOG_TARGET, "Can't trigger qc mission for no proposal of qc: {}:{}", qc.view, qc.proposal_hash);
                 return Ok(());
             }
-            // grandpa -> parent(grandpa_qc) -> qc_proposal(parent_qc) -> qc
-            let new_block_number = qc_proposal.payload.block_number;
-            match self.synchronizer.get_proposal_ancestors(&qc_proposal) {
-                Ok(Some((parent, grandpa))) => {
-                    if grandpa.payload.extrinsic.is_none() || !Payload::<B>::full_consensus(&qc_proposal.payload, &parent.payload, &grandpa.payload) {
-                        return Ok(());
-                    }
-                    let slot = InherentType::from_timestamp(qc.timestamp, self.slot_duration);
-                    let processed_slot = InherentType::from_timestamp(*self.commit.commit_time(), self.slot_duration);
-                    if slot > processed_slot {
-                        let commit = match BlockCommit::generate(
-                            (&grandpa, parent.qc.clone()),
-                            (&parent, qc_proposal.qc.clone()),
-                            (&qc_proposal, qc.clone()),
-                        ) {
-                            Some(commit) => commit,
-                            None => return Ok(()),
-                        };
-                        // send execute block mission to a block execute queue and execute/import it.
-                        info!(
+        };
+        // update processed payload here. Any Prepare/Precommit/Commit success stage will be recorded.
+        self.processed = qc_proposal.payload.clone();
+        if !qc_proposal.payload.stage.finish()
+            || qc_proposal.payload.block_number <= self.client.info().best_number
+            || qc_proposal.payload.block_number <= self.commit.block_number
+        {
+            return Ok(());
+        }
+        // grandpa -> parent(grandpa_qc) -> qc_proposal(parent_qc) -> qc
+        let new_block_number = qc_proposal.payload.block_number;
+        match self.synchronizer.get_proposal_ancestors(&qc_proposal) {
+            Ok(Some((parent, grandpa))) => {
+                if grandpa.payload.extrinsic.is_none() || !Payload::<B>::full_consensus(&qc_proposal.payload, &parent.payload, &grandpa.payload) {
+                    return Ok(());
+                }
+                let slot = InherentType::from_timestamp(qc.timestamp, self.slot_duration);
+                let processed_slot = InherentType::from_timestamp(*self.commit.commit_time(), self.slot_duration);
+                if slot > processed_slot {
+                    let commit = match BlockCommit::generate(
+                        (&grandpa, parent.qc.clone()),
+                        (&parent, qc_proposal.qc.clone()),
+                        (&qc_proposal, qc.clone()),
+                    ) {
+                        Some(commit) => commit,
+                        None => return Ok(()),
+                    };
+                    // send execute block mission to a block execute queue and execute/import it.
+                    info!(
                             target: CLIENT_LOG_TARGET,
                             "^^_^^. block {} slot {slot} timestamp {} can be execute with full proposal: [{}:{}, {}:{}, {}:{}]",
                             qc_proposal.payload.block_number,
@@ -876,29 +907,28 @@ where
                             qc.view,
                             qc.proposal_hash,
                         );
-                        if self.executor_tx.send(ExecutorMission::Consensus(commit.clone(), grandpa.payload.clone())).is_err() {
-                            warn!(target: CLIENT_LOG_TARGET, "~~ trigger_qc_mission({from}). block {new_block_number} execute mission send failed");
-                        }
-                        self.commit = commit;
-                        self.processed_extrinsic = grandpa.payload.extrinsic.clone();
-                        if self.processing.is_some()
-                            && new_block_number >= self.processing.as_ref().unwrap().block_number
-                        {
-                            // clear here for local to get correct next proposal payload
-                            self.processing = None;
-                        }
-                        // if full consensus for a new block success, reset timer.
-                        self.local_timer.reset();
-                    } else {
-                        // skip update `self.processing_block` here should make next following `generate_proposal` to re-process this block.
-                        debug!(target: CLIENT_LOG_TARGET, "~~ trigger_qc_mission({from}). block {new_block_number} execute mission skipped for slot rollback {processed_slot} -> {slot} ");
+                    if self.executor_tx.send(ExecutorMission::Consensus(commit.clone(), grandpa.payload.clone())).is_err() {
+                        warn!(target: CLIENT_LOG_TARGET, "~~ trigger_qc_mission({from}). block {new_block_number} execute mission send failed");
                     }
-                },
-                Err(e) => {
-                    debug!(target: CLIENT_LOG_TARGET, "~~ trigger_qc_mission({from}). synchronizer: get {new_block_number} proposal_ancestors failed: {e:#?}");
+                    self.commit = commit;
+                    self.processed_extrinsic = grandpa.payload.extrinsic.clone();
+                    if self.processing.is_some()
+                        && new_block_number >= self.processing.as_ref().unwrap().block_number
+                    {
+                        // clear here for local to get correct next proposal payload
+                        self.processing = None;
+                    }
+                    // if full consensus for a new block success, reset timer.
+                    self.local_timer.reset();
+                } else {
+                    // skip update `self.processing_block` here should make next following `generate_proposal` to re-process this block.
+                    debug!(target: CLIENT_LOG_TARGET, "~~ trigger_qc_mission({from}). block {new_block_number} execute mission skipped for slot rollback {processed_slot} -> {slot} ");
                 }
-                _ => (),
+            },
+            Err(e) => {
+                debug!(target: CLIENT_LOG_TARGET, "~~ trigger_qc_mission({from}). synchronizer: get {new_block_number} proposal_ancestors failed: {e:#?}");
             }
+            _ => (),
         }
         Ok(())
     }
@@ -939,13 +969,12 @@ where
             // already proposed for this view.
             return Ok(())
         }
-        let proposal_start = Timestamp::current();
         match self.get_proposal_payload().await {
             Some(payload) => {
                 if payload.is_empty() {
                     return Ok(());
                 }
-                let proposal = match self.state.make_proposal(proposal_start, payload, tc)? {
+                let proposal = match self.state.make_proposal(payload, tc)? {
                     Some(proposal) => proposal,
                     None => return Err(HotstuffError::NotAuthority),
                 };

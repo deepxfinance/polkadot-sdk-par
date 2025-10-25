@@ -256,8 +256,6 @@ pub struct Proposal<Block: BlockT> {
 	pub tc: Option<TC<Block>>,
 	pub payload: Payload<Block>,
 	pub view: ViewNumber,
-	// Timestamp for proposal start generate time(also means this stage start time).
-	pub timestamp: Timestamp,
 	// The authority id of current hotstuff block author,
 	// which is not the origin block producer.
 	pub author: AuthorityId,
@@ -271,11 +269,10 @@ impl<Block: BlockT> Proposal<Block> {
 		tc: Option<TC<Block>>,
 		payload: Payload<Block>,
 		view: ViewNumber,
-		timestamp: Timestamp,
 		author: AuthorityId,
 		signature: Option<AuthoritySignature>,
 	) -> Self {
-		Proposal { qc, tc, payload, view, timestamp, author, signature }
+		Proposal { qc, tc, payload, view, author, signature }
 	}
 
 	pub fn parent_hash(&self) -> Block::Hash {
@@ -285,7 +282,6 @@ impl<Block: BlockT> Proposal<Block> {
 	pub fn part_digest(&self) -> Block::Hash {
 		let mut data = self.author.encode();
 		data.append(&mut self.view.encode());
-		data.append(&mut self.timestamp.encode());
 		data.append(&mut self.qc.proposal_hash.encode());
 		data.append(&mut self.qc.timestamp.encode());
 		<<Block::Header as HeaderT>::Hashing as HashT>::hash_of(&data)
