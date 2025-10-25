@@ -70,7 +70,7 @@ impl<B: BlockT, O: BlockOracle<B>> HotsOracle for HotstuffOracle<B, O> {
             let pre_verify_time_per_tx = *self.verify_time_per_tx.lock().unwrap();
             if pre_verify_time_per_tx != time_per_verify {
                 *self.verify_time_per_tx.lock().unwrap() = time_per_verify;
-                log::debug!(target: "oracle_hotstuff", "[Update] verify_time_per_tx: {} micros", time_per_verify.as_micros());
+                log::debug!(target: "oracle_hots", "[Update] verify_time_per_tx: {} micros", time_per_verify.as_micros());
             }
         }
     }

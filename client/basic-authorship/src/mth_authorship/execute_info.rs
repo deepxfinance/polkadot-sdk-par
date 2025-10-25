@@ -103,6 +103,18 @@ impl<B: BlockT> BlockExecuteInfo<B> {
         self.group = group;
     }
 
+    pub fn is_empty_block(&self) -> bool {
+        if self.threads.is_empty() {
+            return true;
+        }
+        for info in self.threads.values() {
+            if info.applied > 0 {
+                return false;
+            }
+        }
+        true
+    }
+
     /// Return each thread applied transactions.
     /// First should be inherent(must exist)
     /// Thread 0 should at last(must exist).

@@ -14,11 +14,12 @@ use crate::import::BlockInfo;
 pub mod message_tests;
 
 /// Quorum certificate for a block.
-#[derive(Debug, Eq, Clone, Encode, Decode)]
+#[derive(Debug, Clone, Encode, Decode)]
 pub struct QC<Block: BlockT> {
 	/// Hotstuff proposal hash.
 	pub proposal_hash: Block::Hash,
 	pub view: ViewNumber,
+	pub stage: ConsensusStage,
 	/// Public key signature pairs for the digest of QC.
 	pub votes: Vec<(AuthorityId, AuthoritySignature)>,
 	/// Timestamp of QC generate time.
@@ -30,6 +31,8 @@ impl<B: BlockT> Default for QC<B> {
 		Self {
 			proposal_hash: Default::default(),
 			view: Default::default(),
+			// first block 0 should be Commit
+			stage: ConsensusStage::Commit,
 			votes: Default::default(),
 			timestamp: Default::default(),
 		}
@@ -37,17 +40,27 @@ impl<B: BlockT> Default for QC<B> {
 }
 
 impl<Block: BlockT> QC<Block> {
+	// TODO QC::digets should be same with Vote::digest. Should we add timestamp, it will be changed for CommitQC?
 	pub fn digest(&self) -> Block::Hash {
 		let mut data = self.proposal_hash.encode();
 		data.append(&mut self.view.encode());
+		data.append(&mut self.stage.encode());
 
 		<<Block::Header as HeaderT>::Hashing as HashT>::hash_of(&data)
 	}
 
-	// Add votes to QC.
-	// TODO: Need check signature ?
-	pub fn add_votes(&mut self, authority_id: AuthorityId, signature: AuthoritySignature) {
-		self.votes.push((authority_id, signature));
+	pub fn higher_than(&self, other: &Self) -> bool {
+		if self.view > other.view {
+			true
+		} else if self.view == other.view {
+			match (other.stage, self.stage) {
+				(ConsensusStage::Prepare, ConsensusStage::PreCommit)
+				| (ConsensusStage::PreCommit, ConsensusStage::Commit) => true,
+				_ => false,
+			}
+		} else {
+			false
+		}
 	}
 
 	// Verify if the number of votes in the QC has exceeded (2/3 + 1) of the total authorities.
@@ -82,7 +95,10 @@ impl<Block: BlockT> QC<Block> {
 
 impl<Block: BlockT> PartialEq for QC<Block> {
 	fn eq(&self, other: &Self) -> bool {
-		self.proposal_hash == other.proposal_hash && self.view == other.view
+		self.proposal_hash == other.proposal_hash
+			&& self.view == other.view
+			&& self.stage == other.stage
+			&& self.timestamp == other.timestamp
 	}
 }
 
@@ -179,22 +195,22 @@ impl<Block: BlockT> Payload<Block> {
 		true
 	}
 
-	pub fn is_next(&self, parent: &Option<Self>) -> bool {
-		if self.extrinsic.is_some() && self.stage == ConsensusStage::Prepare {
-			return true;
-		}
-		if let Some(parent) = parent {
-			return match (parent.stage, self.stage) {
+	pub fn is_valid_next(&self, other: &Self) -> bool {
+		if self.block_number > other.block_number {
+			true
+		} else if self.block_number < other.block_number {
+			false
+		} else {
+			match (other.stage, self.stage) {
 				(ConsensusStage::Prepare, ConsensusStage::PreCommit)
+				| (ConsensusStage::Prepare, ConsensusStage::Commit)
 				| (ConsensusStage::PreCommit, ConsensusStage::Commit) => {
-					parent.block_number == self.block_number
-						&& parent.extrinsics_root == self.extrinsics_root
+						other.extrinsics_root == self.extrinsics_root
 						&& self.best_block == self.best_block
 				},
 				_ => false,
 			}
 		}
-		false
 	}
 }
 
@@ -240,8 +256,6 @@ pub struct Proposal<Block: BlockT> {
 	pub tc: Option<TC<Block>>,
 	pub payload: Payload<Block>,
 	pub view: ViewNumber,
-	// Timestamp for proposal start generate time(also means this stage start time).
-	pub timestamp: Timestamp,
 	// The authority id of current hotstuff block author,
 	// which is not the origin block producer.
 	pub author: AuthorityId,
@@ -255,11 +269,10 @@ impl<Block: BlockT> Proposal<Block> {
 		tc: Option<TC<Block>>,
 		payload: Payload<Block>,
 		view: ViewNumber,
-		timestamp: Timestamp,
 		author: AuthorityId,
 		signature: Option<AuthoritySignature>,
 	) -> Self {
-		Proposal { qc, tc, payload, view, timestamp, author, signature }
+		Proposal { qc, tc, payload, view, author, signature }
 	}
 
 	pub fn parent_hash(&self) -> Block::Hash {
@@ -269,7 +282,6 @@ impl<Block: BlockT> Proposal<Block> {
 	pub fn part_digest(&self) -> Block::Hash {
 		let mut data = self.author.encode();
 		data.append(&mut self.view.encode());
-		data.append(&mut self.timestamp.encode());
 		data.append(&mut self.qc.proposal_hash.encode());
 		data.append(&mut self.qc.timestamp.encode());
 		<<Block::Header as HeaderT>::Hashing as HashT>::hash_of(&data)
@@ -307,18 +319,20 @@ impl<Block: BlockT> Proposal<Block> {
 pub struct Vote<Block: BlockT> {
 	pub proposal_hash: Block::Hash,
 	pub view: ViewNumber,
+	pub stage: ConsensusStage,
 	pub voter: AuthorityId,
 	pub signature: Option<AuthoritySignature>,
 }
 
 impl<Block: BlockT> Vote<Block> {
-	pub fn new(proposal_hash: Block::Hash, proposal_view: ViewNumber, voter: AuthorityId) -> Self {
-		Self { proposal_hash, view: proposal_view, voter, signature: None }
+	pub fn new(proposal_hash: Block::Hash, proposal_view: ViewNumber, stage: ConsensusStage, voter: AuthorityId) -> Self {
+		Self { proposal_hash, view: proposal_view, stage, voter, signature: None }
 	}
 
 	pub fn digest(&self) -> Block::Hash {
 		let mut data = self.proposal_hash.encode();
 		data.append(&mut self.view.encode());
+		data.append(&mut self.stage.encode());
 
 		<<Block::Header as HeaderT>::Hashing as HashT>::hash_of(&data)
 	}
@@ -595,6 +609,14 @@ pub struct BlockCommit<B: BlockT> {
 }
 
 impl<B: BlockT> BlockCommit<B> {
+	pub fn digest(&self) -> B::Hash {
+		let mut data = self.block_number.encode();
+		data.append(&mut self.prepare.qc.digest().encode());
+		data.append(&mut self.precommit.qc.digest().encode());
+		data.append(&mut self.commit.qc.digest().encode());
+		<<B::Header as HeaderT>::Hashing as HashT>::hash_of(&data)
+	}
+
 	pub fn empty() -> Self {
 		Self {
 			block_number: 0u32.into(),

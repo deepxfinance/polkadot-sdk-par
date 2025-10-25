@@ -15,7 +15,7 @@ use sp_runtime::{
 use hotstuff_primitives::AuthorityId;
 use sc_basic_authorship::BlockPropose;
 use sc_network_common::role::Role;
-use sp_consensus::{Environment, Proposer, Error as ConsensusError};
+use sp_consensus::Error as ConsensusError;
 use crate::{authorities::SharedAuthoritySet, aux_schema, import::HotstuffBlockImport};
 
 /// A trait that includes all the client functionalities hotstuff requires.

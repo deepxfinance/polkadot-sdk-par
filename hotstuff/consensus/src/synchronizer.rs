@@ -5,7 +5,7 @@ use std::{
 	task::{Context, Poll},
 	time::Duration,
 };
-use log::debug;
+use log::trace;
 use tokio::time::{interval, Instant, Interval};
 
 use sc_client_api::AuxStore;
@@ -75,6 +75,14 @@ where
 		}
 	}
 
+	pub fn high_view(&self) -> ViewNumber {
+		self.high_view
+	}
+
+	pub fn high_digest(&self) -> B::Hash {
+		self.high_digest
+	}
+
 	fn save_high_proposal(&mut self, view: ViewNumber, digest: B::Hash) -> Result<(), HotstuffError> {
 		if view >= self.high_view {
 			if view == self.high_view {
@@ -94,7 +102,7 @@ where
 		let value = proposal.encode();
 		let key = proposal.digest();
 
-		debug!(target: CLIENT_LOG_TARGET, "~~ save_proposal {} {key} {:?}, parent: {}", proposal.view, proposal.payload, proposal.qc.proposal_hash);
+		trace!(target: CLIENT_LOG_TARGET, "~~ save_proposal {} {key} {}, parent: {} {}", proposal.view, proposal.payload, proposal.qc.view, proposal.qc.proposal_hash);
 		// try save high_view and high_digest
 		self.save_high_proposal(proposal.view, key)?;
 		// save view -> digest
@@ -106,6 +114,54 @@ where
 			.set(key.as_ref(), &value)
 			.map_err(|e| HotstuffError::SaveProposal(e.to_string()))?;
 		Ok(())
+	}
+
+	pub fn clear_all_before(&mut self, key: ProposalKey<B>) -> Result<(Vec<String>, Vec<String>), HotstuffError> {
+		let start_proposal = self.get_proposal(key.clone())?;
+		let mut delete = vec![];
+		let mut delete_info = vec![];
+		let mut delete_invalid = vec![];
+		let mut delete_invalid_info = vec![];
+		if let Some(last_proposal) = start_proposal {
+			let mut view = last_proposal.qc.view;
+			// if any proposal between (last_proposal.parent_view, last_view), they are all invalid.
+			for v in (view + 1..last_proposal.view).rev() {
+				if let Some(proposal) = self.get_proposal(ProposalKey::View(v))? {
+					let digest = proposal.digest();
+					delete_invalid.push(view_key(proposal.view));
+					delete_invalid.push(digest.as_ref().to_vec());
+					delete_invalid_info.push(format!("{}:{digest}", proposal.view));
+				}
+			}
+			loop {
+				if let Some(proposal) = self.get_proposal(ProposalKey::View(view))? {
+					if view >= self.high_view {
+						break;
+					}
+					let digest = proposal.digest();
+					delete.push(view_key(view));
+					delete.push(digest.as_ref().to_vec());
+					delete_info.push(format!("{}:{}", view, digest));
+					// invalid view proposals between (view.parent_view, view)
+					for v in (proposal.qc.view + 1..view).rev() {
+						if let Some(proposal) = self.get_proposal(ProposalKey::View(v))? {
+							let digest = proposal.digest();
+							delete_invalid.push(view_key(proposal.view));
+							delete_invalid.push(digest.as_ref().to_vec());
+							delete_invalid_info.push(format!("{}:{digest}", proposal.view));
+						}
+					}
+					view = proposal.qc.view;
+				} else {
+					break;
+				}
+			}
+		}
+		if !delete.is_empty() || !delete_invalid.is_empty() {
+			delete.extend(delete_invalid);
+			self.store.revert(&vec![], &delete).map_err(|e| HotstuffError::ClientError(e.to_string()))?;
+		}
+		Ok((delete_info, delete_invalid_info))
 	}
 
 	pub fn get_high_proposal(&self) -> Result<Option<Proposal<B>>, HotstuffError> {

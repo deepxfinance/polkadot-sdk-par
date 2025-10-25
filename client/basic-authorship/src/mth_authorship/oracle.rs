@@ -122,7 +122,7 @@ impl<B: BlockT> ExecutionOracle<B> {
         self.min_single_tx
     }
 
-    fn update_execute_time_per_tx(&self, info: &BlockExecuteInfo<B>) {
+    fn update_execute_time_per_tx(&self, info: &BlockExecuteInfo<B>) -> Option<Duration> {
         let mut execute_time_per_tx = None;
         let ave_execute_time = info.avg_time(true);
         if ave_execute_time > Duration::default() {
@@ -132,14 +132,14 @@ impl<B: BlockT> ExecutionOracle<B> {
                 execute_time_per_tx = Some(ave_execute_time);
             }
         }
-        if let Some(new_execute_time_per_tx) = execute_time_per_tx {
-            let full_millis = info.time.as_millis();
-            let block_duration = self.block_duration().as_millis();
-            debug!(target: "oracle_execution", "[Update] new_execute_time_per_tx: {} micros, execution: {full_millis}/{block_duration} millis", new_execute_time_per_tx.as_micros());
-        }
+        execute_time_per_tx
     }
 
-    fn update_percents(&self, info: &BlockExecuteInfo<B>) {
+    fn update_percents(&self, info: &BlockExecuteInfo<B>) -> Option<String> {
+        let block = info.number;
+        if info.is_empty_block() {
+            return None;
+        }
         let pool_percent = Percent::from_rational(info.group.time.as_micros(), info.time.as_micros());
         let merge_percent = Percent::from_rational(info.merge.extra_merge_time.as_micros(), info.time.as_micros());
         let finalize_percent = Percent::from_rational(info.finalize.as_micros(), info.time.as_micros());
@@ -149,34 +149,49 @@ impl<B: BlockT> ExecutionOracle<B> {
             let mut update = "".to_string();
             if !pool_percent.is_zero() {
                 *self.pool_percent.lock().unwrap() = pool_percent;
-                update += &format!(" pool_percent {:?}", pool_percent);
+                update += &format!(" pool {:?}", pool_percent);
             }
             if !execute_percent.is_zero() {
                 *self.merge_percent.lock().unwrap() = execute_percent;
-                update += &format!(" execute_percent {:?}", execute_percent);
+                update += &format!(" execute {:?}", execute_percent);
             }
             if !merge_percent.is_zero() {
                 *self.merge_percent.lock().unwrap() = merge_percent;
-                update += &format!(" merge_percent {:?}", merge_percent);
+                update += &format!(" merge {:?}", merge_percent);
             }
-            debug!(target: "oracle_execution", "[Update] percents:{update}");
+            if !update.is_empty() {
+                update += &format!(" finalize {:?}", finalize_percent);
+            }
+            if !update.is_empty() { return Some(update); }
         } else {
-            warn!(target: "oracle_execution", "(pool({pool_percent:?}) + merge({merge_percent:?}) + finalize({finalize_percent:?})) > 100% with no time for execute!!!");
+            warn!(target: "oracle_exec", "[Update] Block {block} (pool({pool_percent:?}) + merge({merge_percent:?}) + finalize({finalize_percent:?})) > 100% with no time for execute!!!");
         }
+        None
     }
 }
 
 impl<B: BlockT> BlockOracle<B> for ExecutionOracle<B> {
     fn update_block_duration(&self, time: Duration) {
         *self.block_duration.lock().unwrap() = time;
-        debug!(target: "oracle_execution", "[Update] block_duration {:?} micros", time.as_micros());
+        debug!(target: "oracle_exec", "[Update] block_duration {:?} micros", time.as_micros());
     }
 
     fn update_execute_info(&self, info: &BlockExecuteInfo<B>) {
         // 1. update average transaction execute time.
-        self.update_execute_time_per_tx(&info);
+        let update_avg = self.update_execute_time_per_tx(&info);
         // 2. updated pool_percent/execute_percent/merge_percent by execute info
-        self.update_percents(&info);
+        let update_percent = self.update_percents(&info).unwrap_or_default();
+
+        // debug info
+        let mut update_info = "".to_string();
+        if let Some(avg_tx) = update_avg {
+            update_info += &format!(" avg_tx {} micros", avg_tx.as_micros());
+        }
+        if !update_percent.is_empty() || !update_info.is_empty() {
+            let full_millis = info.time.as_millis();
+            let block_duration = self.block_duration().as_millis();
+            debug!(target: "oracle_exec", "[Update] Block {} ({full_millis}/{block_duration} ms{update_percent}){update_info}", info.number);
+        }
     }
 
     fn block_duration(&self) -> Duration {

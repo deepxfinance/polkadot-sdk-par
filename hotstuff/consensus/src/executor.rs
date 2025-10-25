@@ -3,7 +3,7 @@ use std::marker::PhantomData;
 use std::sync::Arc;
 use std::time::Duration;
 use codec::Encode;
-use log::{debug, warn};
+use log::{debug, info, warn};
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::sync::RwLock;
 use hotstuff_primitives::digests::CompatibleDigestItem;
@@ -17,12 +17,15 @@ use sp_consensus::{BlockOrigin, Environment, Error as ConsensusError, Proposer, 
 use sp_consensus_slots::{Slot, SlotDuration};
 use sp_inherents::{CreateInherentDataProviders, InherentDataProvider};
 use sp_runtime::{Digest, DigestItem, Saturating};
+use sp_runtime::generic::BlockId;
 use sp_timestamp::Timestamp;
 use crate::client::ClientForHotstuff;
-use crate::{find_consensus_logs, CLIENT_LOG_TARGET};
+use crate::{find_block_commit, find_consensus_logs};
 use crate::import::ImportLock;
 use crate::message::{BlockCommit, Payload};
 use crate::oracle::HotsOracle;
+
+const LOG_TARGET: &str = "hots_executor";
 
 pub enum ExecutorMission<B: BlockT> {
     Consensus(BlockCommit<B>, Payload<B>),
@@ -95,6 +98,7 @@ where
         storage_changes: StorageChanges<TransactionFor<C, B>, B>,
         groups: Vec<u32>,
         commit: BlockCommit<B>,
+        fork_choice: Option<ForkChoiceStrategy>,
     ) -> Result<BlockImportParams<B, TransactionFor<C, B>>, ConsensusError> {
         let mut import_block = BlockImportParams::new(BlockOrigin::ConsensusBroadcast, header);
         let groups_digest_item = <DigestItem as CompatibleDigestItem<Vec<u32>>>::hotstuff_seal(groups);
@@ -105,7 +109,10 @@ where
         import_block.body = Some(body);
         import_block.state_action =
             StateAction::ApplyChanges(sc_consensus::StorageChanges::Changes(storage_changes));
-        import_block.fork_choice = Some(ForkChoiceStrategy::LongestChain);
+        import_block.fork_choice = match fork_choice {
+            Some(choice) => Some(choice),
+            None => Some(ForkChoiceStrategy::LongestChain)
+        };
 
         Ok(import_block)
     }
@@ -116,53 +123,89 @@ where
         if self.client.info().finalized_number >= finalize_block.number {
             return;
         }
-        if let Err(e) = self.client.finalize_block(finalize_block.hash, Some((HOTSTUFF_ENGINE_ID, commit.encode())), true) {
-            warn!(target: CLIENT_LOG_TARGET, "[Consensus] FinalizeBlock #{} ({}) failed for {e:?}", finalize_block.number, finalize_block.hash);
+        if let Ok(Some(header)) = self.client.header(finalize_block.hash) {
+            // insert justification if authorities change.
+            let mut justification = None;
+            if !find_consensus_logs::<B>(&header).is_empty() {
+                justification = Some((HOTSTUFF_ENGINE_ID, commit.encode()));
+            }
+            if let Err(e) = self.client.finalize_block(finalize_block.hash, justification, true) {
+                warn!(target: LOG_TARGET, "FinalizeBlock #{} ({}) failed for {e:?}", finalize_block.number, finalize_block.hash);
+            }
         }
     }
 
     async fn try_execute_all(&mut self) {
-        loop {
-            let chain_head = match self.select_chain.best_chain().await {
-                Ok(x) => x,
-                Err(e) => {
-                    warn!(target: CLIENT_LOG_TARGET, "[Execute] Unable to author block in slot. No best block header: {e}");
-                    continue
-                },
-            };
-            let best_block = chain_head.number().clone();
-            let best_hash = chain_head.hash();
-            let next_block_number = best_block.saturating_add(1u32.into());
-            self.missions.remove(&best_block);
-            if let Some((commit, mut payload)) = self.missions.remove(&next_block_number) {
-                self.try_finalize_block(&commit);
+        let mut blocks = self.missions.keys().cloned().collect::<Vec<_>>();
+        blocks.sort();
+        let mut applied = vec![];
+        for block in blocks {
+            if let Some((commit, payload)) = self.missions.get(&block).cloned() {
+                let best_block = self.client.info().best_number;
+                let best_hash = self.client.info().best_hash;
                 if payload.extrinsic.is_none() {
-                    warn!(target: CLIENT_LOG_TARGET, "[Execute] Next block number: {} skipped for None extrinsic", payload.block_number);
-                    self.import.unlock(BlockOrigin::ConsensusBroadcast, payload.block_number).await;
+                    warn!(target: LOG_TARGET, "Skip next block number: {} for None extrinsic", commit.block_number);
+                    self.import.unlock(BlockOrigin::ConsensusBroadcast, commit.block_number).await;
                     continue;
                 }
-                let extrinsic = payload.extrinsic.take().unwrap();
+                if self.client.info().finalized_number >= commit.block_number {
+                    debug!(target: LOG_TARGET, "Skip next block number: {} for finalized {}", commit.block_number, self.client.info().finalized_number);
+                    self.import.unlock(BlockOrigin::ConsensusBroadcast, commit.block_number).await;
+                    applied.push(commit.block_number);
+                    continue;
+                }
+                let mut reorg = false;
+                if commit.block_number <= best_block {
+                    if let Ok(Some(header)) = self.client.header(best_hash) {
+                        if let Some(pre_commit) = find_block_commit::<B>(&header) {
+                            if commit.digest() == pre_commit.digest() {
+                                debug!(target: LOG_TARGET, "Skip same block {} with same commit already imported.", commit.block_number);
+                                applied.push(commit.block_number);
+                                continue;
+                            }
+                            if commit.commit.qc.view > pre_commit.commit.qc.view {
+                                info!(target: LOG_TARGET, "Reorg re-execute block: {} view {} -> {}", commit.block_number, commit.commit.qc.view, pre_commit.commit.qc.view);
+                                reorg = true;
+                            } else {
+                                debug!(target: LOG_TARGET, "Skip same block {} with earlier commit view {}/{}.", commit.block_number, commit.commit.qc.view, pre_commit.commit.qc.view);
+                                continue;
+                            }
+                        }
+                    }
+                }
+                self.try_finalize_block(&commit);
+                let parent_hash = match self.client.block_hash_from_id(&BlockId::Number(commit.block_number.saturating_sub(1u32.into()))) {
+                    Ok(Some(parent_hash)) => parent_hash,
+                    Ok(None) => {
+                        debug!(target: LOG_TARGET, "Skip next block number: {} for no parent header", commit.block_number);
+                        continue;
+                    },
+                    Err(e) => {
+                        debug!(target: LOG_TARGET, "Skip next block number: {} for get parent header error: {e:?}", commit.block_number);
+                        continue;
+                    }
+                };
+                let extrinsic = payload.extrinsic.clone().unwrap();
                 // execute block
                 // creat inherent data
                 let inherent_data_providers = match self
                     .create_inherent_data_providers
-                    .create_inherent_data_providers(chain_head.hash(), *commit.commit_time())
+                    .create_inherent_data_providers(parent_hash, *commit.commit_time())
                     .await
                 {
                     Ok(x) => x,
                     Err(e) => {
-                        warn!(target: CLIENT_LOG_TARGET, "[Execute] Unable to author block in slot. Failure creating inherent data provider: {e}");
+                        warn!(target: LOG_TARGET, "Unable to author block in slot. Failure creating inherent data provider: {e}");
                         self.import.unlock(BlockOrigin::ConsensusBroadcast, payload.block_number).await;
                         continue
                     },
                 };
-                debug!(target: CLIENT_LOG_TARGET, "[Execute] Best block number: {best_block}, next block number: {} start execute", payload.block_number);
+                debug!(target: LOG_TARGET, "Best block number: {best_block}, next block number: {} start execute", payload.block_number);
                 let slot = inherent_data_providers.slot();// Never yield the same slot twice.
-                if slot > self.last_slot {
-                    self.last_slot = slot;
-                } else {
-                    warn!(target: CLIENT_LOG_TARGET, "[Execute] Best block number: {best_block}, next block number: {} skipped for last_slot {}, current_slot {slot}", payload.block_number, self.last_slot);
+                if slot <= self.last_slot {
+                    warn!(target: LOG_TARGET, "Best block number: {best_block}, next block number: {} Skipped for last_slot {}, current_slot {slot}", payload.block_number, self.last_slot);
                     self.import.unlock(BlockOrigin::ConsensusBroadcast, payload.block_number).await;
+                    applied.push(commit.block_number);
                     continue;
                 }
                 let inherent_data = inherent_data_providers.create_inherent_data().await.expect("create_inherent_data");
@@ -170,7 +213,7 @@ where
                 let logs = vec![<DigestItem as CompatibleDigestItem<Slot>>::hotstuff_pre_digest(slot)];
                 let parent_header = self
                     .client
-                    .header(best_hash)
+                    .header(parent_hash)
                     .expect("get best header")
                     .expect("no expected best header");
                 let proposer = self.proposer_factory.write().await.init(&parent_header).await.expect("proposer init");
@@ -194,7 +237,7 @@ where
                 ).await {
                     Ok(propose) => propose,
                     Err(e) => {
-                        warn!(target: CLIENT_LOG_TARGET, "[Execute] Propose block {} failed for {e:?}", payload.block_number);
+                        warn!(target: LOG_TARGET, "Propose block {} failed for {e:?}", payload.block_number);
                         self.import.unlock(BlockOrigin::ConsensusBroadcast, payload.block_number).await;
                         continue;
                     }
@@ -208,11 +251,16 @@ where
                     body.clone(),
                     proposal.storage_changes,
                     info.groups(),
-                    commit,
+                    commit.clone(),
+                    if reorg {
+                        Some(ForkChoiceStrategy::Custom(true))
+                    } else {
+                        None
+                    },
                 ).await {
                     Ok(import_params) => import_params,
                     Err(e) => {
-                        warn!(target: CLIENT_LOG_TARGET, "[Execute] Propose block {} get block_import_params failed for {e:?}", payload.block_number);
+                        warn!(target: LOG_TARGET, "Propose block {} get block_import_params failed for {e:?}", payload.block_number);
                         self.import.unlock(BlockOrigin::ConsensusBroadcast, payload.block_number).await;
                         continue;
                     }
@@ -220,6 +268,10 @@ where
                 // import block
                 let header = block_import_params.post_header();
                 // self.import.import_block will call `unlock` by self.
+                let current = Timestamp::current().as_millis();
+                if current < commit.commit_time().as_millis() {
+                    tokio::time::sleep(std::time::Duration::from_millis(commit.commit_time().as_millis() - current)).await;
+                }
                 match self.import.import_block(block_import_params).await {
                     Ok(res) => {
                         res.handle_justification(
@@ -227,19 +279,20 @@ where
                             *header.number(),
                             &self.justification_sync_link,
                         );
-                        if !find_consensus_logs::<B>(&header).is_empty() {
-                            // if imported block have any ConsensusLog(authorities change)
-                            // we should not execute following blocks(may be re-processed).
-                            break;
-                        }
+                        // Since we allow ahead consensus, we do not skip following block event authorities changes.
+                        self.last_slot = slot;
+                        applied.push(commit.block_number);
                     },
                     Err(err) => {
-                        warn!(target: CLIENT_LOG_TARGET, "[Execute] Error with block {} built on {best_hash:?}: {err}", payload.block_number);
+                        warn!(target: LOG_TARGET, "Import block {}:{} built on {parent_hash:?}: {err}", header.number(), header.hash());
                     },
                 }
             } else {
                 break;
             }
+        }
+        for block in applied {
+            self.missions.remove(&block);
         }
     }
 
