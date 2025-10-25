@@ -743,6 +743,10 @@ where
             trace!(target: CLIENT_LOG_TARGET, "skip proposal view {}, local view {}", proposal.view, self.state.view());
             return Ok(());
         }
+        if !self.ensure_parents(proposal)? {
+            trace!(target: CLIENT_LOG_TARGET, "check proposal parents not enough, skip vote!!!");
+            return Ok(());
+        }
         if check_payload {
             match self.check_payload(&proposal.payload) {
                 Ok(true) => {
@@ -1101,6 +1105,15 @@ where
             },
             start.elapsed().as_micros(),
         )
+    }
+
+    // check proposal.payload have consist parents in local for final Commit
+    fn ensure_parents(&self, proposal: &Proposal<B>) -> Result<bool, HotstuffError> {
+        match proposal.payload.stage {
+            ConsensusStage::Prepare => Ok(true),
+            ConsensusStage::PreCommit => self.synchronizer.get_proposal_parent(proposal).map(|r| r.is_some()),
+            ConsensusStage::Commit => self.synchronizer.get_proposal_ancestors(proposal).map(|r| r.is_some()),
+        }
     }
 
     // return if we should keep pending_proposal.

@@ -226,11 +226,11 @@ where
 		&self,
 		proposal: &Proposal<B>,
 	) -> Result<Option<(Proposal<B>, Proposal<B>)>, HotstuffError> {
-		let parent = self.get_proposal_parent::<B>(proposal)?;
+		let parent = self.get_proposal_parent(proposal)?;
 		if parent.is_none() {
 			return Ok(None);
 		}
-		let grandpa = self.get_proposal_parent::<B>(parent.as_ref().unwrap())?;
+		let grandpa = self.get_proposal_parent(parent.as_ref().unwrap())?;
 		if grandpa.is_none() {
 			return Ok(None);
 		}
@@ -238,7 +238,7 @@ where
 		Ok(Some((parent.unwrap(), grandpa.unwrap())))
 	}
 
-	pub fn get_proposal_parent<F>(
+	pub fn get_proposal_parent(
 		&self,
 		proposal: &Proposal<B>,
 	) -> Result<Option<Proposal<B>>, HotstuffError> {
