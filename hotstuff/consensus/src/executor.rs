@@ -3,7 +3,7 @@ use std::marker::PhantomData;
 use std::sync::Arc;
 use std::time::Duration;
 use codec::Encode;
-use log::{debug, info, warn};
+use log::{debug, error, info, warn};
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::sync::RwLock;
 use hotstuff_primitives::digests::CompatibleDigestItem;
@@ -177,14 +177,43 @@ where
                 let parent_hash = match self.client.block_hash_from_id(&BlockId::Number(commit.block_number.saturating_sub(1u32.into()))) {
                     Ok(Some(parent_hash)) => parent_hash,
                     Ok(None) => {
+                        debug!(target: LOG_TARGET, "Skip next block number: {} for no parent hash", commit.block_number);
+                        break;
+                    },
+                    Err(e) => {
+                        debug!(target: LOG_TARGET, "Skip next block number: {} for get parent hash error: {e:?}", commit.block_number);
+                        break;
+                    }
+                };
+                // check parent block's commit qc hash. ensure correct chain fork.
+                if commit.block_number > 1u32.into() {
+                    match self.client.header(parent_hash) {
+                        Ok(Some(parent_header)) => match find_block_commit::<B>(&parent_header) {
+                            Some(parent_commit) => if parent_commit.commit.qc.proposal_hash != commit.parent {
+                                debug!(
+                                target: LOG_TARGET,
+                                "Skip next block number: {} for no expected parent commit_qc_hash {} expect: {}",
+                                commit.block_number,
+                                parent_commit.commit.qc.proposal_hash,
+                                commit.parent,
+                            );
+                            continue;
+                        },
+                        None => {
+                            error!(target: LOG_TARGET, "Skip next block number: {} for no parent header have no commit!!!", commit.block_number);
+                            continue;
+                        }
+                    },
+                    Ok(None) => {
                         debug!(target: LOG_TARGET, "Skip next block number: {} for no parent header", commit.block_number);
                         continue;
+
                     },
                     Err(e) => {
                         debug!(target: LOG_TARGET, "Skip next block number: {} for get parent header error: {e:?}", commit.block_number);
                         continue;
                     }
-                };
+                }
                 let extrinsic = payload.extrinsic.clone().unwrap();
                 // execute block
                 // creat inherent data

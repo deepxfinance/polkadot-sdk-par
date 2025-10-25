@@ -324,24 +324,6 @@ where
 					}
 					let result = (&*self.inner).import_block(block).await;
                     self.unlock(origin, *header.number()).await;
-					// if result.is_ok() {
-					// 	if let Some((prune, prune_commit)) = prune {
-					// 		let remove_info = format!(
-					// 			"Remove block {}:{}({}) for import lower block {}:{}({})",
-					// 			prune.number(),
-					// 			prune.hash(),
-					// 			prune_commit.commit.qc.view,
-					// 			header.number(),
-					// 			header.hash(),
-					// 			block_commit.as_ref().map(|bc| bc.commit.qc.view).unwrap_or(0),
-					// 		);
-					// 		if let Err(e) = self.backend.remove_leaf_block(prune.hash()) {
-					// 			log::error!(target: LOG_TARGET, "{remove_info} failed for {e:?}");
-					// 		} else {
-					// 			log::debug!(target: LOG_TARGET, "{remove_info} success");
-					// 		}
-					// 	}
-					// }
                     result
 				} else {
                     self.unlock(block.origin, *block.header.number()).await;

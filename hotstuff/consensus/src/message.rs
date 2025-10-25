@@ -601,6 +601,8 @@ impl<B: BlockT> ProposalClaim<B> {
 
 #[derive(Debug, Clone, Encode, Decode)]
 pub struct BlockCommit<B: BlockT> {
+	/// parent block's commit qc hash, ensure chain fork.
+	pub parent: B::Hash,
 	pub block_number: <B::Header as HeaderT>::Number,
 	pub payload_claim: PayloadClaim<B>,
 	pub prepare: ProposalClaim<B>,
@@ -619,6 +621,7 @@ impl<B: BlockT> BlockCommit<B> {
 
 	pub fn empty() -> Self {
 		Self {
+			parent: Default::default(),
 			block_number: 0u32.into(),
 			payload_claim: PayloadClaim::empty(),
 			prepare: ProposalClaim::empty(),
@@ -643,6 +646,7 @@ impl<B: BlockT> BlockCommit<B> {
 		if prepare_payload_claim != precommit_payload_claim  || precommit_payload_claim != payload_claim {
 			return None;
 		}
+		let parent = prepare.0.qc.proposal_hash;
 		let block_number = commit.0.payload.block_number;
 		let prepare = ProposalClaim {
 			part_digest: prepare.0.part_digest(),
@@ -656,8 +660,7 @@ impl<B: BlockT> BlockCommit<B> {
 			part_digest: commit.0.part_digest(),
 			qc: commit.1
 		};
-		
-		Some(BlockCommit { block_number, payload_claim, prepare, precommit, commit })
+		Some(BlockCommit { parent, block_number, payload_claim, prepare, precommit, commit })
 	}
 
 	pub fn verify_qc(&self, authorities: &AuthorityList) -> Result<(), HotstuffError> {

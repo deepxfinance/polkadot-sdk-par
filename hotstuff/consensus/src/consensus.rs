@@ -814,8 +814,9 @@ where
     fn handle_qc(&mut self, qc: &QC<B>) {
         if qc.view >= self.state.view() {
             self.advance_view(qc.view);
-            self.state.update_high_qc(qc);
         }
+        // we should make sure high_qc updated.
+        self.state.update_high_qc(qc);
         if qc.view >= self.pending_proposal.as_ref().map(|p| p.view).unwrap_or_default() {
             self.pending_proposal = None;
         }
