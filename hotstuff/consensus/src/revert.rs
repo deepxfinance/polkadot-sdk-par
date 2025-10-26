@@ -41,13 +41,13 @@ where
     let best_block_commit = get_block_commit(client, best_block_hash)?;
     let (to_block_number, to_block_hash, to_view, to_digest) = match revert_to {
         RevertTo::Latest => {
-            (best_block_number, best_block_hash, best_block_commit.commit.qc.view, best_block_commit.commit.qc.proposal_hash)
+            (best_block_number, best_block_hash, best_block_commit.view[2], best_block_commit.commit_hash())
         }
         RevertTo::Finalized => {
-            let finalized_number = best_block_commit.payload_claim.best_block.number;
-            let finalized_hash = best_block_commit.payload_claim.best_block.hash;
+            let finalized_number = best_block_commit.block_claim.best_block.number;
+            let finalized_hash = best_block_commit.block_claim.best_block.hash;
             let finalized_block_commit = get_block_commit(client, finalized_hash)?;
-            (finalized_number, finalized_hash, finalized_block_commit.commit.qc.view, finalized_block_commit.commit.qc.proposal_hash)
+            (finalized_number, finalized_hash, finalized_block_commit.view[2], finalized_block_commit.commit_hash())
         }
     };
     let (high_view, high_digest) = synchronizer.revert(to_view, to_digest)?;

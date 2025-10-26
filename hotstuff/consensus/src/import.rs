@@ -78,10 +78,10 @@ where
 				let pre_commit = find_block_commit::<Block>(&pre_header);
 				match (pre_commit, new_commit) {
 					(Some(pre_commit), Some(new_commit)) => {
-						if pre_commit.commit.qc.view > new_commit.commit.qc.view {
+						if pre_commit.view[2] > new_commit.view[2] {
 							// new header is earlier, not import.
 							import = false;
-						} else if pre_commit.commit.qc.view < new_commit.commit.qc.view {
+						} else if pre_commit.view[2] < new_commit.view[2] {
 							// new header is later, re-import this new block.
 							reorg = Some((pre_header, pre_commit));
 						} else {
@@ -314,7 +314,7 @@ where
 							return Err(e);
 						}
 					}
-                    let header = block.header.clone();
+                    let header = block.post_header();
 					let origin = block.origin;
 					if let Some((pre, pre_commit)) = reorg {
 						log::info!(
@@ -322,10 +322,10 @@ where
 							"Try replace best block {}:{}({}) -> {}:{}({})",
 							pre.number(),
 							pre.hash(),
-							pre_commit.commit.qc.view,
+							pre_commit.view[2],
 							header.number(),
 							header.hash(),
-							block_commit.as_ref().map(|bc| bc.commit.qc.view).unwrap_or(0),
+							block_commit.as_ref().map(|bc| bc.view[2]).unwrap_or(0),
 						);
 						// This ForkChoiceStrategy::Custom(true) will set `is_new_best` to true.
 						block.fork_choice = Some(ForkChoiceStrategy::Custom(true));

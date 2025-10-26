@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use hotstuff_primitives::{AuthorityId, AuthorityList, AuthoritySignature};
+use hotstuff_primitives::{AuthorityList, AuthoritySignature};
 use sp_runtime::traits::Block;
 use sp_timestamp::Timestamp;
 use crate::{
@@ -78,7 +78,7 @@ impl<B: Block> Aggregator<B> {
 
 pub struct QCMaker {
 	weight: u64,
-	votes: Vec<(AuthorityId, AuthoritySignature)>,
+	votes: Vec<(u16, AuthoritySignature)>,
 }
 
 impl QCMaker {
@@ -91,23 +91,24 @@ impl QCMaker {
 		vote: Vote<B>,
 		authorities: &AuthorityList,
 	) -> Result<Option<QC<B>>, HotstuffError> {
-		if self.votes.iter().any(|(id, _)| id.eq(&vote.voter)) {
-			return Ok(None);
-		}
-
+		let author_i = match authorities.iter().enumerate().find(|(_, (a, _))| *a == vote.voter).map(|(i, _)| i) {
+			Some(index) => index as u16 + 1,
+			None => return Ok(None),
+		};
 		self.votes
-			.push((vote.voter, vote.signature.ok_or(HotstuffError::NullSignature)?));
+			.push((author_i, vote.signature.ok_or(HotstuffError::NullSignature)?));
 		self.weight += 1;
 
 		if self.weight < (authorities.len() * 2 / 3 + 1) as u64 {
 			return Ok(None);
 		}
-
+		let mut votes = self.votes.clone();
+		votes.sort_by(|a, b| a.0.cmp(&b.0));
 		Ok(Some(QC::<B> {
 			proposal_hash: vote.proposal_hash,
 			view: vote.view,
 			stage: vote.stage,
-			votes: self.votes.clone(),
+			votes,
 			timestamp: Timestamp::current(),
 		}))
 	}
@@ -122,7 +123,7 @@ impl Default for QCMaker {
 pub struct TCMaker<B: Block> {
 	weight: u64,
 	// (authority, signature, high_qc.view).
-	votes: Vec<(AuthorityId, AuthoritySignature, ViewNumber)>,
+	votes: Vec<(u16, AuthoritySignature, ViewNumber)>,
 	// most high QC in votes.
 	high_qc: QC<B>,
 }
@@ -137,12 +138,11 @@ impl<B: Block> TCMaker<B> {
 		timeout: Timeout<B>,
 		authorities: &AuthorityList,
 	) -> Result<Option<TC<B>>, HotstuffError> {
-		let voter = timeout.voter;
-		if self.votes.iter().any(|(id, _, _)| id.eq(&voter)) {
-			return Ok(None);
-		}
-
-		self.votes.push((voter, timeout.signature.ok_or(NullSignature)?, timeout.high_qc.view));
+		let author_i = match authorities.iter().enumerate().find(|(_, (a, _))| *a == timeout.voter).map(|(i, _)| i) {
+			Some(index) => index as u16 + 1,
+			None => return Ok(None),
+		};
+		self.votes.push((author_i, timeout.signature.ok_or(NullSignature)?, timeout.high_qc.view));
 		if timeout.high_qc.view > self.high_qc.view {
 			self.high_qc = timeout.high_qc.clone();
 		}
@@ -152,9 +152,11 @@ impl<B: Block> TCMaker<B> {
 			return Ok(None);
 		}
 
+		let mut votes = self.votes.clone();
+		votes.sort_by(|a, b| a.0.cmp(&b.0));
 		Ok(Some(TC::<B> {
 			view: timeout.view,
-			votes: self.votes.clone(),
+			votes,
 			high_qc: self.high_qc.clone(),
 		}))
 	}

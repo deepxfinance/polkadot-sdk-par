@@ -3,7 +3,7 @@ use std::marker::PhantomData;
 use std::sync::Arc;
 use std::time::Duration;
 use codec::Encode;
-use log::{debug, error, info, warn};
+use log::{debug, error, info, trace, warn};
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::sync::RwLock;
 use hotstuff_primitives::digests::CompatibleDigestItem;
@@ -22,13 +22,14 @@ use sp_timestamp::Timestamp;
 use crate::client::ClientForHotstuff;
 use crate::{find_block_commit, find_consensus_logs};
 use crate::import::ImportLock;
-use crate::message::{BlockCommit, Payload};
+use crate::message::{BlockCommit, NewBlock};
 use crate::oracle::HotsOracle;
 
 const LOG_TARGET: &str = "hots_executor";
 
 pub enum ExecutorMission<B: BlockT> {
-    Consensus(BlockCommit<B>, Payload<B>),
+    Consensus(BlockCommit<B>, NewBlock<B>),
+    Imported(B::Header),
     Cancel(<B::Header as HeaderT>::Number),
 }
 
@@ -43,7 +44,7 @@ pub struct BlockExecutor<C: ClientForHotstuff<B, BE>, B: BlockT, I, PF, L: sc_co
     pub slot_duration: SlotDuration,
     pub oracle: Arc<O>,
     pub executor_rx: UnboundedReceiver<ExecutorMission<B>>,
-    pub missions: HashMap<<B::Header as HeaderT>::Number, (BlockCommit<B>, Payload<B>)>,
+    pub missions: HashMap<<B::Header as HeaderT>::Number, (BlockCommit<B>, NewBlock<B>)>,
     pub block_size_limit: Option<usize>,
     phantom_data: PhantomData<BE>,
 }
@@ -140,84 +141,96 @@ where
         blocks.sort();
         let mut applied = vec![];
         for block in blocks {
-            if let Some((commit, payload)) = self.missions.get(&block).cloned() {
+            if let Some((commit, new_block)) = self.missions.get(&block).cloned() {
                 let best_block = self.client.info().best_number;
                 let best_hash = self.client.info().best_hash;
-                if payload.extrinsic.is_none() {
-                    warn!(target: LOG_TARGET, "Skip next block number: {} for None extrinsic", commit.block_number);
-                    self.import.unlock(BlockOrigin::ConsensusBroadcast, commit.block_number).await;
-                    continue;
+                if commit.block_number() > best_block.saturating_add(1u32.into()) {
+                    debug!(target: LOG_TARGET, "skip next block number: {} for too far than best {best_block}", commit.block_number());
+                    break;
                 }
-                if self.client.info().finalized_number >= commit.block_number {
-                    debug!(target: LOG_TARGET, "Skip next block number: {} for finalized {}", commit.block_number, self.client.info().finalized_number);
-                    self.import.unlock(BlockOrigin::ConsensusBroadcast, commit.block_number).await;
-                    applied.push(commit.block_number);
+                if self.client.info().finalized_number >= commit.block_number() {
+                    debug!(target: LOG_TARGET, "skip next block number: {} for finalized {}", commit.block_number(), self.client.info().finalized_number);
+                    self.import.unlock(BlockOrigin::ConsensusBroadcast, commit.block_number()).await;
+                    applied.push(commit.block_number());
                     continue;
                 }
                 let mut reorg = false;
-                if commit.block_number <= best_block {
-                    if let Ok(Some(header)) = self.client.header(best_hash) {
+                if commit.block_number() <= best_block {
+                    let pre_hash = match self.client.block_hash_from_id(&BlockId::Number(commit.block_number())) {
+                        Ok(Some(parent_hash)) => parent_hash,
+                        Ok(None) => {
+                            debug!(target: LOG_TARGET, "skip next block number: {} for re-order pre imported hash", commit.block_number());
+                            continue;
+                        },
+                        Err(e) => {
+                            debug!(target: LOG_TARGET, "skip next block number: {} for re-order get pre imported hash error: {e:?}", commit.block_number());
+                            continue;
+                        }
+                    };
+                    if let Ok(Some(header)) = self.client.header(pre_hash) {
                         if let Some(pre_commit) = find_block_commit::<B>(&header) {
-                            if commit.digest() == pre_commit.digest() {
-                                debug!(target: LOG_TARGET, "Skip same block {} with same commit already imported.", commit.block_number);
-                                applied.push(commit.block_number);
+                            if commit.commit_hash() == pre_commit.commit_hash() {
+                                debug!(target: LOG_TARGET, "skip same block {} with same commit already imported.", commit.block_number());
+                                applied.push(commit.block_number());
                                 continue;
                             }
-                            if commit.commit.qc.view > pre_commit.commit.qc.view {
-                                info!(target: LOG_TARGET, "Reorg re-execute block: {} view {} -> {}", commit.block_number, commit.commit.qc.view, pre_commit.commit.qc.view);
+                            if commit.view[2] > pre_commit.view[2] {
+                                info!(target: LOG_TARGET, "Reorg re-execute block: {} view {} -> {}", commit.block_number(), pre_commit.view[2], commit.view[2]);
                                 reorg = true;
                             } else {
-                                debug!(target: LOG_TARGET, "Skip same block {} with earlier commit view {}/{}.", commit.block_number, commit.commit.qc.view, pre_commit.commit.qc.view);
+                                debug!(target: LOG_TARGET, "skip same block {} with earlier commit view {}/{}.", commit.block_number(), commit.view[2], pre_commit.view[2]);
+                                applied.push(commit.block_number());
                                 continue;
                             }
                         }
                     }
                 }
                 self.try_finalize_block(&commit);
-                let parent_hash = match self.client.block_hash_from_id(&BlockId::Number(commit.block_number.saturating_sub(1u32.into()))) {
+                let parent_hash = match self.client.block_hash_from_id(&BlockId::Number(commit.block_number().saturating_sub(1u32.into()))) {
                     Ok(Some(parent_hash)) => parent_hash,
                     Ok(None) => {
-                        debug!(target: LOG_TARGET, "Skip next block number: {} for no parent hash", commit.block_number);
+                        debug!(target: LOG_TARGET, "skip next block number: {} for no parent hash", commit.block_number());
                         break;
                     },
                     Err(e) => {
-                        debug!(target: LOG_TARGET, "Skip next block number: {} for get parent hash error: {e:?}", commit.block_number);
+                        debug!(target: LOG_TARGET, "skip next block number: {} for get parent hash error: {e:?}", commit.block_number());
                         break;
                     }
                 };
                 // check parent block's commit qc hash. ensure correct chain fork.
-                if commit.block_number > 1u32.into() {
+                if commit.block_number() > 1u32.into() {
                     match self.client.header(parent_hash) {
                         Ok(Some(parent_header)) => match find_block_commit::<B>(&parent_header) {
-                            Some(parent_commit) => if parent_commit.commit.qc.proposal_hash != commit.parent {
+                            Some(parent_commit) => if parent_commit.commit_hash() != commit.parent_hash()
+                            || commit.block_number() != parent_commit.block_number().saturating_add(1u32.into()) {
                                 debug!(
-                                target: LOG_TARGET,
-                                "Skip next block number: {} for no expected parent commit_qc_hash {} expect: {}",
-                                commit.block_number,
-                                parent_commit.commit.qc.proposal_hash,
-                                commit.parent,
-                            );
+                                    target: LOG_TARGET,
+                                    "skip next block number: {} for no expected parent {} commit_qc_hash {} expect: {}",
+                                    commit.block_number(),
+                                    parent_commit.block_number(),
+                                    parent_commit.commit_hash(),
+                                    commit.parent_hash(),
+                                );
                                 continue;
                             },
                             None => {
-                                error!(target: LOG_TARGET, "Skip next block number: {} for no parent header have no commit!!!", commit.block_number);
+                                error!(target: LOG_TARGET, "skip next block number: {} for no parent header have no commit!!!", commit.block_number());
                                 continue;
                             }
                         },
                         Ok(None) => {
-                            debug!(target: LOG_TARGET, "Skip next block number: {} for no parent header", commit.block_number);
+                            debug!(target: LOG_TARGET, "skip next block number: {} for no parent header", commit.block_number());
                             continue;
 
                         },
                         Err(e) => {
-                            debug!(target: LOG_TARGET, "Skip next block number: {} for get parent header error: {e:?}", commit.block_number);
+                            debug!(target: LOG_TARGET, "skip next block number: {} for get parent header error: {e:?}", commit.block_number());
                             continue;
                         }
                     }
                 }
-                let extrinsic = payload.extrinsic.clone().unwrap();
                 // execute block
-                // creat inherent data
+                // creat inherent datano state to check
                 let inherent_data_providers = match self
                     .create_inherent_data_providers
                     .create_inherent_data_providers(parent_hash, *commit.commit_time())
@@ -226,16 +239,16 @@ where
                     Ok(x) => x,
                     Err(e) => {
                         warn!(target: LOG_TARGET, "Unable to author block in slot. Failure creating inherent data provider: {e}");
-                        self.import.unlock(BlockOrigin::ConsensusBroadcast, payload.block_number).await;
+                        self.import.unlock(BlockOrigin::ConsensusBroadcast, new_block.block_number).await;
                         continue
                     },
                 };
-                debug!(target: LOG_TARGET, "Best block number: {best_block}, next block number: {} start execute", payload.block_number);
+                debug!(target: LOG_TARGET, "Start #{} with view {:?} (best {best_block}:{best_hash})", commit.block_number(), commit.view);
                 let slot = inherent_data_providers.slot();// Never yield the same slot twice.
-                if slot <= self.last_slot {
-                    warn!(target: LOG_TARGET, "Best block number: {best_block}, next block number: {} Skipped for last_slot {}, current_slot {slot}", payload.block_number, self.last_slot);
-                    self.import.unlock(BlockOrigin::ConsensusBroadcast, payload.block_number).await;
-                    applied.push(commit.block_number);
+                if !reorg && slot <= self.last_slot {
+                    warn!(target: LOG_TARGET, "Best block number: {best_block}, next block number: {} Skipped for last_slot {}, current_slot {slot}", new_block.block_number, self.last_slot);
+                    self.import.unlock(BlockOrigin::ConsensusBroadcast, new_block.block_number).await;
+                    applied.push(commit.block_number());
                     continue;
                 }
                 let inherent_data = inherent_data_providers.create_inherent_data().await.expect("create_inherent_data");
@@ -248,18 +261,27 @@ where
                     .expect("no expected best header");
                 let proposer = self.proposer_factory.write().await.init(&parent_header).await.expect("proposer init");
                 // let (proposal, groups, avg_execute_time) = match BlockPropose::<B>::propose_block(
+                let mut multi = vec![];
+                let mut single = vec![];
+                let extrinsic = new_block.extrinsic.clone();
+                if extrinsic.len() >= 1 {
+                    multi = extrinsic[0].clone();
+                }
+                if extrinsic.len() >= 2 && extrinsic[1].len() >= 1 {
+                    single = extrinsic[1][0].clone();
+                }
                 let (proposal, info) = match BlockPropose::<B>::propose_block(
                     proposer,
                     "Consensus",
-                    best_hash,
-                    best_block,
+                    parent_hash,
+                    *parent_header.number(),
                     // actually we must execute all transactions, but we still limit time.
                     Duration::from_millis(self.slot_duration.as_millis() * 6),
                     self.oracle.linear_execute_time(),
                     self.oracle.merge_time(),
                     inherent_data,
                     Digest { logs },
-                    extrinsic,
+                    (multi, single),
                     self.oracle.round_tx(),
                     true,
                     true,
@@ -267,8 +289,8 @@ where
                 ).await {
                     Ok(propose) => propose,
                     Err(e) => {
-                        warn!(target: LOG_TARGET, "Propose block {} failed for {e:?}", payload.block_number);
-                        self.import.unlock(BlockOrigin::ConsensusBroadcast, payload.block_number).await;
+                        warn!(target: LOG_TARGET, "Propose block {} failed for {e:?}", new_block.block_number);
+                        self.import.unlock(BlockOrigin::ConsensusBroadcast, new_block.block_number).await;
                         continue;
                     }
                 };
@@ -290,8 +312,8 @@ where
                 ).await {
                     Ok(import_params) => import_params,
                     Err(e) => {
-                        warn!(target: LOG_TARGET, "Propose block {} get block_import_params failed for {e:?}", payload.block_number);
-                        self.import.unlock(BlockOrigin::ConsensusBroadcast, payload.block_number).await;
+                        warn!(target: LOG_TARGET, "Propose block {} get block_import_params failed for {e:?}", new_block.block_number);
+                        self.import.unlock(BlockOrigin::ConsensusBroadcast, new_block.block_number).await;
                         continue;
                     }
                 };
@@ -311,7 +333,7 @@ where
                         );
                         // Since we allow ahead consensus, we do not skip following block event authorities changes.
                         self.last_slot = slot;
-                        applied.push(commit.block_number);
+                        applied.push(commit.block_number());
                     },
                     Err(err) => {
                         warn!(target: LOG_TARGET, "Import block {}:{} built on {parent_hash:?}: {err}", header.number(), header.hash());
@@ -339,19 +361,24 @@ where
                 }
                 for mission in missions {
                     match mission {
-                        ExecutorMission::Consensus(commit, payload) => {
-                            self.import.lock(BlockOrigin::ConsensusBroadcast, payload.block_number).await;
-                            let block_number = payload.block_number;
+                        ExecutorMission::Consensus(commit, new_block) => {
+                            self.import.lock(BlockOrigin::ConsensusBroadcast, new_block.block_number).await;
+                            let block_number = new_block.block_number;
                             if block_number > self.client.info().finalized_number {
                                 // push new_block to missions.
                                 if let Some(mission) = self.missions.get_mut(&block_number) {
-                                    if commit.commit_time() >= mission.0.commit_time() {
-                                        *mission = (commit, payload);
+                                    if commit.view[2] >= mission.0.view[2] {
+                                        trace!(target: LOG_TARGET, "Receive #{} with view {:?}, replace same block with view {:?}", commit.block_number(), commit.view, mission.0.view);
+                                        *mission = (commit, new_block);
                                     }
                                 } else {
-                                    self.missions.insert(block_number, (commit, payload));
+                                    trace!(target: LOG_TARGET, "Receive #{} with view {:?}", commit.block_number(), commit.view);
+                                    self.missions.insert(block_number, (commit, new_block));
                                 }
                             }
+                        }
+                        ExecutorMission::Imported(_header) => {
+                            // Temporary used to trigger following block execute.
                         }
                         ExecutorMission::Cancel(block) => {
                             let remove_missions: Vec<_> = self.missions

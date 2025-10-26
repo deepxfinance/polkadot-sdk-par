@@ -53,6 +53,7 @@ use sp_inherents::CreateInherentDataProviders;
 use sp_runtime::traits::Zero;
 use sp_runtime::transaction_validity::TransactionSource;
 use sp_timestamp::Timestamp;
+use crate::message::NewBlock;
 use crate::oracle::HotsOracle;
 
 #[cfg(test)]
@@ -208,7 +209,7 @@ impl<B: BlockT> ConsensusState<B> {
 
         self.last_voted_view = max(self.last_voted_view, proposal.view);
 
-        let mut vote = Vote::<B>::new(proposal.digest(), proposal.view, proposal.payload.stage, author_id.clone());
+        let mut vote = Vote::<B>::new(proposal.digest(), proposal.view, proposal.payload.stage(), author_id.clone());
 
         vote.signature = self
             .keystore
@@ -394,10 +395,10 @@ pub struct ConsensusWorker<
     oracle: Arc<O>,
     /// Tmp cache for not voted proposal(should be verified and qc mission is handled).
     pending_proposal: Option<Proposal<B>>,
-    processed: Payload<B>,
+    processed: Proposal<B>,
     /// consensus success block waiting to execute.
     commit: BlockCommit<B>,
-    processed_extrinsic: Option<(Vec<Vec<B::Extrinsic>>, Vec<B::Extrinsic>)>,
+    processed_extrinsic: Vec<Vec<Vec<B::Extrinsic>>>,
     phantom: PhantomData<BE>,
 }
 
@@ -446,9 +447,8 @@ where
         } else {
             BlockCommit::empty()
         };
+        let processed = synchronizer.get_high_proposal().unwrap().unwrap_or(Proposal::empty());
         info!(target: CLIENT_LOG_TARGET, "Start consensus worker with local_timer_duration: {local_timer_duration} millis, slot_duration: {} millis", slot_duration.as_millis());
-        let mut processed = Payload::empty();
-        processed.stage = ConsensusStage::Commit;
         Self {
             state: consensus_state,
             network,
@@ -466,7 +466,7 @@ where
             pending_proposal: None,
             processed,
             commit,
-            processed_extrinsic: None,
+            processed_extrinsic: vec![],
             phantom: PhantomData,
         }
     }
@@ -480,6 +480,9 @@ where
             debug!(target: CLIENT_LOG_TARGET, "[Recover] Skip for high_view 0");
             return;
         }
+        // ready to recover higher state since recover will change it.
+        let init_processed = self.processed.clone();
+        let init_commit = self.commit.clone();
         loop {
             match self.synchronizer.get_proposal(proposal_key.clone()) {
                 Ok(Some(proposal)) => {
@@ -487,8 +490,8 @@ where
                     if let Err(e) = self.trigger_qc_mission(&proposal.qc, true).await {
                         error!(target: CLIENT_LOG_TARGET, "[Recover] ~~ trigger_qc_mission {}:{} failed for {e:?}", proposal.qc.view, proposal.qc.proposal_hash);
                     }
-                    if proposal.payload.block_number <= latest.saturating_add(1u32.into()) {
-                        debug!(target: CLIENT_LOG_TARGET, "[Recover] Finish for proposal {}:{} payload block {} <= latest {latest} + 1", proposal.view, proposal.digest(), proposal.payload.block_number);
+                    if proposal.payload.block_number() <= latest {
+                        debug!(target: CLIENT_LOG_TARGET, "[Recover] Finish for proposal {}:{} payload block {} <= latest {latest}", proposal.view, proposal.digest(), proposal.payload.block_number());
                         break;
                     }
                     view = proposal.qc.view;
@@ -501,17 +504,21 @@ where
                 }
                 Err(e) => {
                     error!(target: CLIENT_LOG_TARGET, "[Recover] Get high proposal {}:{} failed for {e:?}", self.synchronizer.high_view(), self.synchronizer.high_digest());
+                    self.processed = init_processed;
+                    self.commit = init_commit;
                     return;
                 }
             };
         }
+        self.processed = init_processed;
+        self.commit = init_commit;
     }
 
     pub async fn run(mut self) {
         if let Some(ref id) = self.state.local_authority_id {
-            info!(target: CLIENT_LOG_TARGET, "Local authority id is: {id}, start with view {}, high_qc {}", self.state.view, self.state.high_qc.view);
+            info!(target: CLIENT_LOG_TARGET, "Local authority id is: {id}, start with view {} processed: {}:{} high_qc {}:{}", self.state.view, self.processed.view, self.processed.digest(), self.state.high_qc.view, self.state.high_qc.proposal_hash);
         } else {
-            info!(target: CLIENT_LOG_TARGET, "Local is not authority, start with view {}, high_qc {}", self.state.view, self.state.high_qc.view);
+            info!(target: CLIENT_LOG_TARGET, "Local is not authority, start with view {} processed: {}:{} high_qc {}:{}", self.state.view, self.processed.view, self.processed.digest(), self.state.high_qc.view, self.state.high_qc.proposal_hash);
         }
         self.recover().await;
         self.local_timer.reset();
@@ -662,13 +669,16 @@ where
 
     pub async fn handle_block_import(&mut self, header: &B::Header) -> Result<(), HotstuffError> {
         if let Some(commit) = find_block_commit::<B>(header) {
-            let (deleted, deleted_invalid) = self.synchronizer.clear_all_before(ProposalKey::View(commit.prepare.qc.view))?;
+            let (deleted, deleted_invalid) = self.synchronizer.clear_all_before(ProposalKey::View(commit.view[0]))?;
             if !deleted.is_empty() || !deleted_invalid.is_empty() {
                 trace!(target: CLIENT_LOG_TARGET, "~~ handle_block_import. Block {} imported, delete proposals {deleted:?}, invalid proposals: {deleted_invalid:?}", header.number());
             }
         }
         if self.client.info().best_number > *header.number() {
             return Ok(());
+        }
+        if self.executor_tx.send(ExecutorMission::Imported(header.clone())).is_err() {
+            warn!(target: CLIENT_LOG_TARGET, "~~ handle_block_import. Notify executor block {} imported failed", header.number());
         }
         for consensus_log in find_consensus_logs::<B>(header) {
             match consensus_log {
@@ -746,7 +756,7 @@ where
             return Ok(());
         }
         if check_payload {
-            match self.check_payload(&proposal.payload) {
+            match self.check_payload(proposal) {
                 Ok(true) => {
                     self.pending_proposal = Some(proposal.clone());
                     trace!(target: CLIENT_LOG_TARGET, "check_payload no state to check, skip vote for proposal to pending!!!");
@@ -831,9 +841,9 @@ where
                 return Err(HotstuffError::GetProposal(format!("No proposal for commit qc of proposal {}, skip for can't check timestamp", qc.proposal_hash)));
             }
         };
-        let new_block_number = qc_proposal.payload.block_number;
+        let new_block_number = qc_proposal.payload.block_number();
         // if from local, we should make time delay for min slot_duration.
-        let last_commit_time = if self.commit.block_number.saturating_add(1u32.into()) == new_block_number {
+        let last_commit_time = if self.commit.block_number().saturating_add(1u32.into()) == new_block_number {
             *self.commit.commit_time()
         } else if self.client.info().best_number.saturating_add(1u32.into()) == new_block_number {
             match self.client.header(self.client.info().best_hash).map_err(|e| HotstuffError::ClientError(e.to_string()))? {
@@ -877,20 +887,23 @@ where
             }
         };
         // update processed payload here. Any Prepare/Precommit/Commit success stage will be recorded.
-        self.processed = qc_proposal.payload.clone();
-        if !qc_proposal.payload.stage.finish()
-            || qc_proposal.payload.block_number <= self.client.info().best_number
-            || qc_proposal.payload.block_number <= self.commit.block_number
-        {
-            return Ok(());
-        }
+        self.processed = qc_proposal.clone();
+
+        if !qc_proposal.payload.stage().finish() { return Ok(()); }
         // grandpa -> parent(grandpa_qc) -> qc_proposal(parent_qc) -> qc
-        let new_block_number = qc_proposal.payload.block_number;
         match self.synchronizer.get_proposal_ancestors(&qc_proposal) {
             Ok(Some((parent, grandpa))) => {
-                if grandpa.payload.extrinsic.is_none() || !Payload::<B>::full_consensus(&qc_proposal.payload, &parent.payload, &grandpa.payload) {
+                if !Proposal::<B>::full_consensus(&grandpa, &parent, &qc_proposal) {
                     return Ok(());
                 }
+                let new_block = match grandpa.payload.block_data() {
+                    Some(new_block) => new_block,
+                    None => return Ok(())
+                };
+                if new_block.block_number < self.client.info().best_number || new_block.block_number <= self.commit.block_number() {
+                    return Ok(());
+                }
+                let new_block_number = new_block.block_number;
                 let slot = InherentType::from_timestamp(qc.timestamp, self.slot_duration);
                 let processed_slot = InherentType::from_timestamp(*self.commit.commit_time(), self.slot_duration);
                 if slot > processed_slot {
@@ -904,22 +917,23 @@ where
                     };
                     // send execute block mission to a block execute queue and execute/import it.
                     info!(
-                            target: CLIENT_LOG_TARGET,
-                            "^^_^^. block {} slot {slot} timestamp {} can be execute with full proposal: [{}:{}, {}:{}, {}:{}]",
-                            qc_proposal.payload.block_number,
-                            qc.timestamp,
-                            grandpa.view,
-                            parent.parent_hash(),
-                            parent.view,
-                            qc_proposal.parent_hash(),
-                            qc.view,
-                            qc.proposal_hash,
-                        );
-                    if self.executor_tx.send(ExecutorMission::Consensus(commit.clone(), grandpa.payload.clone())).is_err() {
+                        target: CLIENT_LOG_TARGET,
+                        "^^_^^. block {new_block_number} slot {slot} timestamp {} can be execute with full proposal: [{}:{}, {}:{}, {}:{}] parent {}:{}",
+                        qc.timestamp,
+                        grandpa.view,
+                        parent.parent_hash(),
+                        parent.view,
+                        qc_proposal.parent_hash(),
+                        qc.view,
+                        qc.proposal_hash,
+                        grandpa.qc.view,
+                        grandpa.qc.proposal_hash,
+                    );
+                    if self.executor_tx.send(ExecutorMission::Consensus(commit.clone(), new_block.clone())).is_err() {
                         warn!(target: CLIENT_LOG_TARGET, "~~ trigger_qc_mission({from}). block {new_block_number} execute mission send failed");
                     }
                     self.commit = commit;
-                    self.processed_extrinsic = grandpa.payload.extrinsic.clone();
+                    self.processed_extrinsic = new_block.extrinsic.clone();
                     // if full consensus for a new block success, reset timer.
                     self.local_timer.reset();
                 } else {
@@ -928,7 +942,7 @@ where
                 }
             },
             Err(e) => {
-                debug!(target: CLIENT_LOG_TARGET, "~~ trigger_qc_mission({from}). synchronizer: get {new_block_number} proposal_ancestors failed: {e:#?}");
+                debug!(target: CLIENT_LOG_TARGET, "~~ trigger_qc_mission({from}). synchronizer: get proposal {}:{} ancestors failed: {e:#?}", qc.view, qc.proposal_hash);
             }
             _ => (),
         }
@@ -972,9 +986,6 @@ where
         }
         match self.get_proposal_payload().await {
             Some(payload) => {
-                if payload.is_empty() {
-                    return Ok(());
-                }
                 let proposal = match self.state.make_proposal(payload, tc)? {
                     Some(proposal) => proposal,
                     None => return Err(HotstuffError::NotAuthority),
@@ -1011,24 +1022,56 @@ where
         let info = self.client.info();
         let best = info.best_number;
         let best_next = best.saturating_add(1u32.into());
-        // if processed is in Precommit stage but not updated, continue commit.
-        if let Some(next_stage) = self.processed.stage.next() {
-            trace!(target: CLIENT_LOG_TARGET, "~~ get_proposal_payload(next). best: {best}, processed: {}:{}", self.processed.stage, self.processed.block_number);
-            payload = Some(Payload {
-                best_block: self.processed.best_block.clone(),
-                block_number: self.processed.block_number,
-                extrinsics_root: self.processed.extrinsics_root,
-                extrinsic: None,
-                stage: next_stage,
-            });
-        } else if self.commit.block_number < best.saturating_add(self.blocks_ahead_best) {
+        if self.state.high_qc.view > self.processed.view {
+            let info = format!(
+                "best: {best}, processed: {}:{} {}:{}, high_qc: {}:{}",
+                self.processed.view,
+                self.processed.digest(),
+                self.processed.payload.stage(),
+                self.processed.payload.block_number(),
+                self.state.high_qc.view,
+                self.state.high_qc.proposal_hash,
+            );
+            // if processed lower than high_qc. local have no parent proposal, we can't get next payload.
+            let high_proposal = match self.synchronizer.get_proposal(ProposalKey::digest(self.state.high_qc.proposal_hash)) {
+                Ok(Some(proposal)) => proposal,
+                Ok(None) => {
+                    trace!(target: CLIENT_LOG_TARGET, "~~ get_proposal_payload. {info} get no high_proposal");
+                    return None;
+                },
+                Err(e) => {
+                    error!(target: CLIENT_LOG_TARGET, "~~ get_proposal_payload. {info} get high_proposal failed: {e:?}");
+                    return None;
+                }
+            };
+            if let Some(next_payload) = high_proposal.payload.next() {
+                // if processed is latest, get next payload by processed.payload.
+                trace!(target: CLIENT_LOG_TARGET, "~~ get_proposal_payload. {info}");
+                payload = Some(next_payload);
+            } else if self.commit.block_number() < best.saturating_add(self.blocks_ahead_best) {
+                // if processed is Commit, try to propose for next block.
+                // consensus for no more than best_block + blocks_ahead_best
+                let block_number = best_next
+                    // self.processed.stage.next() is none, this means the processed block is finished, continue for next block.
+                    .max(high_proposal.payload.block_number().saturating_add(1u32.into()))
+                    .max(self.commit.block_number().saturating_add(1u32.into()));
+                let (get_payload, time) = self.get_new_block_payload(block_number).await;
+                trace!(target: CLIENT_LOG_TARGET, "~~ get_proposal_payload. {info} new: {block_number} in {time} micros");
+                payload = Some(get_payload);
+            }
+        } else if let Some(next_payload) = self.processed.payload.next() {
+            // if processed is latest, get next payload by processed.payload.
+            trace!(target: CLIENT_LOG_TARGET, "~~ get_proposal_payload. best: {best}, processed: {}:{}", self.processed.payload.stage(), self.processed.payload.block_number());
+            payload = Some(next_payload);
+        } else if self.commit.block_number() < best.saturating_add(self.blocks_ahead_best) {
+            // if processed is Commit, try to propose for next block.
             // consensus for no more than best_block + blocks_ahead_best
             let block_number = best_next
                 // self.processed.stage.next() is none, this means the processed block is finished, continue for next block.
-                .max(self.processed.block_number.saturating_add(1u32.into()))
-                .max(self.commit.block_number.saturating_add(1u32.into()));
-            let (get_payload, time) = self.get_payload(block_number).await;
-            trace!(target: CLIENT_LOG_TARGET, "~~ get_proposal_payload(next). best: {best}, processed: Commit:{}, new: {block_number} in {time} micros", self.commit.block_number);
+                .max(self.processed.payload.block_number().saturating_add(1u32.into()))
+                .max(self.commit.block_number().saturating_add(1u32.into()));
+            let (get_payload, time) = self.get_new_block_payload(block_number).await;
+            trace!(target: CLIENT_LOG_TARGET, "~~ get_proposal_payload. best: {best}, processed: Commit:{}, new: {block_number} in {time} micros", self.commit.block_number());
             payload = Some(get_payload);
         }
         payload
@@ -1044,7 +1087,7 @@ where
         <<B::Header as HeaderT>::Hashing as HashT>::hash(EMPTY_PAYLOAD)
     }
 
-    async fn get_payload(&self, block_number: <B::Header as HeaderT>::Number) -> (Payload<B>, u128) {
+    async fn get_new_block_payload(&self, block_number: <B::Header as HeaderT>::Number) -> (Payload<B>, u128) {
         let start = std::time::Instant::now();
         let info = self.client.info();
         let parent_header = self.client.header(info.best_hash).expect("failed to get best_hash").expect("no expected header");
@@ -1061,9 +1104,9 @@ where
             self.filter_transactions(),
         ).await {
             Ok((multi, single, info)) => {
-                let mut groups: Vec<_> = multi.iter().map(|g| g.len()).collect();
-                groups.push(single.len());
-                debug!(target: CLIENT_LOG_TARGET, "GroupTransaction for {block_number} base on {} {groups:?}", parent_header.number());
+                let multi_length: Vec<_> = multi.iter().map(|g| g.len()).collect();
+                let groups = vec![multi_length, vec![single.len()]];
+                debug!(target: CLIENT_LOG_TARGET, "GroupTransaction for {block_number} base on #{}({}) {groups:?}", parent_header.number(), parent_header.hash());
                 (multi, single, info)
             },
             Err(e) => {
@@ -1081,25 +1124,22 @@ where
             .collect::<Vec<Vec<u8>>>();
         extrinsic_data.extend(single.iter().map(|e| e.encode()).collect::<Vec<Vec<u8>>>());
         (
-            Payload {
+            Payload::Prepare(NewBlock {
                 best_block: BlockInfo { number: info.best_number, hash: info.best_hash },
                 block_number,
                 extrinsics_root: extrinsics_data_root::<<B::Header as HeaderT>::Hashing>(extrinsic_data),
-                extrinsic: Some((multi, single)),
-                stage: ConsensusStage::Prepare,
-            },
+                extrinsic: vec![multi, vec![single]],
+            }),
             start.elapsed().as_micros(),
         )
     }
 
     fn filter_transactions(&self) -> HashSet<B::Hash> {
         let mut filter = self.oracle.filter_transactions();
-        if self.commit.block_number > self.client.info().best_number {
+        if self.commit.block_number() > self.client.info().best_number {
             // this processed block extrinsic are not executed, should exclude it for
-            if let Some((multi, single)) = &self.processed_extrinsic {
-                for hash in multi.iter().flatten().map(|tx| <<B::Header as HeaderT>::Hashing as HashT>::hash(&tx.encode()))
-                    .chain(single.iter().map(|tx| <<B::Header as HeaderT>::Hashing as HashT>::hash(&tx.encode())))
-                {
+            for round in &self.processed_extrinsic {
+                for hash in round.iter().flatten().map(|tx| <<B::Header as HeaderT>::Hashing as HashT>::hash(&tx.encode())) {
                     filter.insert(hash);
                 }
             }
@@ -1109,7 +1149,7 @@ where
 
     // check proposal.payload have consist parents in local for final Commit
     fn ensure_parents(&self, proposal: &Proposal<B>) -> Result<bool, HotstuffError> {
-        match proposal.payload.stage {
+        match proposal.payload.stage() {
             ConsensusStage::Prepare => Ok(true),
             ConsensusStage::PreCommit => self.synchronizer.get_proposal_parent(proposal).map(|r| r.is_some()),
             ConsensusStage::Commit => self.synchronizer.get_proposal_ancestors(proposal).map(|r| r.is_some()),
@@ -1117,85 +1157,119 @@ where
     }
 
     // return if we should keep pending_proposal.
-    fn check_payload(&self, payload: &Payload<B>) -> Result<bool, HotstuffError> {
-        if payload.is_empty() { return Ok(false); }
-        if !payload.is_valid_next(&self.processed) {
-            return Err(PayloadError::BlockRollBack(format!("processed: {}, new_payload: {}", self.processed, payload)).into());
-        }
+    fn check_payload(&self, proposal: &Proposal<B>) -> Result<bool, HotstuffError> {
         let info = self.client.info();
-        if payload.block_number > info.best_number.saturating_add(self.blocks_ahead_best) && self.state.is_authority() {
+        if proposal.payload.block_number() > info.best_number.saturating_add(self.blocks_ahead_best) && self.state.is_authority() {
             // if propose new block is much more than local best block, do not vote for it.
-            debug!(target: CLIENT_LOG_TARGET, "Meet proposal new_block {} > local_best_block {}(+{}). skip vote and pending it!", payload.block_number, info.best_number, self.blocks_ahead_best);
+            debug!(target: CLIENT_LOG_TARGET, "Meet proposal new_block {} > local_best_block {}(+{}). skip vote and pending it!", proposal.payload.block_number(), info.best_number, self.blocks_ahead_best);
             return Ok(true);
         }
-        match self.client.header(payload.best_block.hash) {
-            Ok(Some(_header)) => (),
+        // processed new_block. should not re-process it.
+        if proposal.payload.block_number() <= self.commit.block_number() {
+            return Err(PayloadError::BlockRollBack(format!("Next/Processed: {}/{}", proposal.payload.block_number(), self.commit.block_number())).into());
+        }
+        let new_block = match &proposal.payload {
+            Payload::Prepare(new_block) => new_block,
+            _ => return Ok(false),
+        };
+        // for prepare payload, we should check it's base_block_commit_hash is correct.
+        match self.client.header(new_block.best_block.hash) {
+            Ok(Some(header)) => {
+                let base_block_commit_hash = if new_block.best_block.number > 0u32.into() {
+                    match find_block_commit::<B>(&header) {
+                        Some(best_commit) => best_commit.commit_hash(),
+                        None => {
+                            return Err(PayloadError::BaseBlock(format!("BaseBlock: {}:{} have no commit", new_block.best_block.number, new_block.best_block.hash)).into());
+                        }
+                    }
+                } else {
+                    Default::default()
+                };
+                let info = format!("BaseBlock: {}:{} new_block: {}", new_block.best_block.number, new_block.best_block.hash, new_block.block_number);
+                let block = proposal.payload.block_number();
+                if block == new_block.best_block.number.saturating_add(1u32.into()) {
+                    if new_block.best_block.number > 0u32.into() && proposal.parent_hash() != base_block_commit_hash {
+                        return Err(PayloadError::BaseBlock(format!("{info} incorrect base_block commit {base_block_commit_hash} {}", proposal.parent_hash())).into());
+                    }
+                } else if block == new_block.best_block.number.saturating_add(2u32.into()) {
+                    if self.commit.block_number().saturating_add(1u32.into()) != block {
+                        return Err(PayloadError::BaseBlock(format!("{info} no parent commit to check")).into());
+                    }
+                    let parent_commit_hash = self.commit.commit_hash();
+                    if parent_commit_hash != proposal.parent_hash() {
+                        return Err(PayloadError::BaseBlock(format!("{info} incorrect parent {} commit {parent_commit_hash} {}", self.commit.block_number(), proposal.parent_hash())).into());
+                    }
+                    if new_block.best_block.number > 0u32.into() && self.commit.parent_hash() != base_block_commit_hash {
+                        return Err(PayloadError::BaseBlock(format!("{info} incorrect parent {} base_block commit {base_block_commit_hash} {parent_commit_hash}", self.commit.block_number())).into());
+                    }
+                } else {
+                    return Err(PayloadError::BaseBlock(format!("{info} can't check block commit")).into());
+                }
+            },
             // if local state have no best_block in payload, do not vote for it.
             Ok(None) => {
-                debug!(target: CLIENT_LOG_TARGET, "Meet proposal new_block {} but local not imported. skip vote and pending it!", payload.best_block.number);
+                debug!(target: CLIENT_LOG_TARGET, "Meet proposal new_block {} but local not imported. skip vote and pending it!", new_block.best_block.number);
                 return Ok(true);
             },
             Err(e) => return Err(HotstuffError::ClientError(e.to_string())),
         }
-        // processed new_block. should not re-process it.
-        if payload.block_number <= self.commit.block_number {
-            return Err(PayloadError::BlockRollBack(format!("Next/Processed: {}/{}", payload.block_number, self.commit.block_number)).into());
+        if new_block.extrinsic.is_empty() {
+            return Ok(false);
         }
-        if let Some((mut groups, single)) = payload.extrinsic.clone() {
-            let start = std::time::Instant::now();
-            if !single.is_empty() { groups.push(single); }
-            let mut extrinsic_data = vec![];
-            let extrinsic: Vec<_> = groups
-                .into_iter()
-                .map(|e| e.into_iter().map(|e| {
-                    extrinsic_data.push(e.encode());
-                    (TransactionSource::External, e)
-                }).collect::<Vec<_>>())
-                .collect();
-            let extrinsics_root = extrinsics_data_root::<<B::Header as HeaderT>::Hashing>(extrinsic_data);
-            if extrinsics_root != payload.extrinsics_root {
-                return Err(PayloadError::ExtrinsicErr(format!("Incorrect extrinsics_root/payload: {extrinsics_root}/{})", payload.extrinsics_root)).into());
-            }
-            let mut check_tasks: Vec<JoinHandle<Result<(usize, Duration), HotstuffError>>> = vec![];
-            for thread_extrinsic in extrinsic {
-                let client = self.client.clone();
-                let task = std::thread::spawn(move || {
-                    let thread_start = std::time::Instant::now();
-                    let length = thread_extrinsic.len();
-                    let validate_results = client
-                        .clone()
-                        .runtime_api()
-                        .validate_transactions(info.best_hash, thread_extrinsic, info.best_hash)
-                        .map_err(|e| HotstuffError::ClientError(e.to_string()))?;
-                    for res in validate_results {
-                        if let Err(e) = res {
-                            if !(e.exhausted_resources() || e.future()) {
-                                // some extrinsic check filed(error but not exhausted_resources or future).
-                                return Err(PayloadError::ExtrinsicErr(format!("validate_transactions meet err: {e:?}")).into());
-                            }
+        // verify extrinsic
+        let start = std::time::Instant::now();
+        let groups: Vec<_> = new_block.extrinsic.clone().into_iter().flatten().collect();
+        let mut extrinsic_data = vec![];
+        let extrinsic: Vec<_> = groups
+            .into_iter()
+            .map(|e| e.into_iter().map(|e| {
+                extrinsic_data.push(e.encode());
+                (TransactionSource::External, e)
+            }).collect::<Vec<_>>())
+            .collect();
+        let extrinsics_root = extrinsics_data_root::<<B::Header as HeaderT>::Hashing>(extrinsic_data);
+        if extrinsics_root != new_block.extrinsics_root {
+            return Err(PayloadError::ExtrinsicErr(format!("Incorrect extrinsics_root/payload: {extrinsics_root}/{})", new_block.extrinsics_root)).into());
+        }
+        let mut check_tasks: Vec<JoinHandle<Result<(usize, Duration), HotstuffError>>> = vec![];
+        for thread_extrinsic in extrinsic {
+            let client = self.client.clone();
+            let task = std::thread::spawn(move || {
+                let thread_start = std::time::Instant::now();
+                let length = thread_extrinsic.len();
+                let validate_results = client
+                    .clone()
+                    .runtime_api()
+                    .validate_transactions(info.best_hash, thread_extrinsic, info.best_hash)
+                    .map_err(|e| HotstuffError::ClientError(e.to_string()))?;
+                for res in validate_results {
+                    if let Err(e) = res {
+                        if !(e.exhausted_resources() || e.future()) {
+                            // some extrinsic check filed(error but not exhausted_resources or future).
+                            return Err(PayloadError::ExtrinsicErr(format!("validate_transactions meet err: {e:?}")).into());
                         }
                     }
-                    Ok((length, thread_start.elapsed()))
-                });
-                check_tasks.push(task);
-            }
-            let mut threads_verify = vec![];
-            for task in check_tasks {
-                let res = task
-                    .join()
-                    .map_err(|e| HotstuffError::Payload(PayloadError::ExtrinsicErr(format!("validate_transactions meet err: {e:?}"))))??;
-                threads_verify.push(res);
-            }
-            self.oracle.update_verify_times(&threads_verify);
-            let check_extrinsic_time = start.elapsed().as_micros();
-            if check_extrinsic_time / 1000 >= self.slot_duration.as_millis() as u128 {
-                let mut threads_verify = threads_verify
-                    .into_iter()
-                    .filter(|(n, _)| *n > 0)
-                    .map(|(n, time)| (n, time.as_millis())).collect::<Vec<_>>();
-                threads_verify.sort_by(|a, b| b.1.cmp(&a.1));
-                warn!(target: CLIENT_LOG_TARGET, "check_payload extrinsic exceed slot_duration({} millis): {check_extrinsic_time} micros(each length & millis: {threads_verify:?})", self.slot_duration.as_millis());
-            }
+                }
+                Ok((length, thread_start.elapsed()))
+            });
+            check_tasks.push(task);
+        }
+        let mut threads_verify = vec![];
+        for task in check_tasks {
+            let res = task
+                .join()
+                .map_err(|e| HotstuffError::Payload(PayloadError::ExtrinsicErr(format!("validate_transactions meet err: {e:?}"))))??;
+            threads_verify.push(res);
+        }
+        self.oracle.update_verify_times(&threads_verify);
+        let check_extrinsic_time = start.elapsed().as_micros();
+        if check_extrinsic_time / 1000 >= self.slot_duration.as_millis() as u128 {
+            let mut threads_verify = threads_verify
+                .into_iter()
+                .filter(|(n, _)| *n > 0)
+                .map(|(n, time)| (n, time.as_millis())).collect::<Vec<_>>();
+            threads_verify.sort_by(|a, b| b.1.cmp(&a.1));
+            warn!(target: CLIENT_LOG_TARGET, "check_payload extrinsic exceed slot_duration({} millis): {check_extrinsic_time} micros(each length & millis: {threads_verify:?})", self.slot_duration.as_millis());
         }
         Ok(false)
     }
