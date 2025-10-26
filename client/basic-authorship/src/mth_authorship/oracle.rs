@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use log::{debug, warn};
 use sp_api::BlockT;
-use sp_runtime::Percent;
+use sp_runtime::{PerThing, Percent, Rounding};
 use crate::BlockExecuteInfo;
 
 pub const DEFAULT_BLOCK_SIZE_LIMIT: usize = 4 * 1024 * 1024 + 512;
@@ -56,8 +56,8 @@ pub struct ExecutionOracle<B: BlockT> {
     pub execution_percent: Arc<Mutex<Percent>>,
     /// `linear_execution_time * merge_percent` estimates execution results `merge_time`(default 15%).
     pub merge_percent: Arc<Mutex<Percent>>,
-    /// state recording last block extrinsic execution speed.
-    pub execute_time_per_tx: Arc<Mutex<Duration>>,
+    /// average transaction execute time with weight.
+    pub execute_time_per_tx: Arc<Mutex<(Duration, usize)>>,
     pub block_size_limit: usize,
     phantom: PhantomData<B>,
 }
@@ -108,7 +108,7 @@ impl<B: BlockT> ExecutionOracle<B> {
             pool_percent: Arc::new(Mutex::new(pool_percent)),
             execution_percent: Arc::new(Mutex::new(execution_percent)),
             merge_percent: Arc::new(Mutex::new(merge_percent)),
-            execute_time_per_tx: Arc::new(Mutex::new(Duration::from_micros(400))),
+            execute_time_per_tx: Arc::new(Mutex::new((Duration::from_micros(400), 0))),
             block_size_limit: block_size_limit.unwrap_or(DEFAULT_BLOCK_SIZE_LIMIT),
             phantom: PhantomData,
         }
@@ -122,14 +122,22 @@ impl<B: BlockT> ExecutionOracle<B> {
         self.min_single_tx
     }
 
-    fn update_execute_time_per_tx(&self, info: &BlockExecuteInfo<B>) -> Option<Duration> {
+    fn update_execute_time_per_tx(&self, info: &BlockExecuteInfo<B>) -> Option<(Duration, Duration)> {
         let mut execute_time_per_tx = None;
-        let ave_execute_time = info.avg_time(true);
+        let (ave_execute_time, weight) = info.avg_time(true);
         if ave_execute_time > Duration::default() {
-            let pre_execute_time_per_tx = *self.execute_time_per_tx.lock().unwrap();
-            if ave_execute_time != pre_execute_time_per_tx {
-                *self.execute_time_per_tx.lock().unwrap() = ave_execute_time;
-                execute_time_per_tx = Some(ave_execute_time);
+            let (pre_execute_time_per_tx, pre_weight) = *self.execute_time_per_tx.lock().unwrap();
+            if weight > 0 {
+                let mut total_weight = (pre_weight + weight) as u128;
+                let new_exe_cute_time_per_tx = ave_execute_time.as_micros() * weight as u128 / total_weight
+                    + pre_execute_time_per_tx.as_micros() * pre_weight as u128 / total_weight;
+                let new_avg_execute_time = Duration::from_micros(new_exe_cute_time_per_tx as u64);
+                // limit weight
+                if total_weight >> 31 > 0 {
+                    total_weight = total_weight >> 1;
+                }
+                *self.execute_time_per_tx.lock().unwrap() = (new_avg_execute_time, total_weight as usize);
+                execute_time_per_tx = Some((ave_execute_time, new_avg_execute_time));
             }
         }
         execute_time_per_tx
@@ -141,7 +149,7 @@ impl<B: BlockT> ExecutionOracle<B> {
             return None;
         }
         let pool_percent = Percent::from_rational(info.group.time.as_micros(), info.time.as_micros());
-        let merge_percent = Percent::from_rational(info.merge.extra_merge_time.as_micros(), info.time.as_micros());
+        let merge_percent = Percent::from_rational_with_rounding(info.merge.extra_merge_time.as_micros(), info.time.as_micros(), Rounding::NearestPrefUp).ok()?;
         let finalize_percent = Percent::from_rational(info.finalize.as_micros(), info.time.as_micros());
         let except_execute_percent = pool_percent + merge_percent + finalize_percent;
         if except_execute_percent < Percent::one() {
@@ -152,7 +160,7 @@ impl<B: BlockT> ExecutionOracle<B> {
                 update += &format!(" pool {:?}", pool_percent);
             }
             if !execute_percent.is_zero() {
-                *self.merge_percent.lock().unwrap() = execute_percent;
+                *self.execution_percent.lock().unwrap() = execute_percent;
                 update += &format!(" execute {:?}", execute_percent);
             }
             if !merge_percent.is_zero() {
@@ -184,13 +192,24 @@ impl<B: BlockT> BlockOracle<B> for ExecutionOracle<B> {
 
         // debug info
         let mut update_info = "".to_string();
-        if let Some(avg_tx) = update_avg {
-            update_info += &format!(" avg_tx {} micros", avg_tx.as_micros());
+        if let Some((exe_avg, new_avg_tx)) = update_avg {
+            update_info += &format!(" exe_avg {} micros, new_avg_tx {} micros", exe_avg.as_micros(), new_avg_tx.as_micros());
         }
         if !update_percent.is_empty() || !update_info.is_empty() {
             let full_millis = info.time.as_millis();
             let block_duration = self.block_duration().as_millis();
-            debug!(target: "oracle_exec", "[Update] Block {} ({full_millis}/{block_duration} ms{update_percent}){update_info}", info.number);
+            let (mth_t, mth_n) = info.mth_applied();
+            let mth_info = if mth_t > 0 || mth_n > 0 {
+                format!(" {mth_n}({mth_t})")
+            } else {
+                "".to_string()
+            };
+            let single_info = if let Some(applied) = info.single_applied() {
+                format!(" {applied}")
+            } else {
+                "".to_string()
+            };
+            debug!(target: "oracle_exec", "[Update] Block {} ({full_millis}/{block_duration} ms{mth_info}{single_info}{update_percent}){update_info}", info.number);
         }
     }
 
@@ -224,7 +243,7 @@ impl<B: BlockT> BlockOracle<B> for ExecutionOracle<B> {
 
     /// one thread execution limit (multi_max + single) to limit get extrinsic from pool.
     fn thread_execution_limit(&self) -> Option<usize> {
-        let execute_time_per_tx = *self.execute_time_per_tx.lock().unwrap();
+        let (execute_time_per_tx, _) = *self.execute_time_per_tx.lock().unwrap();
         if execute_time_per_tx == Duration::default() {
             return None;
         }

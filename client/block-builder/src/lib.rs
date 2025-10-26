@@ -286,17 +286,18 @@ where
 
 	/// Push onto the block's list of extrinsics.
 	pub fn push_batch(&mut self, xts: Vec<<Block as BlockT>::Extrinsic>, timeout: std::time::Duration)
-		-> (Vec<Result<(), Error>>, Vec<(usize, Error)>, Vec<(usize, Error)>)
+		-> (Vec<Result<(), Error>>, Vec<(usize, Error)>, Vec<(usize, Error)>, Vec<(usize, Error)>)
 	{
 		let parent_hash = self.parent_hash;
 		let extrinsics = &mut self.extrinsics;
 		let version = self.version;
         let mut rollback = Vec::new();
-		let mut stale_or_futures = Vec::new();
+		let mut stale = Vec::new();
+		let mut future = Vec::new();
         let mut batch_results = Vec::with_capacity(xts.len());
 
 		self.api.execute_in_transaction(|api| {
-			let (res, roll_back, stale_or_futures) = if version < 6 {
+			let (res, roll_back) = if version < 6 {
 				let start = std::time::Instant::now();
 				for (i, xt) in xts.clone().into_iter().enumerate() {
 					#[allow(deprecated)]
@@ -310,8 +311,11 @@ where
                             match result {
                                 Ok(r) => batch_results.push(Ok(r)),
                                 Err(e) => {
-									if e.stale_or_future() {
-										stale_or_futures.push((i, ApplyExtrinsicFailed::Validity(e).into()));
+									if e.stale() {
+										stale.push((i, ApplyExtrinsicFailed::Validity(e).into()));
+									}
+									if e.future() {
+										future.push((i, ApplyExtrinsicFailed::Validity(e).into()));
 									}
                                     if !e.exhausted_resources() && !e.stale_or_future() {
                                         rollback.push((i, ApplyExtrinsicFailed::Validity(e).into()));
@@ -331,7 +335,7 @@ where
 						break;
 					}
 				}
-				(batch_results, rollback, stale_or_futures)
+				(batch_results, rollback)
 			} else {
 				match api.apply_extrinsics_with_context(
 					parent_hash,
@@ -346,8 +350,11 @@ where
                                 Err(e) => {
                                     // For multi threads execution, exhausted_resources does not matter.
 									// Nonce Stale or Future also doesn't matter since we did no storage changes.
-									if e.stale_or_future() {
-										stale_or_futures.push((i, ApplyExtrinsicFailed::Validity(e).into()));
+									if e.stale() {
+										stale.push((i, ApplyExtrinsicFailed::Validity(e).into()));
+									}
+									if e.future() {
+										future.push((i, ApplyExtrinsicFailed::Validity(e).into()));
 									}
                                     if !e.exhausted_resources() && !e.stale_or_future() {
                                         // if meat other error, should roll back.
@@ -358,9 +365,9 @@ where
                                 }
                             }
                         }
-                        (batch_results, rollback, stale_or_futures)
+                        (batch_results, rollback)
 					},
-					Err(e) => (vec![], vec![(0, Error::from(e))], vec![]),
+					Err(e) => (vec![], vec![(0, Error::from(e))]),
 				}
 			};
             if roll_back.is_empty() {
@@ -374,9 +381,9 @@ where
                         Err(e) => Err(e),
                     });
                 }
-                TransactionOutcome::Commit((results, roll_back, stale_or_futures))
+                TransactionOutcome::Commit((results, roll_back, stale, future))
             } else {
-                TransactionOutcome::Rollback((Vec::new(), roll_back, stale_or_futures))
+                TransactionOutcome::Rollback((Vec::new(), roll_back, stale, future))
             }
 		})
 	}

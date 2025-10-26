@@ -13,7 +13,7 @@ use sp_runtime::{
 };
 
 use hotstuff_primitives::AuthorityId;
-use sc_basic_authorship::BlockPropose;
+use sc_basic_authorship::{BlockOracle, BlockPropose};
 use sc_network_common::role::Role;
 use sp_consensus::Error as ConsensusError;
 use crate::{authorities::SharedAuthoritySet, aux_schema, import::HotstuffBlockImport};
@@ -118,14 +118,15 @@ where
 
 /// Make block importer and link half necessary to tie the background voter
 /// to it.
-pub fn block_import<BE, Block: BlockT, Client, SC, E, Error>(
+pub fn block_import<BE, Block: BlockT, Client, SC, E, O, Error>(
     role: Role,
     client: Arc<Client>,
     executor: E,
+    oracle: Arc<O>,
     genesis_authorities_provider: &dyn GenesisAuthoritySetProvider<Block>,
 ) -> Result<
     (
-        HotstuffBlockImport<BE, Block, Client, E>,
+        HotstuffBlockImport<BE, Block, Client, E, O>,
         LinkHalf<Block, Client, SC>,
     ),
     ClientError,
@@ -134,6 +135,7 @@ where
     BE: Backend<Block> + 'static,
     Client: ClientForHotstuff<Block, BE> + 'static,
     E: BlockPropose<Block, Transaction = TransactionFor<Client, Block>, Error = Error> + Send + Sync + 'static,
+    O: BlockOracle<Block> + Sync + Send + 'static,
     Error: std::error::Error + Send + From<ConsensusError> + 'static,
 {
     let chain_info = client.info();
@@ -157,7 +159,7 @@ where
     )?;
 
     Ok((
-        HotstuffBlockImport::new(client.clone(), role, Arc::new(executor)),
+        HotstuffBlockImport::new(client.clone(), role, Arc::new(executor), oracle),
         LinkHalf {
             client,
             select_chain: None,

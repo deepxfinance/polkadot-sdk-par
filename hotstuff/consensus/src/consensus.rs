@@ -5,6 +5,7 @@ use std::{
     sync::Arc,
     task::{Context, Poll},
 };
+use std::collections::HashSet;
 use std::marker::PhantomData;
 use std::str::FromStr;
 use std::thread::JoinHandle;
@@ -375,7 +376,7 @@ pub struct ConsensusWorker<
     S: SyncingT<B> + Sync + 'static,
     PF: Environment<B, Error = Error> + Send + Sync + 'static,
     Error: std::error::Error + Send + From<ConsensusError> + 'static,
-    O: BlockOracle<B> + HotsOracle + Sync + Send + 'static,
+    O: BlockOracle<B> + HotsOracle<B> + Sync + Send + 'static,
 > {
     state: ConsensusState<B>,
 
@@ -393,7 +394,6 @@ pub struct ConsensusWorker<
     oracle: Arc<O>,
     /// Tmp cache for not voted proposal(should be verified and qc mission is handled).
     pending_proposal: Option<Proposal<B>>,
-    processing: Option<Payload<B>>,
     processed: Payload<B>,
     /// consensus success block waiting to execute.
     commit: BlockCommit<B>,
@@ -412,7 +412,7 @@ where
     PF: Environment<B, Error = Error> + Send + Sync + 'static,
     PF::Proposer: Proposer<B, Error = Error, Transaction = sp_api::TransactionFor<C, B>> + BlockPropose<B> + GroupTransaction<B>,
     Error: std::error::Error + Send + From<ConsensusError> + 'static,
-    O: BlockOracle<B> + HotsOracle + Sync + Send + 'static,
+    O: BlockOracle<B> + HotsOracle<B> + Sync + Send + 'static,
 {
     #![allow(clippy::too_many_arguments)]
     pub fn new(
@@ -464,7 +464,6 @@ where
             proposer_factory,
             oracle,
             pending_proposal: None,
-            processing: None,
             processed,
             commit,
             processed_extrinsic: None,
@@ -727,7 +726,6 @@ where
                 self.handle_qc(&tc.high_qc);
                 if tc.view >= self.state.view() {
                     self.advance_view(tc.view);
-                    self.processing = None;
                 }
             }
             self.handle_qc(&proposal.qc);
@@ -761,7 +759,6 @@ where
                 }
             }
         }
-        self.processing = Some(proposal.payload.clone());
 
         if let Some(vote) = self.state.make_vote(&proposal) {
             trace!(target: CLIENT_LOG_TARGET, "~~ handle proposal({from}). make vote. view {}", vote.view);
@@ -923,12 +920,6 @@ where
                     }
                     self.commit = commit;
                     self.processed_extrinsic = grandpa.payload.extrinsic.clone();
-                    if self.processing.is_some()
-                        && new_block_number >= self.processing.as_ref().unwrap().block_number
-                    {
-                        // clear here for local to get correct next proposal payload
-                        self.processing = None;
-                    }
                     // if full consensus for a new block success, reset timer.
                     self.local_timer.reset();
                 } else {
@@ -955,7 +946,6 @@ where
             self.advance_view(tc.view);
             self.local_timer.reset();
         }
-        self.processing = None;
         let is_leader = self.state.is_leader();
         debug!(
             target: CLIENT_LOG_TARGET,
@@ -1037,12 +1027,7 @@ where
                 // self.processed.stage.next() is none, this means the processed block is finished, continue for next block.
                 .max(self.processed.block_number.saturating_add(1u32.into()))
                 .max(self.commit.block_number.saturating_add(1u32.into()));
-            let mut except_extrinsic = None;
-            if self.commit.block_number > best {
-                // this processed block extrinsic are not executed, should exclude it for
-                except_extrinsic = self.processed_extrinsic.as_ref();
-            }
-            let (get_payload, time) = self.get_payload(block_number, except_extrinsic).await;
+            let (get_payload, time) = self.get_payload(block_number).await;
             trace!(target: CLIENT_LOG_TARGET, "~~ get_proposal_payload(next). best: {best}, processed: Commit:{}, new: {block_number} in {time} micros", self.commit.block_number);
             payload = Some(get_payload);
         }
@@ -1059,19 +1044,12 @@ where
         <<B::Header as HeaderT>::Hashing as HashT>::hash(EMPTY_PAYLOAD)
     }
 
-    async fn get_payload(
-        &self,
-        block_number: <B::Header as HeaderT>::Number,
-        exclude: Option<&(Vec<Vec<B::Extrinsic>>, Vec<B::Extrinsic>)>,
-    ) -> (Payload<B>, u128) {
+    async fn get_payload(&self, block_number: <B::Header as HeaderT>::Number) -> (Payload<B>, u128) {
         let start = std::time::Instant::now();
         let info = self.client.info();
         let parent_header = self.client.header(info.best_hash).expect("failed to get best_hash").expect("no expected header");
         let proposer = self.proposer_factory.write().await.init(&parent_header).await.expect("proposer init");
-        let except: Vec<&B::Extrinsic> = exclude
-            .map(|(groups, single)| [groups.iter().flatten().collect::<Vec<&B::Extrinsic>>(), single.iter().collect()].concat())
-            .unwrap_or_default();
-        let mut extrinsic = match GroupTransaction::<B>::extrinsic(
+        let (mut multi, single, group_info) = match GroupTransaction::<B>::extrinsic(
             &proposer,
             *parent_header.number(),
             // time wait for pool response. (slot_duration / 10)
@@ -1080,32 +1058,53 @@ where
             self.local_timer.period() / 10,
             None,
             None,
-            except,
+            self.filter_transactions(),
         ).await {
-            Ok(extrinsic) => extrinsic,
+            Ok((multi, single, info)) => {
+                let mut groups: Vec<_> = multi.iter().map(|g| g.len()).collect();
+                groups.push(single.len());
+                debug!(target: CLIENT_LOG_TARGET, "GroupTransaction for {block_number} base on {} {groups:?}", parent_header.number());
+                (multi, single, info)
+            },
             Err(e) => {
                 warn!(target: CLIENT_LOG_TARGET, "GroupTransaction base on {} failed for {e:?}", parent_header.number());
                 return (Payload::empty(), start.elapsed().as_micros());
             }
         };
+        self.oracle.update_group_info(&group_info);
         // sort by extrinsic length ascending order for merge.
-        extrinsic.0.sort_by(|a, b| a.len().cmp(&b.len()));
-        let mut extrinsic_data : Vec<Vec<u8>>= extrinsic.0
+        multi.sort_by(|a, b| a.len().cmp(&b.len()));
+        let mut extrinsic_data : Vec<Vec<u8>>= multi
             .iter()
             .map(|g| g.iter().map(|e| e.encode()).collect::<Vec<Vec<u8>>>())
             .flatten()
             .collect::<Vec<Vec<u8>>>();
-        extrinsic_data.extend(extrinsic.1.iter().map(|e| e.encode()).collect::<Vec<Vec<u8>>>());
+        extrinsic_data.extend(single.iter().map(|e| e.encode()).collect::<Vec<Vec<u8>>>());
         (
             Payload {
                 best_block: BlockInfo { number: info.best_number, hash: info.best_hash },
                 block_number,
                 extrinsics_root: extrinsics_data_root::<<B::Header as HeaderT>::Hashing>(extrinsic_data),
-                extrinsic: Some(extrinsic),
+                extrinsic: Some((multi, single)),
                 stage: ConsensusStage::Prepare,
             },
             start.elapsed().as_micros(),
         )
+    }
+
+    fn filter_transactions(&self) -> HashSet<B::Hash> {
+        let mut filter = self.oracle.filter_transactions();
+        if self.commit.block_number > self.client.info().best_number {
+            // this processed block extrinsic are not executed, should exclude it for
+            if let Some((multi, single)) = &self.processed_extrinsic {
+                for hash in multi.iter().flatten().map(|tx| <<B::Header as HeaderT>::Hashing as HashT>::hash(&tx.encode()))
+                    .chain(single.iter().map(|tx| <<B::Header as HeaderT>::Hashing as HashT>::hash(&tx.encode())))
+                {
+                    filter.insert(hash);
+                }
+            }
+        }
+        filter
     }
 
     // check proposal.payload have consist parents in local for final Commit
@@ -1303,7 +1302,7 @@ where
     PF: Environment<B, Error = Error> + Send + Sync + 'static,
     PF::Proposer: Proposer<B, Error = Error, Transaction = sp_api::TransactionFor<C, B>> + BlockPropose<B>,
     Error: std::error::Error + Send + From<ConsensusError> + 'static,
-    O: BlockOracle<B> + HotsOracle + Sync + Send + 'static,
+    O: BlockOracle<B> + HotsOracle<B> + Sync + Send + 'static,
 {
 }
 
@@ -1343,7 +1342,7 @@ where
     CIDP: CreateInherentDataProviders<B, Timestamp> + Send + 'static,
     CIDP::InherentDataProviders: InherentDataProviderExt + Send,
     SC: SelectChain<B>,
-    O: BlockOracle<B> + HotsOracle + Sync + Send + 'static,
+    O: BlockOracle<B> + HotsOracle<B> + Sync + Send + 'static,
 {
     let LinkHalf { client, .. } = link;
     let authorities = get_authorities_from_client::<B, BE, C>(client.clone());

@@ -13,7 +13,7 @@ use tokio::sync::oneshot::{Receiver, Sender};
 use tokio::sync::RwLock;
 use hotstuff_primitives::digests::CompatibleDigestItem;
 use hotstuff_primitives::HOTSTUFF_ENGINE_ID;
-use sc_basic_authorship::BlockPropose;
+use sc_basic_authorship::{BlockOracle, BlockPropose};
 use sc_client_api::{
 	client::{FinalityNotifications, ImportNotifications},
 	Backend, BlockImportNotification,
@@ -45,15 +45,16 @@ pub trait ImportLock<B: BlockT> {
     async fn unlock(&self, origin: BlockOrigin, number: <B::Header as HeaderT>::Number);
 }
 
-pub struct HotstuffBlockImport<Backend, Block: BlockT, Client, E> {
+pub struct HotstuffBlockImport<Backend, Block: BlockT, Client, E, O> {
 	inner: Arc<Client>,
 	role: Role,
 	executor: Arc<E>,
+	oracle: Arc<O>,
     import_lock: Arc<RwLock<HashMap<<Block::Header as HeaderT>::Number, BlockNotification<Block>>>>,
 	phantom: PhantomData<(Backend, Block)>,
 }
 
-impl<BE, Block: BlockT, Client, E, Error> HotstuffBlockImport<BE, Block, Client, E>
+impl<BE, Block: BlockT, Client, E, O, Error> HotstuffBlockImport<BE, Block, Client, E, O>
 where
 	BE: Backend<Block>,
 	Client: ClientForHotstuff<Block, BE> + 'static,
@@ -61,6 +62,7 @@ where
 	BlockImport<Block, Error = ConsensusError, Transaction = TransactionFor<Client, Block>>,
 	TransactionFor<Client, Block>: 'static,
     E: BlockPropose<Block, Transaction = TransactionFor<Client, Block>, Error = Error> + Send + Sync + 'static,
+	O: BlockOracle<Block> + Sync + Send + 'static,
     Error: std::error::Error + Send + From<ConsensusError> + 'static,
 {
 	/// Return
@@ -113,12 +115,13 @@ where
 	}
 }
 
-impl<Backend, Block: BlockT, Client, E> Clone for HotstuffBlockImport<Backend, Block, Client, E> {
+impl<Backend, Block: BlockT, Client, E, O> Clone for HotstuffBlockImport<Backend, Block, Client, E, O> {
 	fn clone(&self) -> Self {
 		HotstuffBlockImport {
 			inner: self.inner.clone(),
 			role: self.role.clone(),
 			executor: self.executor.clone(),
+			oracle: self.oracle.clone(),
             import_lock: self.import_lock.clone(),
 			phantom: PhantomData,
 		}
@@ -126,11 +129,12 @@ impl<Backend, Block: BlockT, Client, E> Clone for HotstuffBlockImport<Backend, B
 }
 
 #[async_trait::async_trait]
-impl<Backend, Block: BlockT, Client, E> ImportLock<Block> for HotstuffBlockImport<Backend, Block, Client, E>
+impl<Backend, Block: BlockT, Client, E, O> ImportLock<Block> for HotstuffBlockImport<Backend, Block, Client, E, O>
 where
     Backend: Send + Sync,
     Client: Send + Sync + 'static,
     E: Send + Sync,
+	O: Send + Sync,
 {
     async fn lock(&self, origin: BlockOrigin, number: <Block::Header as HeaderT>::Number) {
 		// if locked by same origin, return for continue import.
@@ -176,12 +180,13 @@ where
     }
 }
 
-impl<Backend, Block: BlockT, Client, E> HotstuffBlockImport<Backend, Block, Client, E> {
-	pub fn new(inner: Arc<Client>, role: Role, executor: Arc<E>) -> HotstuffBlockImport<Backend, Block, Client, E> {
+impl<Backend, Block: BlockT, Client, E, O> HotstuffBlockImport<Backend, Block, Client, E, O> {
+	pub fn new(inner: Arc<Client>, role: Role, executor: Arc<E>, oracle: Arc<O>) -> HotstuffBlockImport<Backend, Block, Client, E, O> {
 		HotstuffBlockImport {
             inner,
             role,
             executor,
+			oracle,
             import_lock: Arc::new(RwLock::new(HashMap::new())),
             phantom: PhantomData,
         }
@@ -189,7 +194,7 @@ impl<Backend, Block: BlockT, Client, E> HotstuffBlockImport<Backend, Block, Clie
 }
 
 #[async_trait::async_trait]
-impl<BE, Block: BlockT, Client, E, Error> BlockImport<Block> for HotstuffBlockImport<BE, Block, Client, E>
+impl<BE, Block: BlockT, Client, E, O, Error> BlockImport<Block> for HotstuffBlockImport<BE, Block, Client, E, O>
 where
 	BE: Backend<Block>,
 	Client: ClientForHotstuff<Block, BE> + 'static,
@@ -197,6 +202,7 @@ where
 		BlockImport<Block, Error = ConsensusError, Transaction = TransactionFor<Client, Block>>,
 	TransactionFor<Client, Block>: 'static,
     E: BlockPropose<Block, Transaction = TransactionFor<Client, Block>, Error = Error> + Send + Sync + 'static,
+	O: BlockOracle<Block> + Sync + Send + 'static,
     Error: std::error::Error + Send + From<ConsensusError> + 'static,
 {
 	type Error = ConsensusError;
@@ -271,6 +277,7 @@ where
         self.lock(block.origin, *block.header.number()).await;
 		let justifications = block.justifications.take();
 		let block_commit = find_block_commit::<Block>(&block.post_header());
+		let mut block_execute_info = None;
 		let import_result = match self.inner.status(hash) {
 			Ok(BlockStatus::InChain) => {
                 self.unlock(block.origin, *block.header.number()).await;
@@ -290,7 +297,8 @@ where
 						|| self.role.is_authority()
 					{
 						let result = match calculate_block(&block) {
-							Ok((proposal, _info)) => {
+							Ok((proposal, info)) => {
+								block_execute_info = Some(info);
 								if let Err(e) = check_header::<Block>(&block.header, &proposal.block.header()) {
 									Err(ConsensusError::ClientImport(format!("Check header with calculated: {e}")))
 								} else {
@@ -352,15 +360,21 @@ where
 				}
 			}
 		}
+		if import_result.is_ok() {
+			if let Some(info) = block_execute_info.take() {
+				self.oracle.update_execute_info(&info);
+			}
+		}
 		import_result
 	}
 }
 
-impl<BE, Block: BlockT, Client, E> HotstuffBlockImport<BE, Block, Client, E>
+impl<BE, Block: BlockT, Client, E, O> HotstuffBlockImport<BE, Block, Client, E, O>
 where
 	BE: Backend<Block>,
 	Client: ClientForHotstuff<Block, BE>,
     E: Send + Sync + 'static,
+	O: Send + Sync + 'static,
 {
 	/// Import a block justification and finalize the block.
 	///
@@ -392,12 +406,13 @@ where
 }
 
 #[async_trait::async_trait]
-impl<BE, Block: BlockT, Client, E> JustificationImport<Block>
-	for HotstuffBlockImport<BE, Block, Client, E>
+impl<BE, Block: BlockT, Client, E, O> JustificationImport<Block>
+	for HotstuffBlockImport<BE, Block, Client, E, O>
 where
 	BE: Backend<Block>,
 	Client: ClientForHotstuff<Block, BE>,
     E: Send + Sync + 'static,
+	O: Send + Sync + 'static,
 {
 	type Error = ConsensusError;
 

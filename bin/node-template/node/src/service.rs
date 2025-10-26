@@ -41,12 +41,13 @@ pub(crate) type FullClient =
 type FullBackend = sc_service::TFullBackend<Block>;
 type FullSelectChain = sc_consensus::LongestChain<FullBackend, Block>;
 type FullPool = sc_transaction_pool::FullPool<Block, FullClient, DefaultRCGroup>;
+type Oracle = HotstuffOracle<Block, ExecutionOracle<Block>>;
 type ProposerFactory = sc_basic_authorship::MTHProposerFactory<
 	FullPool,
 	FullBackend,
 	FullClient,
 	DisableProofRecording,
-	HotstuffOracle<Block, ExecutionOracle<Block>>,
+	Oracle,
 	MergeHandler<FullBackend, Block>,
 	ExtendTx,
 >;
@@ -70,9 +71,10 @@ pub fn new_partial(
 		sc_consensus::DefaultImportQueue<Block, FullClient>,
 		FullPool,
 		(
-			hotstuff_consensus::HotstuffBlockImport<FullBackend, Block, FullClient, BlockExecutor>,
+			hotstuff_consensus::HotstuffBlockImport<FullBackend, Block, FullClient, BlockExecutor, Oracle>,
 			//LinkHalf is something like `client`, `backend`, `network`, and other components needed by the Hotstuff consensus.
 			hotstuff_consensus::LinkHalf<Block, FullClient, FullSelectChain>,
+			Arc<Oracle>,
 			Option<Telemetry>,
 		),
 	>,
@@ -120,8 +122,8 @@ pub fn new_partial(
 		Default::default(),
 		None,
 	);
-
-	let (hotstuff_block_import, hotstuff_link) = hotstuff_consensus::block_import(config.role.clone(), client.clone(), executor, &client)?;
+	let hotstuff_oracle = Arc::new(HotstuffOracle::new(Arc::new(ExecutionOracle::new(None))));
+	let (hotstuff_block_import, hotstuff_link) = hotstuff_consensus::block_import(config.role.clone(), client.clone(), executor, hotstuff_oracle.clone(), &client)?;
 
 	let slot_duration = hotstuff_consensus::slot_duration(&*client)?;
 	let import_queue =
@@ -154,7 +156,7 @@ pub fn new_partial(
 		keystore_container,
 		select_chain,
 		transaction_pool,
-		other: (hotstuff_block_import, hotstuff_link, telemetry),
+		other: (hotstuff_block_import, hotstuff_link, hotstuff_oracle, telemetry),
 	})
 }
 
@@ -168,7 +170,7 @@ pub fn new_full(config: Configuration) -> Result<TaskManager, ServiceError> {
 		keystore_container,
 		select_chain,
 		transaction_pool,
-		other: (hotstuff_block_import, hotstuff_link, mut telemetry),
+		other: (hotstuff_block_import, hotstuff_link, hotstuff_oracle, mut telemetry),
 	} = new_partial(&config)?;
 
 	let mut net_config = sc_network::config::FullNetworkConfiguration::new(&config.network);
@@ -232,7 +234,6 @@ pub fn new_full(config: Configuration) -> Result<TaskManager, ServiceError> {
 	})?;
 
 	// Create hotstuff consensus voter & network.
-	let hotstuff_oracle = Arc::new(HotstuffOracle::new(Arc::new(ExecutionOracle::new(None))));
 	let proposer_factory: ProposerFactory = ProposerFactory::new(
 		task_manager.spawn_handle(),
 		client.clone(),

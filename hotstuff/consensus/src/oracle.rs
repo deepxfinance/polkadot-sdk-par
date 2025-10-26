@@ -1,18 +1,23 @@
+use std::collections::{BTreeMap, HashSet};
 use std::env;
 use std::marker::PhantomData;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use sc_basic_authorship::{BlockExecuteInfo, BlockOracle};
-use sp_api::BlockT;
+use sc_basic_authorship::{BlockExecuteInfo, BlockOracle, GroupInfo};
+use sp_api::{BlockT, HeaderT};
 use sp_runtime::Percent;
 
-pub trait HotsOracle {
+pub trait HotsOracle<B: BlockT> {
+    /// update state by group info
+    fn update_group_info(&self, info: &GroupInfo);
     /// update verify speed by verify results(transaction number and time(micros)).
     fn update_verify_times(&self, verify_times: &Vec<(usize, Duration)>);
     /// estimate verify transaction time limit.
     fn verify_time_limit(&self) -> Duration;
     /// estimate transaction verify number(which is used for transaction propose).
     fn thread_verify_limit(&self) -> Option<usize>;
+    /// transactions hash should be filtered when propose.
+    fn filter_transactions(&self) -> HashSet<B::Hash>;
 }
 
 #[derive(Default)]
@@ -24,6 +29,10 @@ pub struct HotstuffOracle<B: BlockT, O: BlockOracle<B>> {
     pub verify_percent: Arc<Mutex<Percent>>,
     /// state recording last verify extrinsic speed.
     pub verify_time_per_tx: Arc<Mutex<Duration>>,
+    /// config filter blocks.
+    pub filter_blocks: u32,
+    /// filter all applied transaction.
+    pub transaction_filter: Arc<Mutex<BTreeMap<<B::Header as HeaderT>::Number, HashSet<B::Hash>>>>,
     phantom: PhantomData<B>,
 }
 
@@ -42,17 +51,47 @@ impl<B: BlockT, O: BlockOracle<B>> HotstuffOracle<B, O> {
                 verify_percent = Percent::from_percent(percent);
             }
         }
+        let mut filter_blocks = 50u32;
+        if let Ok(value) = env::var("HOTSTUFF_FILTER_BLOCKS") {
+            if let Ok(blocks) = value.parse::<u32>() {
+                filter_blocks = blocks.max(1);
+            }
+        }
         Self {
             inner,
             hotstuff_duration,
             verify_percent: Arc::new(Mutex::new(verify_percent)),
             verify_time_per_tx: Arc::new(Mutex::new(Duration::from_micros(200))),
+            filter_blocks,
+            transaction_filter: Arc::new(Mutex::new(BTreeMap::new())),
             phantom: PhantomData,
         }
     }
 }
 
-impl<B: BlockT, O: BlockOracle<B>> HotsOracle for HotstuffOracle<B, O> {
+impl <B: BlockT, O: BlockOracle<B>> HotstuffOracle<B, O> {
+    pub fn update_block_transactions(&self, info: &BlockExecuteInfo<B>) {
+        let transactions: HashSet<_> = info.threads.iter().map(|t| t.1.transactions.clone()).flatten().collect();
+        let mut filter =  self.transaction_filter.lock().unwrap();
+        let mut blocks: Vec<_> = filter.keys().cloned().collect();
+        blocks.sort_by(|a, b| b.cmp(&a));
+        if blocks.len() >= self.filter_blocks as usize {
+            for index in self.filter_blocks as usize - 1..blocks.len() - 1 {
+                filter.remove(&blocks[index]);
+            }
+        }
+        filter.insert(info.number, transactions);
+    }
+}
+
+impl<B: BlockT, O: BlockOracle<B>> HotsOracle<B> for HotstuffOracle<B, O> {
+    fn update_group_info(&self, info: &GroupInfo) {
+        let group_info = info.info();
+        if !group_info.is_empty() {
+            log::debug!(target: "oracle_hots", "[Update] {group_info}");
+        }
+    }
+
     // each value at input should be (verify_number, verify_micros)
     fn update_verify_times(&self, verify_times: &Vec<(usize, Duration)>) {
         // TODO update verify_percent by full_time and hotstuff_duration?
@@ -90,6 +129,10 @@ impl<B: BlockT, O: BlockOracle<B>> HotsOracle for HotstuffOracle<B, O> {
         // During full consensus process, verify extrinsic takes most time.
         Some(self.verify_time_limit().as_micros() as usize / verify_time_per_tx.as_micros() as usize)
     }
+
+    fn filter_transactions(&self) -> HashSet<B::Hash> {
+        self.transaction_filter.lock().unwrap().values().cloned().flatten().collect()
+    }
 }
 
 impl<B: BlockT, O: BlockOracle<B>> BlockOracle<B> for  HotstuffOracle<B, O> {
@@ -99,6 +142,7 @@ impl<B: BlockT, O: BlockOracle<B>> BlockOracle<B> for  HotstuffOracle<B, O> {
 
     fn update_execute_info(&self, info: &BlockExecuteInfo<B>) {
         self.inner.update_execute_info(info);
+        self.update_block_transactions(info);
     }
 
     fn block_duration(&self) -> Duration {

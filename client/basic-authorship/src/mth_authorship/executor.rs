@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::marker::PhantomData;
 use std::sync::Arc;
 use std::{cmp, time};
@@ -339,7 +339,7 @@ where
         mth_execute_deadline: time::Instant,
         inherents: Vec<<Block as BlockT>::Extrinsic>,
         extrinsic_group: Vec<Vec<(usize, Option<<A as TransactionPool>::Hash>, Block::Extrinsic)>>,
-        merge_tx: Sender<(MergeType<A, Block>, Option<ThreadExecutionInfo>)>,
+        merge_tx: Sender<(MergeType<A, Block>, Option<ThreadExecutionInfo<Block>>)>,
         round_tx: usize,
         allow_extend: bool,
         limit_execution_time: bool,
@@ -408,8 +408,9 @@ where
         is_extend: bool,
         allow_extend: bool,
         limit_execution_time: bool,
-    ) -> (Vec<<A as TransactionPool>::Hash>, EndProposingReason, ThreadExecutionInfo) {
+    ) -> (Vec<<A as TransactionPool>::Hash>, EndProposingReason, ThreadExecutionInfo<Block>) {
         let mut thread_info = ThreadExecutionInfo::new(thread);
+        let mut filter_transactions: HashSet<Block::Hash> = pending_txs.iter().filter_map(|(_, tx, _)| tx.clone()).collect();
         if pending_txs.is_empty() {
             return (Vec::new(), EndProposingReason::NoMoreTransactions, thread_info);
         }
@@ -450,9 +451,9 @@ where
             } else {
                 time::Duration::from_secs(u64::MAX)
             };
-            let (results, rollback, stale_or_futures) = block_builder.push_batch(batch_txs, timeout);
-            thread_info.stale_or_future += stale_or_futures.len();
-            let invalid_nonce_length = stale_or_futures.len();
+            let (results, rollback, stale, future) = block_builder.push_batch(batch_txs, timeout);
+            thread_info.stale_or_future += stale.len() + future.len();
+            let invalid_nonce_length = stale.len() + future.len();
             total_nonce_err_tx += invalid_nonce_length;
             let mut executed = results.len();
             round_execute_collect.push(executed - invalid_nonce_length);
@@ -461,7 +462,7 @@ where
                     match result {
                         Ok(()) => (),
                         Err(ApplyExtrinsicFailed(Validity(e))) if e.exhausted_resources() => {
-                            if !is_extend {
+                            if !is_extend && limit_execution_time {
                                 should_break = Some(EndProposingReason::HitBlockWeightLimit);
                             }
                         }
@@ -474,13 +475,18 @@ where
                 executed = 0;
             }
             // clear invalid extrinsic.
-            let mut invalid: Vec<_> = [rollback, stale_or_futures].into_iter().flatten().collect();
+            let mut invalid: Vec<_> = [rollback, stale, future].into_iter().flatten().collect();
             invalid.sort_by(|a, b| a.0.cmp(&b.0));
             let mut remove_offset = 0usize;
             for (index, e) in invalid {
                 if let Some(invalid_hash) = &execute_txs[index - remove_offset].1 {
                     trace!("[{invalid_hash:?}] Invalid transaction: {e}");
                     unqueue_invalid.push(invalid_hash.clone());
+                    if let ApplyExtrinsicFailed(Validity(e)) = e {
+                        if e.future() {
+                            filter_transactions.remove(&invalid_hash);
+                        }
+                    }
                 }
                 // drop this rollback extrinsic
                 execute_txs.remove(index - remove_offset);
@@ -496,6 +502,7 @@ where
         };
         let applied = block_builder.extrinsics.len() - initial_applied;
         thread_info.applied = applied;
+        thread_info.transactions = filter_transactions.into_iter().collect();
         // TODO show this later, not block execute.
         Self::thread_finish_log(
             is_extend,
@@ -615,8 +622,8 @@ where
         inherents_len: usize,
         mth_finish_deadline: time::Instant,
         thread_number: usize,
-        merge_tx: Sender<(MergeType<A, Block>, Option<ThreadExecutionInfo>)>,
-        mut merge_rx: Receiver<(MergeType<A, Block>, Option<ThreadExecutionInfo>)>,
+        merge_tx: Sender<(MergeType<A, Block>, Option<ThreadExecutionInfo<Block>>)>,
+        mut merge_rx: Receiver<(MergeType<A, Block>, Option<ThreadExecutionInfo<Block>>)>,
         merge_in_thread_order: bool,
         limit_execution_time: bool,
         recorder: &mut InfoRecorder<Block>,
@@ -717,7 +724,7 @@ where
     }
 
     fn merge_process(
-        mut merge_tx: Sender<(MergeType<A, Block>, Option<ThreadExecutionInfo>)>,
+        mut merge_tx: Sender<(MergeType<A, Block>, Option<ThreadExecutionInfo<Block>>)>,
         block: <<Block as BlockT>::Header as HeaderT>::Number,
         mbh: &MBH,
         changes1: MergeType<A, Block>,

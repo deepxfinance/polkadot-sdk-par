@@ -5,7 +5,7 @@ pub mod executor;
 pub mod execute_info;
 pub mod oracle;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 use codec::Decode;
@@ -20,6 +20,7 @@ pub use mth_authorship::*;
 use sp_core::ExecutionContext;
 use sp_inherents::InherentData;
 use sp_runtime::Digest;
+use crate::GroupInfo;
 use crate::mth_authorship::execute_info::BlockExecuteInfo;
 
 /// Extended merge help trat for better handle state merge.
@@ -37,13 +38,13 @@ pub trait GroupTransaction<Block: BlockT> {
         &self,
         parent: <Block::Header as HeaderT>::Number,
         // time limit for waiting transaction_pool response before start get transaction.
-        wait_time: Duration,
+        wait_pool: Duration,
         // time limit to get transactions from pool(this includes `wait_pool`).
-        pool_time: Duration,
+        max_time: Duration,
         init_block_size: Option<usize>,
         init_proof_size: Option<usize>,
-        except: Vec<&Block::Extrinsic>,
-    ) -> Result<(Vec<Vec<Block::Extrinsic>>, Vec<Block::Extrinsic>), String>;
+        filter: HashSet<Block::Hash>,
+    ) -> Result<(Vec<Vec<Block::Extrinsic>>, Vec<Block::Extrinsic>, GroupInfo), String>;
 }
 
 /// Get extrinsic by grouped.

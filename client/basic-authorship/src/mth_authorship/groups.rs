@@ -7,8 +7,8 @@ use codec::Encode;
 use futures::{select, FutureExt};
 use log::{trace, debug};
 use sc_transaction_pool_api::{InPoolTransaction, TransactionPool};
-use sp_runtime::traits::{Hash as HashT, Block as BlockT, Header as HeaderT, One};
-use crate::GroupInfo;
+use sp_runtime::traits::{Block as BlockT, Header as HeaderT, One};
+use crate::{GroupInfo, GroupTxInput, GroupTxOutput};
 
 /// If the block is full we will attempt to push at most
 /// this number of transactions before quitting for real.
@@ -20,14 +20,6 @@ pub struct TransactionGrouper<A, B> {
     /// The transaction pool.
     transaction_pool: Arc<A>,
     phantom: PhantomData<B>,
-}
-
-pub struct GroupTxOutput<A: TransactionPool> {
-    /// Parallel execute transactions.
-    pub groups: Vec<Vec<(usize, Arc<<A as TransactionPool>::InPoolTransaction>)>>,
-    /// Tailing single thread execute transactions.
-    pub single: Vec<(usize, Arc<<A as TransactionPool>::InPoolTransaction>)>,
-    pub info: GroupInfo,
 }
 
 impl<A, B: BlockT> TransactionGrouper<A, B>
@@ -42,27 +34,23 @@ where
     pub async fn group_transactions_from_pool(
         &self,
         parent_number: <B::Header as HeaderT>::Number,
-        wait_pool: Duration,
-        pool_time: Duration,
-        thread_limit: usize,
-        // linear transaction limit based on time(groups(max) + single).
-        linear_tx_limit: usize,
-        // Minimal single thread transaction number(if exists).
-        single_tx_min: usize,
-        total_tx_limit: usize,
-        block_size_limit: usize,
+        input: GroupTxInput,
         mut block_size: usize,
         proof_size: usize,
-        excepts: &[&B::Extrinsic],
+        mut filter: HashSet<B::Hash>,
     ) -> Result<GroupTxOutput<A>, String> {
+        let GroupTxInput {
+            wait_pool,
+            max_time,
+            thread_limit,
+            linear_tx_limit,
+            single_tx_min,
+            total_tx_limit,
+            block_size_limit,
+        } = input.clone();
         let start = Instant::now();
-        let deadline = start + pool_time;
+        let deadline = start + max_time;
         let block = parent_number + One::one();
-        let mut except_set = HashSet::new();
-        for tx in excepts {
-            let tx_hash: <B as BlockT>::Hash = <<B::Header as HeaderT>::Hashing as HashT>::hash(&tx.encode());
-            except_set.insert(tx_hash);
-        }
         let mut t1 = self.transaction_pool.ready_at(parent_number).fuse();
         let mut t2 = futures_timer::Delay::new(wait_pool).fuse();
         let mut pending_iterator = select! {
@@ -75,6 +63,7 @@ where
         let wait = start.elapsed();
 
         let mut skipped = 0;
+        let mut filtered = 0;
         let mut tx_count = 0usize;
         // collect transactions' group info and dispatch to different groups.
         let mut grouper = ConflictGroup::new();
@@ -84,11 +73,11 @@ where
         //      parse transaction runtime call group info and return by channel.
         loop {
             if tx_count >= total_tx_limit {
-                debug!(target: LOG_TARGET, "[GroupTx B {block}] Reach tx_limit {}/{} ms (total {tx_count}, block size: {}/{block_size_limit})", start.elapsed().as_millis(), pool_time.as_millis(), block_size + proof_size);
+                debug!(target: LOG_TARGET, "[GroupTx B {block}] Reach tx_limit {}/{} ms (total {tx_count}, block size: {}/{block_size_limit})", start.elapsed().as_millis(), max_time.as_millis(), block_size + proof_size);
                 break;
             }
             if Instant::now() > deadline {
-                debug!(target: LOG_TARGET, "[GroupTx B {block}] Reach deadline {}/{} ms (total {tx_count}, block size: {}/{block_size_limit})", start.elapsed().as_millis(), pool_time.as_millis(), block_size + proof_size);
+                debug!(target: LOG_TARGET, "[GroupTx B {block}] Reach deadline {}/{} ms (total {tx_count}, block size: {}/{block_size_limit})", start.elapsed().as_millis(), max_time.as_millis(), block_size + proof_size);
                 break;
             }
             let pending_tx = if let Some(pending_tx) = pending_iterator.next() {
@@ -97,7 +86,8 @@ where
                 debug!(target: LOG_TARGET, "[GroupTx B {block}] Out of transactions({} ms, total {tx_count}, block size: {}/{block_size_limit})", start.elapsed().as_millis(), block_size + proof_size);
                 break;
             };
-            if except_set.remove(pending_tx.hash()) {
+            if filter.remove(pending_tx.hash()) {
+                filtered += 1;
                 continue;
             }
 
@@ -137,7 +127,9 @@ where
         single.sort_by(|a, b| a.0.cmp(&b.0));
         Ok(GroupTxOutput {
             info: GroupInfo {
+                input,
                 tx_count,
+                filtered,
                 raw_groups,
                 groups: groups.len(),
                 time: start.elapsed(),

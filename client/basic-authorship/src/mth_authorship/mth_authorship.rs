@@ -36,12 +36,13 @@ use sp_core::traits::SpawnNamed;
 use sp_inherents::InherentData;
 use sp_runtime::{traits::{Block as BlockT, Header as HeaderT}, Digest};
 use std::{marker::PhantomData, pin::Pin, sync::Arc, time};
+use std::collections::HashSet;
 use std::time::Duration;
 use prometheus_endpoint::Registry as PrometheusRegistry;
 use sc_proposer_metrics::MetricsLink as PrometheusMetrics;
 use sp_core::ExecutionContext;
 use sp_runtime::traits::One;
-use crate::{BlockExecuteInfo, BlockPropose, GroupTransaction};
+use crate::{BlockExecuteInfo, BlockPropose, GroupInfo, GroupTransaction, GroupTxInput};
 use crate::mth_authorship::executor::BlockExecutor;
 use crate::mth_authorship::groups::TransactionGrouper;
 use crate::mth_authorship::oracle::BlockOracle;
@@ -324,23 +325,25 @@ where
             self.client.new_block_at(self.parent_hash.clone(), inherent_digests.clone(), PR::ENABLED, None)?;
 
         // 3. get groups transactions
-        let pool_time = self.oracle.pool_time();
+        let max_time = self.oracle.pool_time();
         let group_output = self.transaction_grouper.group_transactions_from_pool(
             self.parent_number,
-            pool_time / 3,
-            pool_time,
-            self.oracle.thread_limit(),
-            self.oracle.linear_tx_limit(),
-            self.oracle.min_single_tx(),
-            self.oracle.total_tx_limit(),
-            block_size_limit.unwrap_or(self.oracle.block_size_limit()),
+            GroupTxInput {
+                wait_pool: max_time / 3,
+                max_time,
+                thread_limit: self.oracle.thread_limit(),
+                linear_tx_limit: self.oracle.linear_tx_limit(),
+                single_tx_min: self.oracle.min_single_tx(),
+                total_tx_limit: self.oracle.total_tx_limit(),
+                block_size_limit: block_size_limit.unwrap_or(self.oracle.block_size_limit()),
+            },
             block_builder.estimated_header_size + block_builder.extrinsics.encoded_size(),
             if self.include_proof_in_block_size_estimation {
                 block_builder.api.proof_recorder().map(|pr| pr.estimate_encoded_size()).unwrap_or(0)
             } else {
                 0
             },
-            &vec![],
+            Default::default(),
         ).await.map_err(|e| sp_blockchain::Error::Backend(e))?;
         debug!(target: LOG_TARGET, "[Execute Block {}] {}", self.parent_number + One::one(), group_output.info.info());
         let thread_number = group_output.groups.len();
@@ -409,29 +412,32 @@ where
     async fn extrinsic(
         &self,
         parent: <Block::Header as HeaderT>::Number,
-        wait_time: Duration,
-        pool_time: Duration,
+        wait_pool: Duration,
+        max_time: Duration,
         init_block_size: Option<usize>,
         init_proof_size: Option<usize>,
-        excepts: Vec<&Block::Extrinsic>,
-    ) -> Result<(Vec<Vec<Block::Extrinsic>>, Vec<Block::Extrinsic>), String> {
+        filter: HashSet<Block::Hash>,
+    ) -> Result<(Vec<Vec<Block::Extrinsic>>, Vec<Block::Extrinsic>, GroupInfo), String> {
         self.transaction_grouper.group_transactions_from_pool(
             parent,
-            wait_time,
-            pool_time,
-            self.oracle.thread_limit(),
-            self.oracle.linear_tx_limit(),
-            self.oracle.min_single_tx(),
-            self.oracle.total_tx_limit(),
-            self.oracle.block_size_limit(),
+            GroupTxInput {
+                wait_pool,
+                max_time,
+                thread_limit: self.oracle.thread_limit(),
+                linear_tx_limit: self.oracle.linear_tx_limit(),
+                single_tx_min: self.oracle.min_single_tx(),
+                total_tx_limit: self.oracle.total_tx_limit(),
+                block_size_limit: self.oracle.block_size_limit(),
+            },
             init_block_size.unwrap_or_default(),
             init_proof_size.unwrap_or_default(),
-            &excepts,
+            filter,
         )
             .await
             .map(|r| (
                 r.groups.into_iter().map(|g| g.into_iter().map(|(_, e)| e.data().clone()).collect()).collect(),
                 r.single.into_iter().map(|(_, e)| e.data().clone()).collect(),
+                r.info
             ))
     }
 }

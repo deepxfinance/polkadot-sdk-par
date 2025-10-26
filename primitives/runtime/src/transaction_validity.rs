@@ -91,7 +91,11 @@ impl InvalidTransaction {
 	}
 
 	pub fn stale_or_future(&self) -> bool {
-		matches!(self, Self::Future | Self::Stale)
+		self.stale() || self.future()
+	}
+
+	pub fn stale(&self) -> bool {
+		self == &Self::Stale
 	}
 
 	pub fn future(&self) -> bool {
@@ -171,6 +175,13 @@ impl TransactionValidityError {
 	pub fn stale_or_future(&self) -> bool {
 		match self {
 			Self::Invalid(e) => e.stale_or_future(),
+			Self::Unknown(_) => false,
+		}
+	}
+
+	pub fn stale(&self) -> bool {
+		match self {
+			Self::Invalid(e) => e.future(),
 			Self::Unknown(_) => false,
 		}
 	}

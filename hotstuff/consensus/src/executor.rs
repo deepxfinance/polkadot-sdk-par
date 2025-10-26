@@ -61,7 +61,7 @@ where
     CIDP: CreateInherentDataProviders<B, Timestamp> + Send + 'static,
     CIDP::InherentDataProviders: InherentDataProviderExt + Send,
     SC: SelectChain<B>,
-    O: BlockOracle<B> + HotsOracle + Sync + Send + 'static,
+    O: BlockOracle<B> + HotsOracle<B> + Sync + Send + 'static,
 {
     pub fn new(
         client: Arc<C>,
@@ -197,21 +197,22 @@ where
                                 parent_commit.commit.qc.proposal_hash,
                                 commit.parent,
                             );
-                            continue;
+                                continue;
+                            },
+                            None => {
+                                error!(target: LOG_TARGET, "Skip next block number: {} for no parent header have no commit!!!", commit.block_number);
+                                continue;
+                            }
                         },
-                        None => {
-                            error!(target: LOG_TARGET, "Skip next block number: {} for no parent header have no commit!!!", commit.block_number);
+                        Ok(None) => {
+                            debug!(target: LOG_TARGET, "Skip next block number: {} for no parent header", commit.block_number);
+                            continue;
+
+                        },
+                        Err(e) => {
+                            debug!(target: LOG_TARGET, "Skip next block number: {} for get parent header error: {e:?}", commit.block_number);
                             continue;
                         }
-                    },
-                    Ok(None) => {
-                        debug!(target: LOG_TARGET, "Skip next block number: {} for no parent header", commit.block_number);
-                        continue;
-
-                    },
-                    Err(e) => {
-                        debug!(target: LOG_TARGET, "Skip next block number: {} for get parent header error: {e:?}", commit.block_number);
-                        continue;
                     }
                 }
                 let extrinsic = payload.extrinsic.clone().unwrap();

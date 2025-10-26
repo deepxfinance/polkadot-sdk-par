@@ -1,6 +1,8 @@
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use codec::{Decode, Encode};
+use sc_transaction_pool_api::TransactionPool;
 use sp_runtime::traits::{Block as BlockT, Header as HeaderT};
 
 pub struct InfoRecorder<B: BlockT> {
@@ -9,9 +11,9 @@ pub struct InfoRecorder<B: BlockT> {
     pub block_start: Option<Instant>,
     pub finalize_start: Option<Instant>,
     pub group: GroupInfo,
-    pub inherent: Option<ThreadExecutionInfo>,
+    pub inherent: Option<ThreadExecutionInfo<B>>,
     /// Record all thread execute info(single thread number should be 0).
-    pub threads: HashMap<usize, ThreadExecutionInfo>,
+    pub threads: HashMap<usize, ThreadExecutionInfo<B>>,
     pub merge: Option<MergeInfo>,
     pub native: bool,
 }
@@ -68,11 +70,11 @@ impl<B: BlockT> InfoRecorder<B> {
         }
     }
 
-    pub fn inherent_finish(&mut self, info: ThreadExecutionInfo) {
+    pub fn inherent_finish(&mut self, info: ThreadExecutionInfo<B>) {
         self.inherent = Some(info);
     }
 
-    pub fn thread_finish(&mut self, info: ThreadExecutionInfo) {
+    pub fn thread_finish(&mut self, info: ThreadExecutionInfo<B>) {
         self.threads.insert(info.thread, info);
     }
 
@@ -91,9 +93,9 @@ pub struct BlockExecuteInfo<B: BlockT> {
     pub time: Duration,
     /// group transactions info from pool, not necessary.
     pub group: GroupInfo,
-    pub inherent: ThreadExecutionInfo,
+    pub inherent: ThreadExecutionInfo<B>,
     /// Record all thread execute info(single thread number should be 0).
-    pub threads: HashMap<usize, ThreadExecutionInfo>,
+    pub threads: HashMap<usize, ThreadExecutionInfo<B>>,
     pub merge: MergeInfo,
     pub native: bool,
 }
@@ -133,17 +135,42 @@ impl<B: BlockT> BlockExecuteInfo<B> {
         group_infos.iter().map(|info| info.applied as u32).collect()
     }
 
-    pub fn avg_time(&self, with_extend: bool) -> Duration {
+    pub fn avg_time(&self, with_extend: bool) -> (Duration, usize) {
         if !self.threads.is_empty() {
+            let mut weight = 0;
             let times: Vec<_> = self.threads
                 .iter()
                 .map(|(_, info)| info.avg_time(with_extend))
-                .filter(|t| t > &Duration::default())
+                .filter(|(t, _)| t > &Duration::default())
+                .map(|(t, w)| { weight += w; t })
                 .collect();
-            times.iter().sum::<Duration>() / times.len() as u32
-        } else {
-            Default::default()
+            if !times.is_empty() {
+                return (times.iter().sum::<Duration>() / times.len() as u32, weight);
+            }
         }
+        (Default::default(), 0)
+    }
+
+    pub fn applied(&self) -> usize {
+        self.single_applied().unwrap_or_default() + self.mth_applied().1
+    }
+
+    pub fn mth_applied(&self) -> (usize, usize) {
+        let mut mth_threads = self.threads.len();
+        let mut mth_applied = self.threads.iter().map(|(_, info)| info.applied).sum::<usize>();
+        if self.threads.get(&0).is_some() {
+            mth_threads -= 1;
+            mth_applied -= self.single_applied().unwrap_or_default();
+        }
+        (mth_threads, mth_applied)
+    }
+
+    pub fn single_applied(&self) -> Option<usize> {
+        self.threads.get(&0).map(|info| if info.time != Default::default() {
+            Some(info.applied)
+        } else {
+            None
+        })?
     }
 
     pub fn group_info(&self) -> String {
@@ -185,10 +212,51 @@ impl<B: BlockT> BlockExecuteInfo<B> {
     }
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct GroupTxInput {
+    /// Max time to wait for pool ready.
+    pub wait_pool: Duration,
+    /// Time limit for full time getting transaction from pool.
+    pub max_time: Duration,
+    /// Group max threads target.
+    pub thread_limit: usize,
+    /// linear transaction limit based on time(groups(max) + single).
+    pub linear_tx_limit: usize,
+    /// Minimal single thread transaction number(if exists).
+    pub single_tx_min: usize,
+    /// Limit total transactions get from pool.
+    pub total_tx_limit: usize,
+    /// Limit block size when group transactions.
+    pub block_size_limit: usize,
+}
+
+impl GroupTxInput {
+    pub fn info(&self) -> String {
+        format!(
+            "thread {} linear {} single {} total {}",
+            self.thread_limit,
+            self.linear_tx_limit,
+            self.single_tx_min,
+            self.total_tx_limit,
+        )
+    }
+}
+
+pub struct GroupTxOutput<A: TransactionPool> {
+    /// Parallel execute transactions.
+    pub groups: Vec<Vec<(usize, Arc<<A as TransactionPool>::InPoolTransaction>)>>,
+    /// Tailing single thread execute transactions.
+    pub single: Vec<(usize, Arc<<A as TransactionPool>::InPoolTransaction>)>,
+    pub info: GroupInfo,
+}
+
 #[derive(Debug, Default, Clone)]
 pub struct GroupInfo {
+    pub input: GroupTxInput,
     /// Total transaction number(groups and single).
     pub tx_count: usize,
+    /// Filtered transaction
+    pub filtered: usize,
     /// Raw groups number for parallel groups(then it is merged to `groups` by `thread_limit`)  .
     pub raw_groups: usize,
     /// Final groups length.
@@ -202,32 +270,31 @@ pub struct GroupInfo {
 }
 
 impl GroupInfo {
-    pub fn new(tx_count: usize, groups: usize) -> Self {
-        Self {
-            tx_count,
-            raw_groups: groups,
-            groups,
-            time: Default::default(),
-            wait: Default::default(),
-            sort: Default::default(),
-        }
-    }
-
     pub fn info(&self) -> String {
+        if self.tx_count == 0 && self.filtered == 0 {
+            return "".to_string();
+        }
+        let filter_info = if self.filtered > 0 {
+            format!("(filtered {})", self.filtered)
+        } else {
+            "".to_string()
+        };
         format!(
-            "Group {} txs in {} ms(wait {} micros, sort {} micros)({} -> {} groups)",
+            "Group {} tx in {} ms({} {} micros){}(groups {}->{})(Input: {})",
             self.tx_count,
             self.time.as_millis(),
             self.wait.as_micros(),
             self.sort.as_micros(),
+            filter_info,
             self.raw_groups,
             self.groups,
+            self.input.info()
         )
     }
 }
 
-#[derive(Debug, Default, Clone)]
-pub struct ThreadExecutionInfo {
+#[derive(Debug, Clone)]
+pub struct ThreadExecutionInfo<B: BlockT> {
     pub thread: usize,
     /// executed and applied transactions.
     pub applied: usize,
@@ -235,35 +302,52 @@ pub struct ThreadExecutionInfo {
     pub rollback: usize,
     /// check nonce failed transactions.
     pub stale_or_future: usize,
-    /// thread execute time
+    /// thread execute time.
     pub time: Duration,
+    /// transaction hashes(future transactions are not filtered).
+    pub transactions: Vec<B::Hash>,
     /// executed extended transaction.
-    pub extend: Option<Box<ThreadExecutionInfo>>,
+    pub extend: Option<Box<ThreadExecutionInfo<B>>>,
 }
 
-impl ThreadExecutionInfo {
+impl<B: BlockT> Default for ThreadExecutionInfo<B> {
+    fn default() -> Self {
+        Self {
+            thread: 0,
+            applied: 0,
+            rollback: 0,
+            stale_or_future: 0,
+            time: Default::default(),
+            transactions: vec![],
+            extend: None,
+        }
+    }
+}
+
+impl<B: BlockT> ThreadExecutionInfo<B> {
     pub fn new(thread: usize) -> Self {
         Self { thread, ..Default::default() }
     }
 
-    pub fn avg_time(&self, with_extend: bool) -> Duration {
+    pub fn avg_time(&self, with_extend: bool) -> (Duration, usize) {
         if self.applied == 0 {
-            Default::default()
+            (Default::default(), 0)
         } else {
             // raw each transaction apply time
             let mut avg_tme = Duration::from_micros(self.time.as_micros() as u64 / self.applied as u64);
+            let mut weight = self.applied;
             if with_extend {
                 // add `extend_time / applied(not extend_applied)`.
-                let extend_avg = self.extend.as_ref().map(|ext| ext.time / self.applied as u32).unwrap_or_default();
-                avg_tme += extend_avg;
+                avg_tme += self.extend.as_ref().map(|ext| ext.time / self.applied as u32).unwrap_or_default();
+                weight += self.extend.as_ref().map(|ext| ext.applied).unwrap_or_default();
             }
-            avg_tme
+            (avg_tme, weight)
         }
     }
 
-    pub fn extend_avg_time(&self) -> Duration {
+    pub fn extend_avg_time(&self) -> (Duration, usize) {
         if self.applied == 0 {
-            Default::default()
+            (Default::default(), 0)
         } else {
             self.extend.as_ref().map(|ext| ext.avg_time(false)).unwrap_or_default()
         }
