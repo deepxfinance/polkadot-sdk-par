@@ -425,6 +425,7 @@ where
                 block_builder.push(inherent).unwrap();
             }
         }
+        let mut total_invalid_length = 0usize;
         let mut unqueue_invalid = Vec::new();
         let initial_applied = block_builder.extrinsics.len();
         let total_tx = pending_txs.len();
@@ -477,14 +478,16 @@ where
             // clear invalid extrinsic.
             let mut invalid: Vec<_> = [rollback, stale, future].into_iter().flatten().collect();
             invalid.sort_by(|a, b| a.0.cmp(&b.0));
+            total_invalid_length += invalid.len();
             let mut remove_offset = 0usize;
             for (index, e) in invalid {
                 if let Some(invalid_hash) = &execute_txs[index - remove_offset].1 {
                     trace!("[{invalid_hash:?}] Invalid transaction: {e}");
-                    unqueue_invalid.push(invalid_hash.clone());
                     if let ApplyExtrinsicFailed(Validity(e)) = e {
-                        if e.future() {
+                        if e.future() || e.exhausted_resources() {
                             filter_transactions.remove(&invalid_hash);
+                        } else {
+                            unqueue_invalid.push(invalid_hash.clone());
                         }
                     }
                 }
@@ -513,7 +516,7 @@ where
             reason,
             &block_builder,
             applied,
-            unqueue_invalid.len(),
+            total_invalid_length,
             total_nonce_err_tx,
             total_tx,
             round_execute_collect,

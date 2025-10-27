@@ -313,15 +313,11 @@ where
                                 Err(e) => {
 									if e.stale() {
 										stale.push((i, ApplyExtrinsicFailed::Validity(e).into()));
-									}
-									if e.future() {
+									} else if e.future() {
 										future.push((i, ApplyExtrinsicFailed::Validity(e).into()));
-									}
-                                    if !e.exhausted_resources() && !e.stale_or_future() {
+									} else {
                                         rollback.push((i, ApplyExtrinsicFailed::Validity(e).into()));
                                         break;
-                                    } else {
-                                        batch_results.push(Err(ApplyExtrinsicFailed::Validity(e).into()));
                                     }
                                 }
                             }
@@ -352,15 +348,13 @@ where
 									// Nonce Stale or Future also doesn't matter since we did no storage changes.
 									if e.stale() {
 										stale.push((i, ApplyExtrinsicFailed::Validity(e).into()));
-									}
-									if e.future() {
+									} else if e.future() {
 										future.push((i, ApplyExtrinsicFailed::Validity(e).into()));
-									}
-                                    if !e.exhausted_resources() && !e.stale_or_future() {
-                                        // if meat other error, should roll back.
-                                        // record roll back index.
+									} else {
+										// if meat other error, should roll back.
+										// record roll back index.
 										rollback.push((i, ApplyExtrinsicFailed::Validity(e).into()));
-                                    }
+									}
 									batch_results.push(Err(ApplyExtrinsicFailed::Validity(e).into()))
                                 }
                             }
