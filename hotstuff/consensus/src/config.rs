@@ -19,6 +19,7 @@ pub fn standard_name<Hash: AsRef<[u8]>>(
 
 pub fn hotstuff_peers_set_config(
 	protocol_name: ProtocolName,
+	max_notification_size: Option<u64>,
 ) -> sc_network::config::NonDefaultSetConfig {
-	sc_network::config::NonDefaultSetConfig::new(protocol_name, 1024 * 1024)
+	sc_network::config::NonDefaultSetConfig::new(protocol_name, max_notification_size.unwrap_or(1024 * 1024 * 5))
 }

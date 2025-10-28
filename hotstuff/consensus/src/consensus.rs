@@ -399,6 +399,8 @@ pub struct ConsensusWorker<
     /// consensus success block waiting to execute.
     commit: BlockCommit<B>,
     processed_extrinsic: Vec<Vec<Vec<B::Extrinsic>>>,
+
+    network_notification_limit: usize,
     phantom: PhantomData<BE>,
 }
 
@@ -430,6 +432,7 @@ where
         consensus_msg_tx: Sender<(bool, ConsensusMessage<B>)>,
         consensus_msg_rx: Receiver<(bool, ConsensusMessage<B>)>,
         executor_tx: UnboundedSender<ExecutorMission<B>>,
+        network_notification_limit: usize,
     ) -> Self {
         if local_timer_duration < slot_duration.as_millis() {
             let slot_duration_millis = slot_duration.as_millis();
@@ -467,6 +470,7 @@ where
             processed,
             commit,
             processed_extrinsic: vec![],
+            network_notification_limit,
             phantom: PhantomData,
         }
     }
@@ -997,9 +1001,13 @@ where
                     proposal.payload,
                 );
                 let proposal_message = ConsensusMessage::Propose(proposal.clone());
+                let encoded_message = proposal_message.encode();
+                if encoded_message.len() > self.network_notification_limit {
+                    warn!(target: CLIENT_LOG_TARGET, "~~ generate_proposal. Proposal {} message exceed max notification limit {}/{}", proposal.view, encoded_message.len(), self.network_notification_limit);
+                };
                 self.network.gossip_engine.lock().gossip_message(
                     ConsensusMessage::<B>::gossip_topic(),
-                    proposal_message.encode(),
+                    encoded_message,
                     false,
                 );
 
@@ -1393,6 +1401,7 @@ pub fn start_hotstuff<B, BE, C, N, S, SC, PF, Error, O, L, I, CIDP>(
     create_inherent_data_providers: CIDP,
     select_chain: SC,
     slot_duration: SlotDuration,
+    max_notification_size: Option<usize>,
 ) -> sp_blockchain::Result<(
     impl Future<Output = ()> + Send,
     impl Future<Output = ()> + Send,
@@ -1459,6 +1468,7 @@ where
         consensus_msg_tx.clone(),
         consensus_msg_rx,
         executor_tx,
+        max_notification_size.unwrap_or(1024 * 1024 * 5),
     );
 
     let consensus_network = ConsensusNetwork::<B, N, S>::new(network, consensus_msg_tx, queue);

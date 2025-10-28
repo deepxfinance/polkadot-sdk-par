@@ -122,7 +122,7 @@ pub fn new_partial(
 		Default::default(),
 		None,
 	);
-	let hotstuff_oracle = Arc::new(HotstuffOracle::new(Arc::new(ExecutionOracle::new(None))));
+	let hotstuff_oracle = Arc::new(HotstuffOracle::new(Arc::new(ExecutionOracle::new(None)), None));
 	let (hotstuff_block_import, hotstuff_link) = hotstuff_consensus::block_import(config.role.clone(), client.clone(), executor, hotstuff_oracle.clone(), &client)?;
 
 	let slot_duration = hotstuff_consensus::slot_duration(&*client)?;
@@ -179,7 +179,7 @@ pub fn new_full(config: Configuration) -> Result<TaskManager, ServiceError> {
 		&client.block_hash(0).ok().flatten().expect("Genesis block exists; qed"),
 		&config.chain_spec,
 	);
-	let hotstuff_protocol_config = hotstuff_consensus::config::hotstuff_peers_set_config(hotstuff_protocol_name.clone());
+	let hotstuff_protocol_config = hotstuff_consensus::config::hotstuff_peers_set_config(hotstuff_protocol_name.clone(), None);
 	net_config.add_notification_protocol(hotstuff_protocol_config);
 
 	let (network, system_rpc_tx, tx_handler_controller, network_starter, sync_service) =
@@ -266,6 +266,7 @@ pub fn new_full(config: Configuration) -> Result<TaskManager, ServiceError> {
 		},
 		select_chain,
 		slot_duration,
+		None,
 	)?;
 
 	// Start hotstuff consensus voter

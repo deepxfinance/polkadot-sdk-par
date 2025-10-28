@@ -33,11 +33,14 @@ pub struct HotstuffOracle<B: BlockT, O: BlockOracle<B>> {
     pub filter_blocks: u32,
     /// filter all applied transaction.
     pub transaction_filter: Arc<Mutex<BTreeMap<<B::Header as HeaderT>::Number, HashSet<B::Hash>>>>,
+    /// Network config hotstuff protocol size limit, which will influence block transaction size.
+    /// Default 5M Bytes(1024 *1024 * 5).
+    pub network_notification_limit: usize,
     phantom: PhantomData<B>,
 }
 
 impl<B: BlockT, O: BlockOracle<B>> HotstuffOracle<B, O> {
-    pub fn new(inner: Arc<O>) -> Self {
+    pub fn new(inner: Arc<O>, network_notification_limit: Option<usize>) -> Self {
         // default same with block_duration. only necessary set for Hotstuff consensus.
         let mut hotstuff_duration = inner.block_duration();
         if let Ok(value) = env::var("HOTSTUFF_DURATION") {
@@ -64,6 +67,7 @@ impl<B: BlockT, O: BlockOracle<B>> HotstuffOracle<B, O> {
             verify_time_per_tx: Arc::new(Mutex::new(Duration::from_micros(200))),
             filter_blocks,
             transaction_filter: Arc::new(Mutex::new(BTreeMap::new())),
+            network_notification_limit: network_notification_limit.unwrap_or(1024 * 1024 * 5),
             phantom: PhantomData,
         }
     }
@@ -189,6 +193,7 @@ impl<B: BlockT, O: BlockOracle<B>> BlockOracle<B> for  HotstuffOracle<B, O> {
     }
 
     fn block_size_limit(&self) -> usize {
-        self.inner.block_size_limit()
+        // both decide by execute block size limit and `network_notification_limit`
+        self.inner.block_size_limit().min(self.network_notification_limit - 1000)
     }
 }
