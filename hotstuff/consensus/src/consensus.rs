@@ -486,13 +486,17 @@ where
         }
         // ready to recover higher state since recover will change it.
         let init_processed = self.processed.clone();
-        let init_commit = self.commit.clone();
+        let mut init_commit = self.commit.clone();
         loop {
             match self.synchronizer.get_proposal(proposal_key.clone()) {
                 Ok(Some(proposal)) => {
                     trace!(target: CLIENT_LOG_TARGET, "[Recover] ~~ handle proposal {}:{} qc {}:{}", proposal.view, proposal.digest(), proposal.qc.view, proposal.qc.proposal_hash);
                     if let Err(e) = self.trigger_qc_mission(&proposal.qc, true).await {
                         error!(target: CLIENT_LOG_TARGET, "[Recover] ~~ trigger_qc_mission {}:{} failed for {e:?}", proposal.qc.view, proposal.qc.proposal_hash);
+                    }
+                    // since init commit is from best block, recovered commit might be higher.
+                    if self.commit.view[2] > init_commit.view[2] {
+                        init_commit = self.commit.clone();
                     }
                     if proposal.payload.block_number() <= latest {
                         debug!(target: CLIENT_LOG_TARGET, "[Recover] Finish for proposal {}:{} payload block {} <= latest {latest}", proposal.view, proposal.digest(), proposal.payload.block_number());
