@@ -90,7 +90,7 @@ where
 						}
 					}
 					(Some(_), None) => import = false,
-					(None, Some(_)) => {
+					(None, Some(_)) => if *pre_header.number() > 0u32.into() {
 						log::error!(
 							target: LOG_TARGET,
 							"Block {}:{} have no commit!!!",

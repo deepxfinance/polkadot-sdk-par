@@ -115,7 +115,7 @@ impl<B: BlockT> sc_network_gossip::Validator<B> for GossipValidator<B> {
 	) -> ValidationResult<B::Hash> {
 		if let Ok(message) = ConsensusMessage::<B>::decode(&mut data) {
 			let current_view = self.get_view();
-			let message_vew = match message {
+			let message_vew = match &message {
 				ConsensusMessage::Greeting(_) => return ValidationResult::ProcessAndDiscard(ConsensusMessage::<B>::gossip_topic()),
 				ConsensusMessage::GetProposal(_) => return ValidationResult::ProcessAndDiscard(ConsensusMessage::<B>::gossip_topic()),
 				ConsensusMessage::Propose(proposal) => proposal.view,
@@ -125,10 +125,17 @@ impl<B: BlockT> sc_network_gossip::Validator<B> for GossipValidator<B> {
 				_ => 0,
 			};
 
+			// Discard all invalid view message
 			if current_view > 1 && message_vew < current_view - 1 {
 				return ValidationResult::Discard;
 			}
-			return ValidationResult::ProcessAndKeep(ConsensusMessage::<B>::gossip_topic());
+			// Decide message result
+			return match message {
+				ConsensusMessage::Propose(_) | ConsensusMessage::Vote(_)
+				| ConsensusMessage::Timeout(_) | ConsensusMessage::TC(_) =>
+					ValidationResult::ProcessAndDiscard(ConsensusMessage::<B>::gossip_topic()),
+				_ => ValidationResult::Discard,
+			};
 		}
 		ValidationResult::Discard
 	}
@@ -236,11 +243,8 @@ impl<B: BlockT, N: Network<B>, S: Syncing<B>> HotstuffNetworkBridge<B, N, S> {
 		self.service.local_peer_id()
 	}
 
-	pub fn send_to_authorities(&self, who: Option<Vec<AuthorityId>>, message: Vec<u8>) -> Result<(), HotstuffError> {
-		let peers: Vec<_> = match who {
-			None => self.authorities.values().filter_map(|p| p.clone()).collect(),
-			Some(authorities) => authorities.into_iter().filter_map(|a| self.authorities.get(&a).cloned().unwrap_or_default()).collect(),
-		};
+	pub fn send_to_authorities(&self, who: Vec<&AuthorityId>, message: Vec<u8>) -> Result<(), HotstuffError> {
+		let peers: Vec<_> = who.iter().filter_map(|a| self.authorities.get(a).cloned().unwrap_or_default()).collect();
 		self.gossip_engine.lock().send_message(peers, message.clone());
 		Ok(())
 	}

@@ -145,6 +145,10 @@ impl<B: BlockT> ConsensusState<B> {
         self.local_authority_id.is_some()
     }
 
+    pub fn authorities(&self) -> Vec<&AuthorityId> {
+        self.authorities.iter().map(|a| &a.0).collect()
+    }
+
     pub fn message_with_id(&self, msg: &[u8]) -> Result<Vec<u8>, HotstuffError> {
         match self.local_authority_index {
             Some(index) => Ok(extend_message(index, msg)),
@@ -436,7 +440,7 @@ where
         network: HotstuffNetworkBridge<B, N, S>,
         synchronizer: Synchronizer<B, C>,
         proposer_factory: Arc<RwLock<PF>>,
-        local_timer_duration: u64,
+        mut local_timer_duration: u64,
         slot_duration: SlotDuration,
         oracle: Arc<O>,
         consensus_msg_tx: Sender<(bool, ConsensusMessage<B>)>,
@@ -459,6 +463,9 @@ where
         };
         let processed = synchronizer.get_high_proposal().unwrap().unwrap_or(Proposal::empty());
         info!(target: CLIENT_LOG_TARGET, "Start consensus worker with local_timer_duration: {local_timer_duration} millis, slot_duration: {} millis", slot_duration.as_millis());
+        if !consensus_state.is_authority() {
+            local_timer_duration = u64::MAX;
+        }
         Self {
             state: consensus_state,
             network,
@@ -600,11 +607,7 @@ where
         self.state.increase_last_voted_view();
         let message = ConsensusMessage::Timeout(timeout.clone());
 
-        self.network.gossip_engine.lock().gossip_message(
-            ConsensusMessage::<B>::gossip_topic(),
-            message.encode(),
-            true,
-        );
+        self.network.send_to_authorities(self.state.authorities(), message.encode())?;
 
         if let Err(e) = self.consensus_msg_tx.send((true, ConsensusMessage::Timeout(timeout))).await {
             warn!(target: CLIENT_LOG_TARGET, "$L$ handle_local_timer. Can't inform self `Timeout` for {e:?}.");
@@ -676,7 +679,7 @@ where
             proposals.iter().map(|p| p.view).collect::<Vec<_>>(),
         );
         for proposal in proposals {
-            self.network.send_to_authorities(Some(vec![request.authority.clone()]), ConsensusMessage::Propose(proposal).encode())?;
+            self.network.send_to_authorities(vec![&request.authority], ConsensusMessage::Propose(proposal).encode())?;
         }
         Ok(())
     }
@@ -723,6 +726,7 @@ where
 
     #[async_recursion]
     pub async fn handle_proposal(&mut self, proposal: &Proposal<B>, local: bool) -> Result<(), HotstuffError> {
+        if self.synchronizer.get_proposal(ProposalKey::view(proposal.view))?.is_some() { return Ok(()); }
         let from = if local { "local" } else { "network" };
         debug!(target: CLIENT_LOG_TARGET, "~~ handle_proposal({from} self.view {}). proposal[ view {}({}), tc {:?}, digest {},  payload {}, author {}]",
             self.state.view(),
@@ -802,12 +806,9 @@ where
                 }
             } else {
                 let vote_message = ConsensusMessage::Vote(vote);
-
-                self.network.gossip_engine.lock().gossip_message(
-                    ConsensusMessage::<B>::gossip_topic(),
-                    vote_message.encode(),
-                    false,
-                );
+                let leader = self.state.view_leader(self.state.view + 1)
+                    .ok_or(HotstuffError::Other(format!("No next leader for view {}", self.state.view + 1)))?;
+                self.network.send_to_authorities(vec![&leader], vote_message.encode())?;
             }
         }
         Ok(())
@@ -815,11 +816,11 @@ where
 
     pub async fn handle_vote(&mut self, vote: &Vote<B>, local: bool) -> Result<(), HotstuffError> {
         let from = if local { "local" } else { "network" };
-        trace!(target: CLIENT_LOG_TARGET, "~~ handle_vote({from} self.view {}). vote.view {}, vote.author {}, vote.hash {}",
+        trace!(target: CLIENT_LOG_TARGET, "~~ handle_vote({from} self.view {}). vote.view {}, vote.hash {}, vote.author {}",
             self.state.view(),
             vote.view,
-            vote.voter,
             vote.proposal_hash,
+            vote.voter,
         );
 
         if !local {
@@ -856,7 +857,8 @@ where
             Some(p) => p,
             None => {
                 if let Some(req) = self.state.make_proposal_request(ProposalReq::Keys(vec![ProposalKey::digest(qc.proposal_hash)])) {
-                    self.network.send_to_authorities(None, req.encode())?;
+                    let message = ConsensusMessage::GetProposal(req);
+                    self.network.send_to_authorities(self.state.authorities(), message.encode())?;
                 }
                 return Err(HotstuffError::GetProposal(format!("No proposal for commit qc of proposal {}, skip for can't check timestamp", qc.proposal_hash)));
             }
@@ -918,7 +920,8 @@ where
             Some(p) => p,
             None => {
                 if let Some(req) = self.state.make_proposal_request(ProposalReq::Keys(vec![ProposalKey::digest(qc.proposal_hash)])) {
-                    self.network.send_to_authorities(None, req.encode())?;
+                    let message = ConsensusMessage::GetProposal(req);
+                    self.network.send_to_authorities(self.state.authorities(), message.encode())?;
                 }
                 debug!(target: CLIENT_LOG_TARGET, "Can't trigger qc mission for no proposal of qc: {}", qc.view);
                 return Ok(());
@@ -1034,11 +1037,7 @@ where
                 if encoded_message.len() > self.network_notification_limit {
                     warn!(target: CLIENT_LOG_TARGET, "~~ generate_proposal. Proposal {} message exceed max notification limit {}/{}", proposal.view, encoded_message.len(), self.network_notification_limit);
                 };
-                self.network.gossip_engine.lock().gossip_message(
-                    ConsensusMessage::<B>::gossip_topic(),
-                    encoded_message,
-                    false,
-                );
+                self.network.send_to_authorities(self.state.authorities(), encoded_message)?;
 
                 if let Err(e) = self.consensus_msg_tx.send((true, ConsensusMessage::Propose(proposal))).await {
                     warn!(target: CLIENT_LOG_TARGET, "~~ generate_proposal. Can't inform self of `Propose` for {e:?}.");
