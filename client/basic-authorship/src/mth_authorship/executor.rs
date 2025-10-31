@@ -994,7 +994,7 @@ where
             .await?;
         info!(
             target: LOG_TARGET,
-			"🎁 [{source}] Prepared block for proposing of {} [{}] \
+			"🎁 [{source}] Prepared block {} [{}] \
 			[hash: {:?}; parent_hash: {}; {}, threads {thread_number}]",
 			info.number,
 			info.time_info(limit_execution_time),
@@ -1072,7 +1072,7 @@ where
             .await?;
         info!(
             target: LOG_TARGET,
-			"🎁 [{source}] Prepared block for proposing of {} [{}] \
+			"🎁 [{source}] Prepared block {} [{}] \
 			[hash: {:?}; parent_hash: {}; {}, threads {thread_number}]",
 			info.number,
 			info.time_info(limit_execution_time),

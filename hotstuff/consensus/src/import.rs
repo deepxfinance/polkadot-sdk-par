@@ -13,7 +13,7 @@ use log::warn;
 use tokio::sync::oneshot::{Receiver, Sender};
 use tokio::sync::RwLock;
 use hotstuff_primitives::digests::CompatibleDigestItem;
-use sc_basic_authorship::{BlockOracle, BlockPropose};
+use sc_basic_authorship::{BlockExecuteInfo, BlockOracle, BlockPropose};
 use sc_client_api::{
 	client::{FinalityNotifications, ImportNotifications},
 	Backend, BlockImportNotification,
@@ -112,6 +112,112 @@ where
 			}
 		}
 		Ok((import, reorg))
+	}
+
+	pub async fn import_one(
+		&self,
+		mut block: BlockImportParams<Block, <Self as BlockImport<Block>>::Transaction>,
+	) -> Result<(ImportResult, Option<BlockExecuteInfo<Block>>), <Self as BlockImport<Block>>::Error> {
+		let calculate_block = |block: &BlockImportParams<Block, <Self as BlockImport<Block>>::Transaction>| {
+			let post_header = block.post_header();
+			let post_digests = post_header.digest();
+			let post_digests_len = post_digests.logs().len();
+			if post_digests_len < 3 {
+				return Err(ConsensusError::ClientImport(format!("Insufficient post_digests: {post_digests_len}/3").into()));
+			}
+			let inherent_digest = Digest { logs: vec![post_digests.logs()[0].clone()] };
+			let groups: Vec<u32> = post_digests.logs()[post_digests_len - 2].as_hotstuff_seal().ok_or(ConsensusError::ClientImport("Invalid post_digests for groups".into()))?;
+			// TODO !!!MUST should we check actual extrinsic_root in header with BlockCommit in header.digest?
+			futures::executor::block_on(async {
+				self
+					.executor
+					.execute_block_for_import(
+						"NetImport",
+						block.origin.into(),
+						*block.header.parent_hash(),
+						block.header.number().saturating_sub(1u32.into()),
+						inherent_digest,
+						block.body.clone().unwrap_or_default(),
+						groups,
+						// For check block, we should execute all transactions success by BlockBuilder::put_batch.
+						usize::MAX,
+						// doesn't work since `limit_execution_time` is false
+						std::time::Duration::from_secs(10),
+						// doesn't work since `limit_execution_time` is false
+						std::time::Duration::from_secs(5),
+						false,
+						true,
+						false,
+					)
+					.await
+					.map_err(|e| <Self as BlockImport<Block>>::Error::ClientImport(format!("Execute block error {e:?}")))
+			})
+		};
+		let hash = block.post_hash();
+		let _ = block.justifications.take();
+		let block_commit = find_block_commit::<Block>(&block.post_header());
+		let mut block_execute_info = None;
+		let import_reslt = match self.inner.status(hash) {
+			Ok(BlockStatus::InChain) => Ok(ImportResult::AlreadyInChain),
+			Ok(BlockStatus::Unknown) => {
+				let (import, reorg) = self.should_import(&block.header, &block_commit)
+					.map_err(|e| ConsensusError::ClientImport(e.to_string()))?;
+				if !import {
+					Ok(ImportResult::AlreadyInChain)
+				} else if let Ok(BlockStatus::InChain) = self.inner.status(*block.header.parent_hash()) {
+					if matches!(block.origin, BlockOrigin::ConsensusBroadcast | BlockOrigin::Own)
+						&& !matches!(block.state_action, StateAction::Execute | StateAction::ExecuteIfPossible)
+					{
+						// Block from local/local_consensus with calculated changes do not need check.
+					} else if matches!(block.state_action, StateAction::Execute | StateAction::ExecuteIfPossible)
+						|| self.role.is_authority()
+					{
+						let result = match calculate_block(&block) {
+							Ok((proposal, info)) => {
+								block_execute_info = Some(info);
+								if let Err(e) = check_header::<Block>(&block.header, &proposal.block.header()) {
+									Err(ConsensusError::ClientImport(format!("Check header with calculated: {e}")))
+								} else {
+									block.state_action = StateAction::ApplyChanges(StorageChanges::Changes(proposal.storage_changes));
+									Ok(())
+								}
+							},
+							Err(e) => Err(e),
+						};
+						if let Err(e) = result {
+							warn!(target: LOG_TARGET, "{:?}: {} failed for {e}", block.origin, block.header.number());
+							return Err(e);
+						}
+					}
+					let header = block.post_header();
+					if let Some((pre, pre_commit)) = reorg {
+						log::warn!(
+							target: LOG_TARGET,
+							"Try replace best block {}:{}({}) -> {}:{}({})",
+							pre.number(),
+							pre.hash(),
+							pre_commit.view(),
+							header.number(),
+							header.hash(),
+							block_commit.as_ref().map(|bc| bc.view()).unwrap_or(0),
+						);
+						// This ForkChoiceStrategy::Custom(true) will set `is_new_best` to true.
+						block.fork_choice = Some(ForkChoiceStrategy::Custom(true));
+					}
+					let result = (&*self.inner).import_block(block).await;
+					if result.is_ok() && self.inner.info().finalized_number < *header.number() {
+						if let Err(e) = self.inner.finalize_block(header.hash(), None, true) {
+							warn!(target: LOG_TARGET, "FinalizeBlock #{} ({}) failed for {e:?}", header.number(), header.hash());
+						}
+					}
+					result
+				} else {
+					Ok(ImportResult::UnknownParent)
+				}
+			},
+			Err(e) => Err(ConsensusError::ClientImport(e.to_string())),
+		};
+		import_reslt.map(|r| (r, block_execute_info))
 	}
 }
 
@@ -217,44 +323,8 @@ where
 
 	async fn import_block(
 		&mut self,
-		mut block: BlockImportParams<Block, Self::Transaction>,
+		block: BlockImportParams<Block, Self::Transaction>,
 	) -> Result<ImportResult, Self::Error> {
-		let calculate_block = |block: &BlockImportParams<Block, Self::Transaction>| {
-			let post_header = block.post_header();
-			let post_digests = post_header.digest();
-			let post_digests_len = post_digests.logs().len();
-			if post_digests_len < 3 {
-				return Err(ConsensusError::ClientImport(format!("Insufficient post_digests: {post_digests_len}/3").into()));
-			}
-			let inherent_digest = Digest { logs: vec![post_digests.logs()[0].clone()] };
-			let groups: Vec<u32> = post_digests.logs()[post_digests_len - 2].as_hotstuff_seal().ok_or(ConsensusError::ClientImport("Invalid post_digests for groups".into()))?;
-			// TODO !!!MUST should we check actual extrinsic_root in header with BlockCommit in header.digest?
-			futures::executor::block_on(async {
-				self
-					.executor
-					.execute_block_for_import(
-						"ImportBlock",
-						block.origin.into(),
-						*block.header.parent_hash(),
-						block.header.number().saturating_sub(1u32.into()),
-						inherent_digest,
-						block.body.clone().unwrap_or_default(),
-						groups,
-						// For check block, we should execute all transactions success by BlockBuilder::put_batch.
-						usize::MAX,
-						// doesn't work since `limit_execution_time` is false
-						std::time::Duration::from_secs(10),
-						// doesn't work since `limit_execution_time` is false
-						std::time::Duration::from_secs(5),
-						false,
-						true,
-						false,
-					)
-					.await
-					.map_err(|e| Self::Error::ClientImport(format!("Execute block error {e:?}")))
-			})
-		};
-		let hash = block.post_hash();
 		log::debug!(
 			target: LOG_TARGET,
 			"ImportBlock({:?}): {}(parent: {:?}, body: {:?}, digests: {}, post_digests: {}, justifications: {:?}, finalized: {}, action: {})",
@@ -274,83 +344,21 @@ where
 				StateAction::Execute => "Execute",
 			},
 		);
-        self.lock(block.origin, *block.header.number()).await;
-		let _ = block.justifications.take();
-		let block_commit = find_block_commit::<Block>(&block.post_header());
-		let mut block_execute_info = None;
-		let import_result = match self.inner.status(hash) {
-			Ok(BlockStatus::InChain) => {
-                self.unlock(block.origin, *block.header.number()).await;
-				Ok(ImportResult::AlreadyInChain)
-			},
-			Ok(BlockStatus::Unknown) => {
-				let (import, reorg) = self.should_import(&block.header, &block_commit)
-					.map_err(|e| ConsensusError::ClientImport(e.to_string()))?;
-				if !import {
-					Ok(ImportResult::AlreadyInChain)
-				} else if let Ok(BlockStatus::InChain) = self.inner.status(*block.header.parent_hash()) {
-					if matches!(block.origin, BlockOrigin::ConsensusBroadcast | BlockOrigin::Own)
-						&& !matches!(block.state_action, StateAction::Execute | StateAction::ExecuteIfPossible)
-					{
-						// Block from local/local_consensus with calculated changes do not need check.
-					} else if matches!(block.state_action, StateAction::Execute | StateAction::ExecuteIfPossible)
-						|| self.role.is_authority()
-					{
-						let result = match calculate_block(&block) {
-							Ok((proposal, info)) => {
-								block_execute_info = Some(info);
-								if let Err(e) = check_header::<Block>(&block.header, &proposal.block.header()) {
-									Err(ConsensusError::ClientImport(format!("Check header with calculated: {e}")))
-								} else {
-									block.state_action = StateAction::ApplyChanges(StorageChanges::Changes(proposal.storage_changes));
-									Ok(())
-								}
-							},
-							Err(e) => Err(e),
-						};
-						if let Err(e) = result {
-							warn!(target: LOG_TARGET, "{:?}: {} failed for {e}", block.origin, block.header.number());
-							self.unlock(block.origin, *block.header.number()).await;
-							return Err(e);
-						}
-					}
-                    let header = block.post_header();
-					let origin = block.origin;
-					if let Some((pre, pre_commit)) = reorg {
-						log::warn!(
-							target: LOG_TARGET,
-							"Try replace best block {}:{}({}) -> {}:{}({})",
-							pre.number(),
-							pre.hash(),
-							pre_commit.view(),
-							header.number(),
-							header.hash(),
-							block_commit.as_ref().map(|bc| bc.view()).unwrap_or(0),
-						);
-						// This ForkChoiceStrategy::Custom(true) will set `is_new_best` to true.
-						block.fork_choice = Some(ForkChoiceStrategy::Custom(true));
-					}
-					let result = (&*self.inner).import_block(block).await;
-					if result.is_ok() && self.inner.info().finalized_number < *header.number() {
-						if let Err(e) = self.inner.finalize_block(header.hash(), None, true) {
-							warn!(target: LOG_TARGET, "FinalizeBlock #{} ({}) failed for {e:?}", header.number(), header.hash());
-						}
-					}
-                    self.unlock(origin, *header.number()).await;
-                    result
-				} else {
-                    self.unlock(block.origin, *block.header.number()).await;
-					Ok(ImportResult::UnknownParent)
-				}
-			},
-			Err(e) => Err(ConsensusError::ClientImport(e.to_string())),
-		};
-		if import_result.is_ok() {
+		let orign = block.origin;
+		let number = *block.header.number();
+		if orign != BlockOrigin::ConsensusBroadcast {
+			self.lock(orign, number).await;
+		}
+		let import_result = self.import_one(block).await;
+		if orign != BlockOrigin::ConsensusBroadcast {
+			self.unlock(orign, number).await;
+		}
+		import_result.map(|(r, mut block_execute_info)| {
 			if let Some(info) = block_execute_info.take() {
 				self.oracle.update_execute_info(&info);
 			}
-		}
-		import_result
+			r
+		})
 	}
 }
 
