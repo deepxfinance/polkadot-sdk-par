@@ -17,6 +17,7 @@ targets = ["x86_64-unknown-linux-gnu"]
 name = "node-template"
 
 [dependencies]
+hex = "0.4.3"
 clap = { version = "4.2.5", features = ["derive"] }
 futures = { version = "0.3.21", features = ["thread-pool"]}
 codec = { package = "parity-scale-codec", version = "3.2.2", features = ["derive" ] }
@@ -27,7 +28,7 @@ sc-executor = { version = "0.10.0-dev", path = "../../../client/executor" }
 sc-network = { version = "0.10.0-dev", path = "../../../client/network" }
 sc-service = { version = "0.10.0-dev", path = "../../../client/service" }
 sc-telemetry = { version = "4.0.0-dev", path = "../../../client/telemetry" }
-sc-keystore = { version = "4.0.0-dev", path = "../../../client/keystore" }
+sc-keystore = { version = "4.0.0-dev", path = "../../../client/keystore", features = ["bls-experimental"] }
 sc-transaction-pool = { version = "4.0.0-dev", path = "../../../client/transaction-pool" }
 sc-transaction-pool-api = { version = "4.0.0-dev", path = "../../../client/transaction-pool/api" }
 sc-statement-store = { version = "4.0.0-dev", path = "../../../client/statement-store" }
@@ -47,9 +48,9 @@ frame-system = { version = "4.0.0-dev", path = "../../../frame/system" }
 pallet-transaction-payment = { version = "4.0.0-dev", default-features = false, path = "../../../frame/transaction-payment" }
 
 # Hotstuff Consensus
-hotstuff-consensus = { default-features = false, path = "../../../hotstuff/consensus" }
+hotstuff-consensus = { path = "../../../hotstuff/consensus" }
 pallet-hotstuff = { default-features = false, path = "../../../hotstuff/pallets/hotstuff" }
-hotstuff-primitives = { default-features = false, path = "../../../hotstuff/primitives" }
+hotstuff-primitives = { default-features = false, path = "../../../hotstuff/primitives", features = ["bls-experimental"] }
 
 # These dependencies are used for the node template's RPCs
 jsonrpsee = { version = "0.16.2", features = ["server"] }

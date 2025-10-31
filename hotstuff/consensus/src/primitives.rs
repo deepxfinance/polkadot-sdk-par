@@ -1,4 +1,4 @@
-use hotstuff_primitives::AuthorityId;
+use crate::AuthorityId;
 
 // define some primitives used in hotstuff
 pub type ViewNumber = u64;
@@ -15,7 +15,11 @@ pub enum HotstuffError {
 	// Get invalid signature from a authority.
 	InvalidSignature(AuthorityId),
 
+	InvalidAggregatedSignature(String),
+
 	NullSignature,
+
+	InvalidAuthority(String),
 
 	UnknownAuthority(AuthorityId),
 

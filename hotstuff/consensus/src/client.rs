@@ -12,11 +12,10 @@ use sp_runtime::{
     traits::{Block as BlockT, NumberFor, Zero},
 };
 
-use hotstuff_primitives::AuthorityId;
 use sc_basic_authorship::{BlockOracle, BlockPropose};
 use sc_network_common::role::Role;
 use sp_consensus::Error as ConsensusError;
-use crate::{authorities::SharedAuthoritySet, aux_schema, import::HotstuffBlockImport};
+use crate::{authorities::SharedAuthoritySet, aux_schema, import::HotstuffBlockImport, AuthorityId};
 
 /// A trait that includes all the client functionalities hotstuff requires.
 /// Ideally this would be a trait alias, we're not there yet.

@@ -1,17 +1,32 @@
 use std::{collections::HashSet, marker::PhantomData};
 use std::fmt::{Debug, Display, Formatter};
 use codec::{Decode, Encode};
+use w3f_bls::TinyBLS381;
+use hotstuff_primitives::AuthorityWeight;
 use sp_core::{ByteArray, Pair};
 use sp_runtime::traits::{Block as BlockT, Hash as HashT, Header as HeaderT};
 use sp_timestamp::Timestamp;
 
-use hotstuff_primitives::{AuthorityId, AuthorityList, AuthorityPair, AuthoritySignature};
+use crate::{AuthorityId, AuthorityList, AuthorityPair, AuthoritySignature};
 use crate::{primitives::{HotstuffError, ViewNumber}};
+use crate::aggregator::AggregateSignature;
 use crate::import::BlockInfo;
 
 #[cfg(test)]
 #[path = "tests/message_tests.rs"]
 pub mod message_tests;
+
+pub fn extend_message(index: u16, msg: &[u8]) -> Vec<u8> {
+    [index.to_le_bytes().to_vec(), msg.to_vec()].concat()
+}
+
+pub fn find_authority_index<'a>(authorities: &'a AuthorityList, author: &AuthorityId) -> Option<(u16, &'a (AuthorityId, AuthorityWeight))> {
+    authorities
+        .iter()
+        .enumerate()
+        .find(|(_, authority)| &authority.0 == author)
+        .map(|(i, a)| (i as u16, a))
+}
 
 #[derive(Clone, Encode, Decode, Debug, Copy, Default, PartialEq)]
 pub enum ConsensusStage {
@@ -146,13 +161,11 @@ impl<Block: BlockT> Vote<Block> {
     }
 
     pub fn verify(&self, authorities: &AuthorityList) -> Result<(), HotstuffError> {
-        authorities
-            .iter()
-            .find(|authority| authority.0 == self.voter)
+        let (index, _) = find_authority_index(authorities, &self.voter)
             .ok_or(HotstuffError::UnknownAuthority(self.voter.to_owned()))?;
-
+        let message =  extend_message(index, self.digest().as_ref());
         self.signature.as_ref().ok_or(HotstuffError::NullSignature).and_then(|signature| {
-            if !AuthorityPair::verify(signature, self.digest(), &self.voter) {
+            if !AuthorityPair::verify(signature, message, &self.voter) {
                 return Err(HotstuffError::InvalidSignature(self.voter.to_owned()));
             }
             Ok(())
@@ -179,13 +192,11 @@ impl<Block: BlockT> Timeout<Block> {
     }
 
     pub fn verify(&self, authorities: &AuthorityList) -> Result<(), HotstuffError> {
-        authorities
-            .iter()
-            .find(|authority| authority.0 == self.voter)
+        let (index, _) = find_authority_index(authorities, &self.voter)
             .ok_or(HotstuffError::UnknownAuthority(self.voter.to_owned()))?;
-
+        let message =  extend_message(index, self.digest().as_ref());
         self.signature.as_ref().ok_or(HotstuffError::NullSignature).and_then(|signature| {
-            if !AuthorityPair::verify(signature, self.digest(), &self.voter) {
+            if !AuthorityPair::verify(signature, message, &self.voter) {
                 return Err(HotstuffError::InvalidSignature(self.voter.to_owned()));
             }
             Ok(())
@@ -322,7 +333,8 @@ impl<Block: BlockT> Proposal<Block> {
     }
 
     pub fn empty() -> Self {
-        let empty_authority = AuthorityId::from_slice(&[1u8; 32]).unwrap();
+        let length = <AuthorityId as ByteArray>::LEN;
+        let empty_authority = AuthorityId::from_slice(&vec![1u8; length]).unwrap();
         Self::new(QC::default(), None, Payload::empty(), 0, empty_authority, None)
     }
 
@@ -334,14 +346,11 @@ impl<Block: BlockT> Proposal<Block> {
     }
 
     pub fn verify(&self, authorities: &AuthorityList) -> Result<(), HotstuffError> {
-        authorities
-            .iter()
-            .find(|authority| authority.0 == self.author)
+        let (index, _) = find_authority_index(authorities, &self.author)
             .ok_or(HotstuffError::UnknownAuthority(self.author.to_owned()))?;
-
+        let message =  extend_message(index, self.digest().as_ref());
         self.signature.as_ref().ok_or(HotstuffError::NullSignature).and_then(|signature| {
-            if !AuthorityPair::verify(signature, self.digest(), &self.author) {
-                println!("proposal verify failed");
+            if !AuthorityPair::verify(signature, message, &self.author) {
                 return Err(HotstuffError::InvalidSignature(self.author.to_owned()));
             }
             Ok(())
@@ -353,14 +362,6 @@ impl<Block: BlockT> Proposal<Block> {
     pub fn parent_hash(&self) -> Block::Hash {
         self.qc.proposal_hash
     }
-
-    pub fn full_consensus(prepare: &Self, precommit: &Self, commit: &Self) -> bool {
-        // not need payload check, proposal_hash prove payload correct
-        if precommit.qc.proposal_hash != prepare.digest() || commit.qc.proposal_hash != precommit.digest() {
-            return false;
-        }
-        true
-    }
 }
 
 /// Quorum certificate for a block.
@@ -369,8 +370,8 @@ pub struct QC<Block: BlockT> {
     pub view: ViewNumber,
     /// proposal hash.
     pub proposal_hash: Block::Hash,
-    /// Public key signature pairs for the digest of QC(authorities index, signature).
-    pub votes: Vec<(u16, AuthoritySignature)>,
+    /// Aggregated BLS signature the digest of QC.
+    pub signature: AggregateSignature,
     pub stage: ConsensusStage,
     pub timestamp: Timestamp,
 }
@@ -401,32 +402,10 @@ impl<Block: BlockT> QC<Block> {
         if self.proposal_hash == Block::Hash::default() && self.view == 0 {
             return Ok(());
         }
-        let mut used = HashSet::<AuthorityId>::new();
-        let mut grant_votes = 0;
-
-        for (index, _) in self.votes.iter() {
-            if *index as usize - 1 >= authorities.len() {
-                return Err(HotstuffError::NotAuthority);
-            }
-            let voter = &authorities[*index as usize - 1].0;
-            if used.contains(voter) {
-                return Err(HotstuffError::AuthorityReuse(voter.clone()));
-            }
-            used.insert(voter.clone());
-            grant_votes += 1;
-        }
-
-        if grant_votes <= (authorities.len() * 2 / 3) {
+        if self.signature.mask.count_ones() as usize <= (authorities.len() * 2 / 3) {
             return Err(HotstuffError::InsufficientQuorum);
         }
-
-        for (index, signature) in self.votes.iter() {
-            let voter = &authorities[*index as usize - 1].0;
-            if !AuthorityPair::verify(signature, self.digest(), voter) {
-                return Err(HotstuffError::InvalidSignature(voter.clone()));
-            }
-        }
-        Ok(())
+        self.signature.verify::<TinyBLS381>(self.digest().as_ref(), &authorities)
     }
 }
 
@@ -434,8 +413,8 @@ impl<Block: BlockT> Default for QC<Block> {
     fn default() -> Self {
         Self {
             view: 0,
-            proposal_hash: Block::Hash::default(),
-            votes: vec![],
+            proposal_hash: BlockCommit::<Block>::empty().commit_hash(),
+            signature: AggregateSignature::default(),
             stage: ConsensusStage::Prepare,
             timestamp: Default::default(),
         }
@@ -466,10 +445,10 @@ impl<Block: BlockT> TC<Block> {
         let mut grant_votes = 0;
 
         for (index, _, _) in self.votes.iter() {
-            if *index as usize - 1 >= authorities.len() {
+            if *index as usize >= authorities.len() {
                 return Err(HotstuffError::NotAuthority);
             }
-            let authority_id = &authorities[*index as usize - 1].0;
+            let authority_id = &authorities[*index as usize].0;
             if used.contains(authority_id) {
                 return Err(HotstuffError::AuthorityReuse(authority_id.clone()));
             }
@@ -487,7 +466,8 @@ impl<Block: BlockT> TC<Block> {
             let mut data = self.view.encode();
             data.append(&mut high_qc_view.encode());
             let digest = <<Block::Header as HeaderT>::Hashing as HashT>::hash_of(&data);
-            if !AuthorityPair::verify(signature, digest, voter) {
+            let message =  extend_message(*index, digest.as_ref());
+            if !AuthorityPair::verify(signature, message, voter) {
                 return Err(HotstuffError::InvalidSignature(voter.clone()));
             }
             final_high_qc_view = final_high_qc_view.max(*high_qc_view);
@@ -609,48 +589,48 @@ impl<Block: BlockT> BlockClaim<Block> {
 
 #[derive(Debug, Clone, Encode, Decode)]
 pub struct BlockCommit<B: BlockT> {
-    /// parent qc digest
-    parent: B::Hash,
-    pub view: [ViewNumber; 3],
-    pub block_claim: BlockClaim<B>,
-    commit: Vec<(u16, AuthoritySignature)>,
+    base_block: <B::Header as HeaderT>::Number,
+    /// parent block commit
+    parent_commit_hash: B::Hash,
+    view: ViewNumber,
+    block_number: <B::Header as HeaderT>::Number,
+    extrinsics_root: B::Hash,
+    commit_hash: B::Hash,
+    signature: AggregateSignature,
     timestamp: Timestamp,
 }
 
 impl<B: BlockT> BlockCommit<B> {
     pub fn empty() -> Self {
         Self {
-            parent: Default::default(),
+            base_block: 0u32.into(),
+            parent_commit_hash: Default::default(),
             view: Default::default(),
-            block_claim: BlockClaim::empty(),
-            commit: Vec::new(),
+            block_number: 0u32.into(),
+            extrinsics_root: Default::default(),
+            commit_hash: Default::default(),
+            signature: Default::default(),
             timestamp: Default::default(),
         }
     }
 
-    pub fn parent_hash(&self) -> B::Hash {
-        self.parent
+    pub fn base_block(&self) -> <B::Header as HeaderT>::Number {
+        self.base_block
     }
 
-    pub fn prepare_hash(&self) -> B::Hash {
-        let mut data = self.view[0].encode();
-        data.append(&mut self.parent_hash().encode());
-        data.append(&mut self.block_claim.digest().encode());
-        <<B::Header as HeaderT>::Hashing as HashT>::hash_of(&data)
+    pub fn parent_commit_hash(&self) -> B::Hash {
+        self.parent_commit_hash
     }
 
-    pub fn precommit_hash(&self) -> B::Hash {
-        let mut data = self.view[1].encode();
-        data.append(&mut self.prepare_hash().encode());
-        data.append(&mut self.block_claim.block_number.encode());
-        <<B::Header as HeaderT>::Hashing as HashT>::hash_of(&data)
+    pub fn view(&self) -> ViewNumber {
+        self.view
     }
 
     pub fn commit_hash(&self) -> B::Hash {
-        let mut data = self.view[2].encode();
-        data.append(&mut self.precommit_hash().encode());
-        data.append(&mut self.block_claim.block_number.encode());
-        <<B::Header as HeaderT>::Hashing as HashT>::hash_of(&data)
+        if self.block_number == 0u32.into() {
+            return B::Hash::default();
+        }
+        self.commit_hash
     }
 
     pub fn generate(prepare: (&Proposal<B>, QC<B>), precommit: (&Proposal<B>, QC<B>), commit: (&Proposal<B>, QC<B>)) -> Option<Self> {
@@ -663,11 +643,15 @@ impl<B: BlockT> BlockCommit<B> {
             || precommit.0.qc.proposal_hash != prepare.1.proposal_hash {
             return None;
         }
+        let block_claim = prepare.0.payload.block_claim()?;
         let block_commit = BlockCommit {
-            parent: prepare.0.qc.proposal_hash,
-            view: [prepare.0.view, precommit.0.view, commit.0.view],
-            block_claim: prepare.0.payload.block_claim()?,
-            commit: commit.1.votes,
+            base_block: block_claim.best_block.number,
+            parent_commit_hash: prepare.0.qc.proposal_hash,
+            view: commit.1.view,
+            block_number: block_claim.block_number,
+            extrinsics_root: block_claim.extrinsics_root,
+            commit_hash: commit.1.proposal_hash,
+            signature: commit.1.signature,
             timestamp: commit.1.timestamp,
         };
         Some(block_commit)
@@ -682,22 +666,21 @@ impl<B: BlockT> BlockCommit<B> {
             return Err(HotstuffError::VerifyClaim(format!("Incorrect block number {block_number}/{}", self.block_number()).into()));
         }
         let commit_qc: QC<B> = QC {
-            view: self.view[2],
+            view: self.view,
             proposal_hash: self.commit_hash(),
-            votes: self.commit.clone(),
+            signature: self.signature.clone(),
             stage: ConsensusStage::Commit,
-            // not check here
             timestamp: Timestamp::default(),
         };
         commit_qc.verify(authorities)
     }
 
     pub fn block_number(&self) -> <B::Header as HeaderT>::Number {
-        self.block_claim.block_number
+        self.block_number
     }
 
-    pub fn base_block(&self) -> &BlockInfo<B> {
-        &self.block_claim.best_block
+    pub fn extrinsics_root(&self) -> B::Hash {
+        self.extrinsics_root
     }
 
     pub fn commit_time(&self) -> &Timestamp {

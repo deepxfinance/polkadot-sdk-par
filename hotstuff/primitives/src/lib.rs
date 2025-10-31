@@ -1,7 +1,7 @@
 #![cfg_attr(not(feature = "std"), no_std)]
 
-use codec::{Codec, Decode, Encode};
-
+use codec::{Encode, Decode, Codec, MaxEncodedLen};
+use scale_info::TypeInfo;
 use sp_runtime::ConsensusEngineId;
 use sp_std::vec::Vec;
 
@@ -15,6 +15,9 @@ pub const HOTSTUFF_KEY_TYPE: sp_core::crypto::KeyTypeId = sp_core::crypto::KeyTy
 pub const GENESIS_AUTHORITY_SET_ID: u64 = 0;
 
 pub use sp_consensus_slots::{Slot, SlotDuration};
+use serde::{Deserialize, Serialize};
+use sp_application_crypto::RuntimeAppPublic;
+use sp_core::crypto::KeyTypeId;
 use sp_runtime::transaction_validity::{TransactionSource, TransactionValidity};
 
 mod app {
@@ -29,27 +32,81 @@ sp_application_crypto::with_pair! {
 	pub type AuthorityPair = app::Pair;
 }
 
-// pub mod sr25519 {
-// 	mod app_sr25519 {
-// 		use crate::HOTSTUFF_KEY_TYPE;
+#[cfg(feature = "bls-experimental")]
+pub mod bls_crypto {
+	use crate::HOTSTUFF_KEY_TYPE;
+	use crate::RuntimeAuthorityId;
 
-// 		use sp_application_crypto::{app_crypto, sr25519};
-// 		app_crypto!(sr25519, HOTSTUFF_KEY_TYPE);
-// 	}
+	use sp_application_crypto::{app_crypto, bls381};
+	use sp_core::ByteArray;
 
-// 	sp_application_crypto::with_pair! {
-// 		/// An Hotstuff authority keypair using S/R 25519 as its crypto.
-// 		pub type AuthorityPair = app_sr25519::Pair;
-// 	}
+	app_crypto!(bls381, HOTSTUFF_KEY_TYPE);
 
-// 	/// An Hotstuff authority signature using S/R 25519 as its crypto.
-// 	pub type AuthoritySignature = app_sr25519::Signature;
+	pub type AuthorityId = Public;
 
-// 	/// An Hotstuff authority identifier using S/R 25519 as its crypto.
-// 	pub type AuthorityId = app_sr25519::Public;
-// }
+	pub type AuthoritySignature = Signature;
 
-// /// Identity of a Hotstuff authority.
+	sp_application_crypto::with_pair! {
+		/// The hotstuff BLS381 crypto scheme defined via the keypair type.
+		pub type AuthorityPair = Pair;
+	}
+
+	impl From<RuntimeAuthorityId> for Public {
+		fn from(value: RuntimeAuthorityId) -> Self {
+			Self::try_from(value.0.as_slice()).unwrap()
+		}
+	}
+}
+
+/// Identity for Hotstuff BLS381 authority.
+#[derive(Debug, Eq, PartialEq, Clone, Encode, Decode, TypeInfo, Serialize, Deserialize)]
+pub struct RuntimeAuthorityId(pub Vec<u8>);
+
+impl AsRef<[u8]> for RuntimeAuthorityId {
+	fn as_ref(&self) -> &[u8] {
+		self.0.as_slice()
+	}
+}
+
+impl RuntimeAppPublic for RuntimeAuthorityId {
+	const ID: KeyTypeId = HOTSTUFF_KEY_TYPE;
+	type Signature = Vec<u8>;
+
+	fn all() -> Vec<Self> {
+		Vec::new()
+	}
+
+	fn generate_pair(_seed: Option<Vec<u8>>) -> Self {
+		Self(Vec::new())
+	}
+
+	fn sign<M: AsRef<[u8]>>(&self, _msg: &M) -> Option<Self::Signature> {
+		None
+	}
+
+	fn verify<M: AsRef<[u8]>>(&self, _msg: &M, _signature: &Self::Signature) -> bool {
+		false
+	}
+
+	fn to_raw_vec(&self) -> Vec<u8> {
+		self.0.clone()
+	}
+}
+
+impl MaxEncodedLen for RuntimeAuthorityId {
+	fn max_encoded_len() -> usize {
+		150
+	}
+}
+
+#[cfg(feature = "bls-experimental")]
+impl From<bls_crypto::AuthorityId> for RuntimeAuthorityId {
+	fn from(value: bls_crypto::AuthorityId) -> Self {
+		Self(<bls_crypto::AuthorityId as AsRef<[u8]>>::as_ref(&value).to_vec())
+	}
+}
+
+/// Identity of a Hotstuff authority.
 pub type AuthorityId = app::Public;
 
 /// Signature for a Hotstuff authority.
@@ -75,7 +132,7 @@ pub type SetId = u64;
 pub type RoundNumber = u64;
 
 /// A list of Hotstuff authorities with associated weights.
-pub type AuthorityList = Vec<(AuthorityId, AuthorityWeight)>;
+pub type AuthorityList<AuthorityId> = Vec<(AuthorityId, AuthorityWeight)>;
 
 /// An consensus log item for Hotstuff.
 #[derive(Decode, Encode)]

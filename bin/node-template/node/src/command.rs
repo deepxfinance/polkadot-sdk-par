@@ -103,11 +103,10 @@ pub fn run() -> sc_cli::Result<()> {
 					service::new_partial(&config)?;
 				let aux_revert = Box::new(|client: std::sync::Arc<service::FullClient>, _, blocks| {
 					// default we request revert_to should be Latest;
-					let revert_to = None;
-					if revert_to.is_none() && blocks > 0u32.into() {
+					if blocks > 0u32.into() {
 						return Err(sc_cli::Error::Input("!!!HotstuffRevert to latest, block number should not > 0, please add `0` number to last command".to_string()));
 					}
-					if let Err(e) = hotstuff_consensus::revert::revert(&client, revert_to) {
+					if let Err(e) = hotstuff_consensus::revert::revert(&client) {
 						println!("!!!HotstuffRevert failed for {e:?}");
 					}
 					Ok(())

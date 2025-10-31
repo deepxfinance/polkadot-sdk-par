@@ -123,16 +123,7 @@ where
 		let mut delete_invalid = vec![];
 		let mut delete_invalid_info = vec![];
 		if let Some(last_proposal) = start_proposal {
-			let mut view = last_proposal.qc.view;
-			// if any proposal between (last_proposal.parent_view, last_view), they are all invalid.
-			for v in (view + 1..last_proposal.view).rev() {
-				if let Some(proposal) = self.get_proposal(ProposalKey::View(v))? {
-					let digest = proposal.digest();
-					delete_invalid.push(view_key(proposal.view));
-					delete_invalid.push(digest.as_ref().to_vec());
-					delete_invalid_info.push(format!("{}:{digest}", proposal.view));
-				}
-			}
+			let mut view = last_proposal.view;
 			loop {
 				if let Some(proposal) = self.get_proposal(ProposalKey::View(view))? {
 					if view >= self.high_view {

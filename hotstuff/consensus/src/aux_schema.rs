@@ -1,9 +1,7 @@
 use sc_client_api::backend::AuxStore;
 use sp_blockchain::Result as ClientResult;
 use sp_runtime::traits::{Block as BlockT, NumberFor};
-
-use hotstuff_primitives::AuthorityList;
-
+use crate::AuthorityList;
 use crate::authorities::{AuthoritySet, SharedAuthoritySet};
 
 /// Persistent data kept between runs.

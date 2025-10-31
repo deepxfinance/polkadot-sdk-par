@@ -21,19 +21,26 @@ pub use import::HotstuffBlockImport;
 use std::fmt::Debug;
 use codec::Codec;
 use log::trace;
-use hotstuff_primitives::{AuthorityList, ConsensusLog, HotstuffApi, HOTSTUFF_ENGINE_ID};
-use hotstuff_primitives::{SlotDuration, digests::CompatibleDigestItem, AuthorityId};
+use hotstuff_primitives::{ConsensusLog, HotstuffApi, RuntimeAuthorityId, HOTSTUFF_ENGINE_ID};
+use hotstuff_primitives::{SlotDuration, digests::CompatibleDigestItem};
 use sc_client_api::{AuxStore, UsageProvider};
 use sp_api::{BlockT, Core, ProvideRuntimeApi};
+use sp_blockchain::HeaderBackend;
 use sp_consensus::Error as ConsensusError;
 use sp_consensus_slots::Slot;
 use sp_core::Pair;
 use sp_runtime::DigestItem;
+use sp_runtime::generic::BlockId;
 use sp_runtime::traits::{Header, NumberFor, Zero};
 use crate::message::BlockCommit;
 
 pub const LOG_TARGET: &str = "hots";
 pub const CLIENT_LOG_TARGET: &str = "hotstuff";
+
+pub type AuthorityId = hotstuff_primitives::bls_crypto::AuthorityId;
+pub type AuthorityPair = hotstuff_primitives::bls_crypto::AuthorityPair;
+pub type AuthoritySignature = hotstuff_primitives::bls_crypto::AuthoritySignature;
+pub type AuthorityList = hotstuff_primitives::AuthorityList<AuthorityId>;
 
 /// Get the slot duration for Hotstuff by reading from a runtime API at the best block's state.
 pub fn slot_duration<A, B, C>(client: &C) -> sp_blockchain::Result<SlotDuration>
@@ -292,8 +299,8 @@ pub fn check_header_slot_and_seal<B: BlockT, C, P: Pair>(
 where
     P::Signature: Codec,
     P::Public: Codec + PartialEq + Clone,
-    C: ProvideRuntimeApi<B>,
-    C::Api: HotstuffApi<B, AuthorityId>,
+    C: ProvideRuntimeApi<B> + HeaderBackend<B>,
+    C::Api: HotstuffApi<B, RuntimeAuthorityId>,
 {
     let seal_commit = header.digest_mut().pop().ok_or(SealVerificationError::Unsealed)?;
     // just remove groups digest.
@@ -308,17 +315,20 @@ where
         // check the signature is valid under the expected authority and
         // chain state.
         let commit: BlockCommit<B> = seal_commit.as_hotstuff_seal().ok_or(SealVerificationError::InvalidBlockCommit)?;
-        let base_block = commit.base_block().clone();
+        let base_block = commit.base_block();
+        let base_hash = client.block_hash_from_id(&BlockId::Number(base_block))
+            .map_err(|_| SealVerificationError::InvalidBlockCommit)?
+            .ok_or(SealVerificationError::InvalidBlockCommit)?;
         let authorities = authorities(
             client,
-            base_block.hash,
+            base_hash,
             *header.number(),
             compatibility_mode,
         )
-            .map_err(|e| SealVerificationError::GetAuthorities(format!("get authortites from {}:{} err {e:?}", base_block.number, base_block.hash)))?;
+            .map_err(|e| SealVerificationError::GetAuthorities(format!("get authortites from #{} err {e:?}", base_block)))?;
         let authorities = authorities
             .iter()
-            .map(|id| (id.clone(), 0))
+            .map(|id| (id.clone().into(), 0))
             .collect::<AuthorityList>();
         if let Err(e) = commit.verify(&authorities, *header.number()) {
             log::warn!(target: LOG_TARGET, "check_header qc.verify err: {e:?} for header: {header:?}");

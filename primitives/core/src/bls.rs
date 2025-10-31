@@ -30,11 +30,11 @@ use codec::{Decode, Encode, MaxEncodedLen};
 use scale_info::TypeInfo;
 #[cfg(feature = "std")]
 use serde::{de, Deserialize, Deserializer, Serialize, Serializer};
-use w3f_bls::{DoublePublicKey, DoubleSignature, EngineBLS, SerializableToBytes, TinyBLS381};
+use w3f_bls::{EngineBLS, SerializableToBytes, TinyBLS381, PublicKey, Signature as SingleSignature};
 #[cfg(feature = "full_crypto")]
-use w3f_bls::{DoublePublicKeyScheme, Keypair, Message, SecretKey};
+use w3f_bls::{Keypair, Message, SecretKey};
 
-use sp_runtime_interface::pass_by::PassByInner;
+use sp_runtime_interface::pass_by::{PassByInner, PassBy, Inner};
 use sp_std::{convert::TryFrom, marker::PhantomData, ops::Deref};
 
 /// BLS-377 specialized types
@@ -90,11 +90,11 @@ const SECRET_KEY_SERIALIZED_SIZE: usize =
 
 // Public key serialized size
 const PUBLIC_KEY_SERIALIZED_SIZE: usize =
-	<DoublePublicKey<TinyBLS381> as SerializableToBytes>::SERIALIZED_BYTES_SIZE;
+	<PublicKey<TinyBLS381> as SerializableToBytes>::SERIALIZED_BYTES_SIZE;
 
 // Signature serialized size
 const SIGNATURE_SERIALIZED_SIZE: usize =
-	<DoubleSignature<TinyBLS381> as SerializableToBytes>::SERIALIZED_BYTES_SIZE;
+	<SingleSignature<TinyBLS381> as SerializableToBytes>::SERIALIZED_BYTES_SIZE;
 
 /// A secret seed.
 ///
@@ -147,6 +147,10 @@ impl<T> sp_std::hash::Hash for Public<T> {
 
 impl<T> ByteArray for Public<T> {
 	const LEN: usize = PUBLIC_KEY_SERIALIZED_SIZE;
+}
+
+impl<T> PassBy for Public<T> {
+	type PassBy = Inner<Self, [u8; PUBLIC_KEY_SERIALIZED_SIZE]>;
 }
 
 impl<T> PassByInner for Public<T> {
@@ -292,6 +296,26 @@ pub struct Signature<T> {
 	_phantom: PhantomData<fn() -> T>,
 }
 
+impl<T> PassBy for Signature<T> {
+	type PassBy = Inner<Self, [u8; SIGNATURE_SERIALIZED_SIZE]>;
+}
+
+impl<T> PassByInner for Signature<T> {
+	type Inner = [u8; SIGNATURE_SERIALIZED_SIZE];
+
+	fn into_inner(self) -> Self::Inner {
+		self.inner
+	}
+
+	fn inner(&self) -> &Self::Inner {
+		&self.inner
+	}
+
+	fn from_inner(inner: Self::Inner) -> Self {
+		Self { inner, _phantom: PhantomData }
+	}
+}
+
 impl<T> Clone for Signature<T> {
 	fn clone(&self) -> Self {
 		Self { inner: self.inner, _phantom: PhantomData }
@@ -398,12 +422,12 @@ impl<T: BlsBound> CryptoType for Signature<T> {
 
 /// A key pair.
 #[cfg(feature = "full_crypto")]
-pub struct Pair<T: EngineBLS>(Keypair<T>);
+pub struct Pair<T: EngineBLS>(Vec<u8>, Keypair<T>);
 
 #[cfg(feature = "full_crypto")]
 impl<T: EngineBLS> Clone for Pair<T> {
 	fn clone(&self) -> Self {
-		Pair(self.0.clone())
+		Pair(self.0.clone(), self.1.clone())
 	}
 }
 
@@ -430,9 +454,9 @@ impl<T: BlsBound> TraitPair for Pair<T> {
 		if seed_slice.len() != SECRET_KEY_SERIALIZED_SIZE {
 			return Err(SecretStringError::InvalidSeedLength)
 		}
-		let secret = w3f_bls::SecretKey::from_seed(seed_slice);
+		let secret = w3f_bls::SecretKey::<T>::from_seed(seed_slice);
 		let public = secret.into_public();
-		Ok(Pair(w3f_bls::Keypair { secret, public }))
+		Ok(Pair(seed_slice.to_vec(), w3f_bls::Keypair { secret, public }))
 	}
 
 	fn derive<Iter: Iterator<Item = DeriveJunction>>(
@@ -441,7 +465,7 @@ impl<T: BlsBound> TraitPair for Pair<T> {
 		_seed: Option<Seed>,
 	) -> Result<(Self, Option<Seed>), DeriveError> {
 		let mut acc: [u8; SECRET_KEY_SERIALIZED_SIZE] =
-			self.0.secret.to_bytes().try_into().expect(
+			self.0.clone().try_into().expect(
 				"Secret key serializer returns a vector of SECRET_KEY_SERIALIZED_SIZE size",
 			);
 		for j in path {
@@ -455,7 +479,8 @@ impl<T: BlsBound> TraitPair for Pair<T> {
 
 	fn public(&self) -> Self::Public {
 		let mut raw = [0u8; PUBLIC_KEY_SERIALIZED_SIZE];
-		let pk = DoublePublicKeyScheme::into_double_public_key(&self.0).to_bytes();
+		// let pk = DoublePublicKeyScheme::into_double_public_key(&self.0).to_bytes();
+		let pk = self.1.public.to_bytes();
 		raw.copy_from_slice(pk.as_slice());
 		Self::Public::unchecked_from(raw)
 	}
@@ -463,7 +488,8 @@ impl<T: BlsBound> TraitPair for Pair<T> {
 	fn sign(&self, message: &[u8]) -> Self::Signature {
 		let mut mutable_self = self.clone();
 		let r: [u8; SIGNATURE_SERIALIZED_SIZE] =
-			DoublePublicKeyScheme::sign(&mut mutable_self.0, &Message::new(b"", message))
+			// DoublePublicKeyScheme::sign(&mut mutable_self.0, &Message::new(b"", message))
+		mutable_self.1.sign(&Message::new(b"", message))
 				.to_bytes()
 				.try_into()
 				.expect("Signature serializer returns vectors of SIGNATURE_SERIALIZED_SIZE size");
@@ -476,7 +502,7 @@ impl<T: BlsBound> TraitPair for Pair<T> {
 				Ok(pk) => pk,
 				Err(_) => return false,
 			};
-		let public_key = match w3f_bls::double::DoublePublicKey::<T>::from_bytes(&pubkey_array) {
+		let public_key = match PublicKey::<T>::from_bytes(&pubkey_array) {
 			Ok(pk) => pk,
 			Err(_) => return false,
 		};
@@ -485,7 +511,7 @@ impl<T: BlsBound> TraitPair for Pair<T> {
 			Ok(s) => s,
 			Err(_) => return false,
 		};
-		let sig = match w3f_bls::double::DoubleSignature::from_bytes(sig_array) {
+		let sig = match SingleSignature::from_bytes(sig_array) {
 			Ok(s) => s,
 			Err(_) => return false,
 		};
@@ -496,8 +522,7 @@ impl<T: BlsBound> TraitPair for Pair<T> {
 	/// Get the seed for this key.
 	fn to_raw_vec(&self) -> Vec<u8> {
 		self.0
-			.secret
-			.to_bytes()
+			.clone()
 			.try_into()
 			.expect("Secret key serializer returns a vector of SECRET_KEY_SERIALIZED_SIZE size")
 	}

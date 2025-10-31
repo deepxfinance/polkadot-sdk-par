@@ -33,7 +33,8 @@ use sp_api::{ApiExt, ProvideRuntimeApi};
 use sp_block_builder::BlockBuilder as BlockBuilderApi;
 use sp_blockchain::HeaderBackend;
 use sp_consensus::Error as ConsensusError;
-use hotstuff_primitives::{HotstuffApi, AuthorityId};
+use hotstuff_primitives::{HotstuffApi, RuntimeAuthorityId};
+use hotstuff_primitives::inherents::HotstuffInherentData;
 use sp_consensus_slots::Slot;
 use sp_core::{crypto::Pair, ExecutionContext};
 use sp_inherents::{CreateInherentDataProviders, InherentDataProvider as _};
@@ -43,7 +44,6 @@ use sp_runtime::{
 };
 use sp_timestamp::Timestamp;
 use std::{fmt::Debug, hash::Hash, marker::PhantomData, sync::Arc};
-use hotstuff_primitives::inherents::HotstuffInherentData;
 
 /// check a header has been signed by the right key. If the slot is too far in the future, an error
 /// will be returned. If it's successful, returns the pre-header and the digest item
@@ -60,8 +60,8 @@ fn check_header<C, B: BlockT, P: Pair>(
 ) -> Result<CheckedHeader<B::Header, (Slot, DigestItem, DigestItem)>, Error<B>>
 where
     P::Signature: Codec,
-    C: AuxStore + ProvideRuntimeApi<B>,
-    C::Api: HotstuffApi<B, AuthorityId>,
+    C: AuxStore + ProvideRuntimeApi<B> + HeaderBackend<B>,
+    C::Api: HotstuffApi<B, RuntimeAuthorityId>,
     P::Public: Encode + Decode + PartialEq + Clone,
 {
     let check_result =
@@ -151,8 +151,8 @@ where
 #[async_trait::async_trait]
 impl<B: BlockT, C, P, CIDP> Verifier<B> for HotstuffVerifier<C, P, CIDP, NumberFor<B>>
 where
-    C: ProvideRuntimeApi<B> + Send + Sync + AuxStore,
-    C::Api: BlockBuilderApi<B> + HotstuffApi<B, AuthorityId> + ApiExt<B>,
+    C: ProvideRuntimeApi<B> + HeaderBackend<B> + Send + Sync + AuxStore,
+    C::Api: BlockBuilderApi<B> + HotstuffApi<B, RuntimeAuthorityId> + ApiExt<B>,
     P: Pair + Send + Sync + 'static,
     P::Public: Send + Sync + Hash + Eq + Clone + Decode + Encode + Debug + 'static,
     P::Signature: Encode + Decode,
@@ -333,7 +333,7 @@ pub fn import_queue<P, Block, I, C, S, CIDP>(
 ) -> Result<DefaultImportQueue<Block, C>, sp_consensus::Error>
 where
     Block: BlockT,
-    C::Api: BlockBuilderApi<Block> + HotstuffApi<Block, AuthorityId> + ApiExt<Block>,
+    C::Api: BlockBuilderApi<Block> + HotstuffApi<Block, RuntimeAuthorityId> + ApiExt<Block>,
     C: 'static
     + ProvideRuntimeApi<Block>
     + BlockOf

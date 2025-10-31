@@ -3,12 +3,12 @@
 use node_template_runtime::{self, opaque::Block, RuntimeApi};
 use sc_client_api::BlockBackend;
 use hotstuff_consensus::import_queue::ImportQueueParams;
+use hotstuff_consensus::AuthorityPair as HotstuffPair;
+use hotstuff_consensus::oracle::HotstuffOracle;
 pub use sc_executor::NativeElseWasmExecutor;
 use sc_service::{error::Error as ServiceError, Configuration, TaskManager};
 use sc_telemetry::{Telemetry, TelemetryWorker};
-use hotstuff_primitives::AuthorityPair as HotstuffPair;
 use std::sync::Arc;
-use hotstuff_consensus::oracle::HotstuffOracle;
 use sc_basic_authorship::ExecutionOracle;
 use sp_consensus::DisableProofRecording;
 use sp_timestamp::Timestamp;

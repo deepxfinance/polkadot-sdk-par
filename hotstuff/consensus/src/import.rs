@@ -9,10 +9,10 @@ use std::{
 use std::collections::HashMap;
 use codec::{Encode, Decode};
 use futures::{Future, StreamExt};
+use log::warn;
 use tokio::sync::oneshot::{Receiver, Sender};
 use tokio::sync::RwLock;
 use hotstuff_primitives::digests::CompatibleDigestItem;
-use hotstuff_primitives::HOTSTUFF_ENGINE_ID;
 use sc_basic_authorship::{BlockOracle, BlockPropose};
 use sc_client_api::{
 	client::{FinalityNotifications, ImportNotifications},
@@ -25,7 +25,7 @@ use sp_api::TransactionFor;
 use sp_blockchain::BlockStatus;
 use sp_consensus::{BlockOrigin, Error as ConsensusError};
 use sp_runtime::{generic::BlockId, traits::{Block as BlockT, Header as HeaderT, NumberFor, One}, Digest, Justification, Saturating};
-use crate::{client::ClientForHotstuff, find_block_commit, primitives::{HotstuffError, HotstuffError::*}, CLIENT_LOG_TARGET};
+use crate::{client::ClientForHotstuff, find_block_commit, primitives::{HotstuffError, HotstuffError::*}};
 use crate::message::BlockCommit;
 
 const LOG_TARGET: &str = "hots_import";
@@ -78,10 +78,10 @@ where
 				let pre_commit = find_block_commit::<Block>(&pre_header);
 				match (pre_commit, new_commit) {
 					(Some(pre_commit), Some(new_commit)) => {
-						if pre_commit.view[2] > new_commit.view[2] {
+						if pre_commit.view() > new_commit.view() {
 							// new header is earlier, not import.
 							import = false;
-						} else if pre_commit.view[2] < new_commit.view[2] {
+						} else if pre_commit.view() < new_commit.view() {
 							// new header is later, re-import this new block.
 							reorg = Some((pre_header, pre_commit));
 						} else {
@@ -275,7 +275,7 @@ where
 			},
 		);
         self.lock(block.origin, *block.header.number()).await;
-		let justifications = block.justifications.take();
+		let _ = block.justifications.take();
 		let block_commit = find_block_commit::<Block>(&block.post_header());
 		let mut block_execute_info = None;
 		let import_result = match self.inner.status(hash) {
@@ -309,7 +309,7 @@ where
 							Err(e) => Err(e),
 						};
 						if let Err(e) = result {
-							log::warn!(target: LOG_TARGET, "{:?}: {} failed for {e}", block.origin, block.header.number());
+							warn!(target: LOG_TARGET, "{:?}: {} failed for {e}", block.origin, block.header.number());
 							self.unlock(block.origin, *block.header.number()).await;
 							return Err(e);
 						}
@@ -317,20 +317,25 @@ where
                     let header = block.post_header();
 					let origin = block.origin;
 					if let Some((pre, pre_commit)) = reorg {
-						log::info!(
+						log::warn!(
 							target: LOG_TARGET,
 							"Try replace best block {}:{}({}) -> {}:{}({})",
 							pre.number(),
 							pre.hash(),
-							pre_commit.view[2],
+							pre_commit.view(),
 							header.number(),
 							header.hash(),
-							block_commit.as_ref().map(|bc| bc.view[2]).unwrap_or(0),
+							block_commit.as_ref().map(|bc| bc.view()).unwrap_or(0),
 						);
 						// This ForkChoiceStrategy::Custom(true) will set `is_new_best` to true.
 						block.fork_choice = Some(ForkChoiceStrategy::Custom(true));
 					}
 					let result = (&*self.inner).import_block(block).await;
+					if result.is_ok() && self.inner.info().finalized_number < *header.number() {
+						if let Err(e) = self.inner.finalize_block(header.hash(), None, true) {
+							warn!(target: LOG_TARGET, "FinalizeBlock #{} ({}) failed for {e:?}", header.number(), header.hash());
+						}
+					}
                     self.unlock(origin, *header.number()).await;
                     result
 				} else {
@@ -340,26 +345,6 @@ where
 			},
 			Err(e) => Err(ConsensusError::ClientImport(e.to_string())),
 		};
-		// try to finalize base block
-		if let Some(Some(encoded_commit)) = justifications.as_ref().map(|j| j.get(HOTSTUFF_ENGINE_ID)) {
-			let commit: BlockCommit<Block> = match Decode::decode(&mut &encoded_commit[..]) {
-				Ok(commit) => commit,
-				Err(e) => return Err(ConsensusError::ClientImport(e.to_string())),
-			};
-			let finalize_block = commit.base_block();
-			if self.inner.info().finalized_number < finalize_block.number {
-				if let Err(e) = self.inner.finalize_block(finalize_block.hash, Some((HOTSTUFF_ENGINE_ID, encoded_commit.clone())), false) {
-					log::warn!(target: LOG_TARGET, "FinalizeBlock #{} ({}) failed for {e:?}", finalize_block.number, finalize_block.hash);
-				}
-			}
-		} else if let Some(commit) = block_commit {
-			let finalize_block = commit.base_block();
-			if self.inner.info().finalized_number < finalize_block.number {
-				if let Err(e) = self.inner.finalize_block(finalize_block.hash, None, false) {
-					log::warn!(target: LOG_TARGET, "FinalizeBlock #{} ({}) failed for {e:?}", finalize_block.number, finalize_block.hash);
-				}
-			}
-		}
 		if import_result.is_ok() {
 			if let Some(info) = block_execute_info.take() {
 				self.oracle.update_execute_info(&info);
@@ -534,9 +519,7 @@ impl<B: BlockT> Future for PendingFinalizeBlockQueue<B> {
 							if elem.number > *finalized_number {
 								break;
 							}
-							if let Some(b) = pending.pop_front() {
-								log::info!(target: CLIENT_LOG_TARGET, "✨ Finalized #{} ({})", b.number, b.hash);
-							}
+							let _ = pending.pop_front();
 						}
 					}
 				},

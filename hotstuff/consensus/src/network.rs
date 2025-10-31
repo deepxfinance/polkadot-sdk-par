@@ -19,7 +19,7 @@ use sc_utils::mpsc::{tracing_unbounded, TracingUnboundedReceiver};
 use sp_core::Decode;
 use sp_runtime::traits::{Block as BlockT, Hash as HashT, Header as HeaderT, NumberFor};
 
-use hotstuff_primitives::{AuthorityId, AuthorityList, RoundNumber};
+use crate::{AuthorityId, AuthorityList};
 use crate::{import::PeerReport, message::ConsensusMessage, primitives::ViewNumber};
 use crate::message::PeerAuthority;
 use crate::primitives::HotstuffError;
@@ -200,7 +200,7 @@ pub type SetId = u64;
 
 /// Create a unique topic for a round and set-id combo.
 #[allow(unused)]
-pub(crate) fn round_topic<B: BlockT>(round: RoundNumber, set_id: SetId) -> B::Hash {
+pub(crate) fn round_topic<B: BlockT>(round: hotstuff_primitives::RoundNumber, set_id: SetId) -> B::Hash {
 	<<B::Header as HeaderT>::Hashing as HashT>::hash(format!("{}-{}", set_id, round).as_bytes())
 }
 
