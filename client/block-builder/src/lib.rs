@@ -271,12 +271,10 @@ where
 				)
 			};
 
+			extrinsics.push(xt);
 			match res {
-				Ok(Ok(_)) => {
-					extrinsics.push(xt);
-					TransactionOutcome::Commit(Ok(()))
-				},
-				Ok(Err(tx_validity)) => TransactionOutcome::Rollback(Err(
+				Ok(Ok(_)) => TransactionOutcome::Commit(Ok(())),
+				Ok(Err(tx_validity)) => TransactionOutcome::Commit(Err(
 					ApplyExtrinsicFailed::Validity(tx_validity).into(),
 				)),
 				Err(e) => TransactionOutcome::Rollback(Err(Error::from(e))),
@@ -364,21 +362,12 @@ where
 					Err(e) => (vec![], vec![(0, Error::from(e))]),
 				}
 			};
-            if roll_back.is_empty() {
-                let mut results = Vec::new();
-                for (res, xt) in res.into_iter().zip(xts.into_iter()) {
-                    results.push(match res {
-                        Ok(_) => {
-                            extrinsics.push(xt.clone());
-                            Ok(())
-                        },
-                        Err(e) => Err(e),
-                    });
-                }
-                TransactionOutcome::Commit((results, roll_back, stale, future))
-            } else {
-                TransactionOutcome::Rollback((Vec::new(), roll_back, stale, future))
-            }
+			let mut results = Vec::new();
+			for (res, xt) in res.into_iter().zip(xts.into_iter()) {
+				extrinsics.push(xt.clone());
+				results.push(res.map(|_| ()));
+			}
+			TransactionOutcome::Commit((results, roll_back, stale, future))
 		})
 	}
 

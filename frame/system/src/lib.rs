@@ -1588,6 +1588,11 @@ impl<T: Config> Pallet<T> {
 			},
 		});
 
+		Self::note_next_extrinsic();
+	}
+
+	/// Event can't apply extrinsic, we still record and add index.
+	pub fn note_next_extrinsic() {
 		let next_extrinsic_index = Self::extrinsic_index().unwrap_or_default() + 1u32;
 
 		storage::unhashed::put(well_known_keys::EXTRINSIC_INDEX, &next_extrinsic_index);

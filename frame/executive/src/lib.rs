@@ -564,31 +564,32 @@ where
 		let encoded_len = encoded.len();
 		sp_tracing::enter_span!(sp_tracing::info_span!("apply_extrinsic",
 				ext=?sp_core::hexdisplay::HexDisplay::from(&encoded)));
-		// Verify that the signature is good.
-		let xt = uxt.check(&Default::default())?;
-
-		// AUDIT: Under no circumstances may this function panic from here onwards.
-
-		// Decode parameters and dispatch
-		let dispatch_info = xt.get_dispatch_info();
-		let r = Applyable::apply::<UnsignedValidator>(xt, &dispatch_info, encoded_len)?;
-
-		// We don't need to make sure to `note_extrinsic` only after we know it's going to be
-		// executed to prevent it from leaking in storage since at this point, it will either
-		// execute or panic (and revert storage changes).
+		let result = uxt.check(&Default::default()).map(|xt| {
+			let dispatch_info = xt.get_dispatch_info();
+			let r = Applyable::apply::<UnsignedValidator>(xt, &dispatch_info, encoded_len);
+			(dispatch_info, r)
+		});
 		<frame_system::Pallet<System>>::note_extrinsic(encoded);
-
-		// Mandatory(inherents) are not allowed to fail.
-		//
-		// The entire block should be discarded if an inherent fails to apply. Otherwise
-		// it may open an attack vector.
-		if r.is_err() && dispatch_info.class == DispatchClass::Mandatory {
-			return Err(InvalidTransaction::BadMandatory.into())
+		match result {
+			Ok((dispatch_info, r)) => match r {
+				Ok(dispatch_result) => {
+					<frame_system::Pallet<System>>::note_applied_extrinsic(&dispatch_result, dispatch_info);
+					Ok(dispatch_result.map(|_| ()).map_err(|e| e.error))
+				},
+				Err(e) => {
+					<frame_system::Pallet<System>>::note_next_extrinsic();
+					if dispatch_info.class == DispatchClass::Mandatory {
+						Err(InvalidTransaction::BadMandatory.into())
+					} else {
+						Err(e)
+					}
+				},
+			},
+			Err(e) => {
+				<frame_system::Pallet<System>>::note_next_extrinsic();
+				Err(e)
+			}
 		}
-
-		<frame_system::Pallet<System>>::note_applied_extrinsic(&r, dispatch_info);
-
-		Ok(r.map(|_| ()).map_err(|e| e.error))
 	}
 
 	pub fn apply_extrinsics(extrinsics: Vec<Block::Extrinsic>, _timeout: u128, strategy: Option<BatchStrategy>) -> Vec<ApplyExtrinsicResult> {

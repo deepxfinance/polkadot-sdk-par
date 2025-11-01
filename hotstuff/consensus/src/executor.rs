@@ -228,7 +228,6 @@ where
             .expect("get best header")
             .expect("no expected best header");
         let proposer = self.proposer_factory.write().await.init(&parent_header).await.expect("proposer init");
-        // let (proposal, groups, avg_execute_time) = match BlockPropose::<B>::propose_block(
         let mut multi = vec![];
         let mut single = vec![];
         let extrinsic = mission.block.extrinsic.clone();
