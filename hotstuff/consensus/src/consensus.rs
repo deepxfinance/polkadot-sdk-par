@@ -36,7 +36,7 @@ use crate::{
     aggregator::Aggregator,
     client::{ClientForHotstuff, LinkHalf}, find_consensus_logs, find_block_commit,
     executor::{BlockExecutor, ExecutorMission},
-    import::{BlockInfo, PendingFinalizeBlockQueue, ImportLock},
+    import::{PendingFinalizeBlockQueue, ImportLock},
     message::{
         ConsensusMessage, Proposal, Timeout, Vote, QC, TC, BlockCommit, ConsensusStage, Payload,
         PeerAuthority, ProposalKey, ProposalReq, ProposalRequest,
@@ -935,10 +935,10 @@ where
                     Some(new_block) => new_block,
                     None => return Ok(())
                 };
-                if new_block.block_number <= self.client.info().best_number {
+                if new_block.block_number() <= self.client.info().best_number {
                     return Ok(());
                 }
-                let new_block_number = new_block.block_number;
+                let new_block_number = new_block.block_number();
                 if qc_proposal.view > self.commit.view() {
                     let commit = match BlockCommit::generate(
                         (&grandpa, parent.qc.clone()),
@@ -970,7 +970,7 @@ where
                     self.local_timer.reset();
                 } else {
                     // skip update `self.processing_block` here should make next following `generate_proposal` to re-process this block.
-                    debug!(target: CLIENT_LOG_TARGET, "~~ trigger_qc_mission({from}). block {new_block_number} execute mission skipped for not higher view than commit: {} {}", qc_proposal.view, self.commit.view());
+                    trace!(target: CLIENT_LOG_TARGET, "~~ trigger_qc_mission({from}). block {new_block_number} execute mission skipped for not higher view than commit: {} {}", qc_proposal.view, self.commit.view());
                 }
             },
             Err(e) => {
@@ -1143,9 +1143,8 @@ where
         extrinsic_data.extend(single.iter().map(|e| e.encode()).collect::<Vec<Vec<u8>>>());
         (
             Payload::Prepare(NewBlock {
-                best_block: BlockInfo { number: info.best_number, hash: info.best_hash },
-                block_number,
-                extrinsics_root: extrinsics_data_root::<<B::Header as HeaderT>::Hashing>(extrinsic_data),
+                best_block: info.best_number,
+                extrinsic_block: (block_number, extrinsics_data_root::<<B::Header as HeaderT>::Hashing>(extrinsic_data)).into(),
                 extrinsic: vec![multi, vec![single]],
             }),
             start.elapsed(),
@@ -1195,7 +1194,7 @@ where
             _ => return Ok(false),
         };
         let parent_commit_hash = self.commit.commit_hash();
-        if self.commit.block_number().saturating_add(1u32.into()) == new_block.block_number {
+        if self.commit.block_number().saturating_add(1u32.into()) == new_block.block_number() {
             if parent_commit_hash != proposal.parent_hash() {
                 return Err(PayloadError::BaseBlock(format!("proposal {} incorrect parent {} commit {parent_commit_hash} {}", proposal.view, self.commit.block_number(), proposal.parent_hash())).into());
             }
@@ -1217,8 +1216,8 @@ where
             }).collect::<Vec<_>>())
             .collect();
         let extrinsics_root = extrinsics_data_root::<<B::Header as HeaderT>::Hashing>(extrinsic_data);
-        if extrinsics_root != new_block.extrinsics_root {
-            return Err(PayloadError::ExtrinsicErr(format!("Incorrect extrinsics_root/payload: {extrinsics_root}/{})", new_block.extrinsics_root)).into());
+        if extrinsics_root != new_block.extrinsics_root() {
+            return Err(PayloadError::ExtrinsicErr(format!("Incorrect extrinsics_root/payload: {extrinsics_root}/{})", new_block.extrinsics_root())).into());
         }
         let mut check_tasks: Vec<JoinHandle<Result<(usize, Duration), HotstuffError>>> = vec![];
         for thread_extrinsic in extrinsic {

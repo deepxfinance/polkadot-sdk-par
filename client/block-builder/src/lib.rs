@@ -42,8 +42,6 @@ use sp_runtime::{
 
 use sc_client_api::backend;
 pub use sp_block_builder::BlockBuilder as BlockBuilderApi;
-use sp_blockchain::ApplyExtrinsicFailed::Validity;
-use sp_runtime::transaction_validity::{InvalidTransaction, TransactionValidityError};
 
 /// Used as parameter to [`BlockBuilderProvider`] to express if proof recording should be enabled.
 ///
@@ -284,18 +282,17 @@ where
 
 	/// Push onto the block's list of extrinsics.
 	pub fn push_batch(&mut self, xts: Vec<<Block as BlockT>::Extrinsic>, timeout: std::time::Duration)
-		-> (Vec<Result<(), Error>>, Vec<(usize, Error)>, Vec<(usize, Error)>, Vec<(usize, Error)>)
+		-> (Vec<Result<(), Error>>, Vec<(usize, Error)>, Vec<(usize, Error)>)
 	{
 		let parent_hash = self.parent_hash;
 		let extrinsics = &mut self.extrinsics;
 		let version = self.version;
-        let mut rollback = Vec::new();
-		let mut stale = Vec::new();
-		let mut future = Vec::new();
+		let mut invalid = Vec::new();
+		let mut future_or_exhausted = Vec::new();
         let mut batch_results = Vec::with_capacity(xts.len());
 
 		self.api.execute_in_transaction(|api| {
-			let (res, roll_back) = if version < 6 {
+			let res = if version < 6 {
 				let start = std::time::Instant::now();
 				for (i, xt) in xts.clone().into_iter().enumerate() {
 					#[allow(deprecated)]
@@ -306,22 +303,17 @@ where
 					)
 						.map(legacy::byte_sized_error::convert_to_latest) {
 						Ok(result) => {
-                            match result {
-                                Ok(r) => batch_results.push(Ok(r)),
-                                Err(e) => {
-									if e.stale() {
-										stale.push((i, ApplyExtrinsicFailed::Validity(e).into()));
-									} else if e.future() {
-										future.push((i, ApplyExtrinsicFailed::Validity(e).into()));
-									} else {
-                                        rollback.push((i, ApplyExtrinsicFailed::Validity(e).into()));
-                                        break;
-                                    }
-                                }
+                            if let Err(e) = &result {
+								if e.exhausted_resources() || e.future() {
+									future_or_exhausted.push((i, ApplyExtrinsicFailed::Validity(*e).into()));
+								} else {
+									invalid.push((i, ApplyExtrinsicFailed::Validity(*e).into()));
+								}
                             }
+							batch_results.push(result.map_err(|e| ApplyExtrinsicFailed::Validity(e).into()));
                         },
 						Err(e) => {
-                            rollback.push((i, Error::from(e)));
+							invalid.push((i, Error::from(e)));
 							break;
 						},
 					}
@@ -329,7 +321,7 @@ where
 						break;
 					}
 				}
-				(batch_results, rollback)
+				batch_results
 			} else {
 				match api.apply_extrinsics_with_context(
 					parent_hash,
@@ -339,27 +331,21 @@ where
 				) {
 					Ok(results) => {
                         for (i, result) in results.into_iter().enumerate() {
-                            match result {
-                                Ok(r) => batch_results.push(Ok(r)),
-                                Err(e) => {
-                                    // For multi threads execution, exhausted_resources does not matter.
-									// Nonce Stale or Future also doesn't matter since we did no storage changes.
-									if e.stale() {
-										stale.push((i, ApplyExtrinsicFailed::Validity(e).into()));
-									} else if e.future() {
-										future.push((i, ApplyExtrinsicFailed::Validity(e).into()));
-									} else {
-										// if meat other error, should roll back.
-										// record roll back index.
-										rollback.push((i, ApplyExtrinsicFailed::Validity(e).into()));
-									}
-									batch_results.push(Err(ApplyExtrinsicFailed::Validity(e).into()))
-                                }
+                            if let Err(e) = &result {
+								if e.exhausted_resources() || e.future() {
+									future_or_exhausted.push((i, ApplyExtrinsicFailed::Validity(*e).into()));
+								} else {
+									invalid.push((i, ApplyExtrinsicFailed::Validity(*e).into()));
+								}
                             }
+							batch_results.push(result.map_err(|e| ApplyExtrinsicFailed::Validity(e).into()));
                         }
-                        (batch_results, rollback)
+                        batch_results
 					},
-					Err(e) => (vec![], vec![(0, Error::from(e))]),
+					Err(e) => {
+						invalid.push((0, Error::from(e)));
+						vec![]
+					},
 				}
 			};
 			let mut results = Vec::new();
@@ -367,7 +353,7 @@ where
 				extrinsics.push(xt.clone());
 				results.push(res.map(|_| ()));
 			}
-			TransactionOutcome::Commit((results, roll_back, stale, future))
+			TransactionOutcome::Commit((results, invalid, future_or_exhausted))
 		})
 	}
 

@@ -330,7 +330,7 @@ where
             .iter()
             .map(|id| (id.clone().into(), 0))
             .collect::<AuthorityList>();
-        if let Err(e) = commit.verify(&authorities, *header.number()) {
+        if let Err(e) = commit.verify(&authorities, *header.number(), *header.extrinsics_root()) {
             log::warn!(target: LOG_TARGET, "check_header qc.verify err: {e:?} for header: {header:?}");
             return Err(SealVerificationError::InvalidBlockCommit);
         }

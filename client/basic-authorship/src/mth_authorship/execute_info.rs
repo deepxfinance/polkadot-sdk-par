@@ -110,7 +110,7 @@ impl<B: BlockT> BlockExecuteInfo<B> {
             return true;
         }
         for info in self.threads.values() {
-            if info.applied > 0 {
+            if info.total > 0 {
                 return false;
             }
         }
@@ -132,15 +132,15 @@ impl<B: BlockT> BlockExecuteInfo<B> {
             group_infos.push(ThreadExecutionInfo::default());
         }
         let group_infos = [vec![self.inherent.clone()], group_infos].concat();
-        group_infos.iter().map(|info| info.applied as u32).collect()
+        group_infos.iter().map(|info| info.total as u32).collect()
     }
 
-    pub fn avg_time(&self, with_extend: bool) -> (Duration, usize) {
+    pub fn avg_time(&self) -> (Duration, usize) {
         if !self.threads.is_empty() {
             let mut weight = 0;
             let times: Vec<_> = self.threads
                 .iter()
-                .map(|(_, info)| info.avg_time(with_extend))
+                .map(|(_, info)| info.avg_time())
                 .filter(|(t, _)| t > &Duration::default())
                 .map(|(t, w)| { weight += w; t })
                 .collect();
@@ -157,7 +157,7 @@ impl<B: BlockT> BlockExecuteInfo<B> {
 
     pub fn mth_applied(&self) -> (usize, usize) {
         let mut mth_threads = self.threads.len();
-        let mut mth_applied = self.threads.iter().map(|(_, info)| info.applied).sum::<usize>();
+        let mut mth_applied = self.threads.iter().map(|(_, info)| info.total).sum::<usize>();
         if self.threads.get(&0).is_some() {
             mth_threads -= 1;
             mth_applied -= self.single_applied().unwrap_or_default();
@@ -167,7 +167,7 @@ impl<B: BlockT> BlockExecuteInfo<B> {
 
     pub fn single_applied(&self) -> Option<usize> {
         self.threads.get(&0).map(|info| if info.time != Default::default() {
-            Some(info.applied)
+            Some(info.total)
         } else {
             None
         })?
@@ -192,20 +192,22 @@ impl<B: BlockT> BlockExecuteInfo<B> {
     }
 
     pub fn tx_info(&self) -> String {
-        let (single_applied, single_invalid) = self.threads
+        let (mut single_applied, single_invalid) = self.threads
             .get(&0)
-            .map(|i| (i.applied, i.rollback + i.stale_or_future))
+            .map(|i| (i.total, i.invalid + i.future_or_exhausted))
             .unwrap_or_default();
+        single_applied = single_applied.saturating_sub(single_invalid);
         let mut total_applied = 0;
         let mut total_invalid = 0;
         self.threads
             .values()
             .for_each(|i| {
-                total_applied += i.applied;
-                total_invalid += i.rollback;
-                total_invalid += i.stale_or_future;
+                total_applied += i.total;
+                total_invalid += i.invalid;
+                total_invalid += i.future_or_exhausted;
             });
-        let total_extrinsic = total_applied + total_invalid + self.inherent.applied;
+        total_applied = total_applied.saturating_sub(total_invalid);
+        let total_extrinsic = total_applied + total_invalid + self.inherent.total;
         let mth_applied = total_applied.saturating_sub(single_applied);
         let mth_invalid = total_invalid.saturating_sub(single_invalid);
         format!("extrinsics [({mth_applied}/{mth_invalid})/({single_applied}/{single_invalid})/{total_extrinsic} native: {}]", self.native)
@@ -296,30 +298,27 @@ impl GroupInfo {
 #[derive(Debug, Clone)]
 pub struct ThreadExecutionInfo<B: BlockT> {
     pub thread: usize,
-    /// executed and applied transactions.
-    pub applied: usize,
-    /// rollback transactions.
-    pub rollback: usize,
-    /// check nonce failed transactions.
-    pub stale_or_future: usize,
+    /// total transactions.
+    pub total: usize,
+    /// failed but valid transactions.
+    pub future_or_exhausted: usize,
+    /// failed an invalid transactions.
+    pub invalid: usize,
     /// thread execute time.
     pub time: Duration,
     /// transaction hashes(future transactions are not filtered).
     pub transactions: Vec<B::Hash>,
-    /// executed extended transaction.
-    pub extend: Option<Box<ThreadExecutionInfo<B>>>,
 }
 
 impl<B: BlockT> Default for ThreadExecutionInfo<B> {
     fn default() -> Self {
         Self {
             thread: 0,
-            applied: 0,
-            rollback: 0,
-            stale_or_future: 0,
+            total: 0,
+            invalid: 0,
+            future_or_exhausted: 0,
             time: Default::default(),
             transactions: vec![],
-            extend: None,
         }
     }
 }
@@ -329,27 +328,19 @@ impl<B: BlockT> ThreadExecutionInfo<B> {
         Self { thread, ..Default::default() }
     }
 
-    pub fn avg_time(&self, with_extend: bool) -> (Duration, usize) {
-        if self.applied == 0 {
+    pub fn applied(&self) -> usize {
+        self.total.saturating_sub(self.invalid).saturating_sub(self.future_or_exhausted)
+    }
+
+    pub fn avg_time(&self) -> (Duration, usize) {
+        let applied = self.applied();
+        if applied == 0 {
             (Default::default(), 0)
         } else {
             // raw each transaction apply time
-            let mut avg_tme = Duration::from_micros(self.time.as_micros() as u64 / self.applied as u64);
-            let mut weight = self.applied;
-            if with_extend {
-                // add `extend_time / applied(not extend_applied)`.
-                avg_tme += self.extend.as_ref().map(|ext| ext.time / self.applied as u32).unwrap_or_default();
-                weight += self.extend.as_ref().map(|ext| ext.applied).unwrap_or_default();
-            }
+            let avg_tme = Duration::from_micros(self.time.as_micros() as u64 / applied as u64);
+            let weight = applied;
             (avg_tme, weight)
-        }
-    }
-
-    pub fn extend_avg_time(&self) -> (Duration, usize) {
-        if self.applied == 0 {
-            (Default::default(), 0)
-        } else {
-            self.extend.as_ref().map(|ext| ext.avg_time(false)).unwrap_or_default()
         }
     }
 }

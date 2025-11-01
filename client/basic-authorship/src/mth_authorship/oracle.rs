@@ -124,7 +124,7 @@ impl<B: BlockT> ExecutionOracle<B> {
 
     fn update_execute_time_per_tx(&self, info: &BlockExecuteInfo<B>) -> Option<(Duration, Duration)> {
         let mut execute_time_per_tx = None;
-        let (ave_execute_time, weight) = info.avg_time(true);
+        let (ave_execute_time, weight) = info.avg_time();
         if ave_execute_time > Duration::default() {
             let (pre_execute_time_per_tx, pre_weight) = *self.execute_time_per_tx.lock().unwrap();
             if weight > 0 {

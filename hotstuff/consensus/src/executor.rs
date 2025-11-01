@@ -251,7 +251,6 @@ where
             (multi, single),
             self.oracle.round_tx(),
             true,
-            true,
             false,
         ).await {
             Ok(propose) => propose,
@@ -263,6 +262,9 @@ where
         // generate import params
         let (block, _storage_proof) = (proposal.block, proposal.proof);
         let (header, body) = block.deconstruct();
+        if *header.extrinsics_root() != mission.commit.extrinsics_root() {
+            log::error!(target: LOG_TARGET, "Propose block {mission_block} check extrinsics_root incorrect calculated {} expected {}", header.extrinsics_root(), mission.commit.extrinsics_root());
+        }
         let block_import_params = match self.block_import_params(
             header,
             body.clone(),

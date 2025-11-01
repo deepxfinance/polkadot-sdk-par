@@ -10,7 +10,6 @@ use sp_timestamp::Timestamp;
 use crate::{AuthorityId, AuthorityList, AuthorityPair, AuthoritySignature};
 use crate::{primitives::{HotstuffError, ViewNumber}};
 use crate::aggregator::AggregateSignature;
-use crate::import::BlockInfo;
 
 #[cfg(test)]
 #[path = "tests/message_tests.rs"]
@@ -78,9 +77,8 @@ impl<B: BlockT> ProposalKey<B> {
 
 #[derive(Clone, Encode, Decode)]
 pub struct NewBlock<Block: BlockT> {
-    pub best_block: BlockInfo<Block>,
-    pub block_number: <Block::Header as HeaderT>::Number,
-    pub extrinsics_root: Block::Hash,
+    pub best_block: <Block::Header as HeaderT>::Number,
+    pub extrinsic_block: ExtrinsicBlock<Block>,
     pub extrinsic: Vec<Vec<Vec<Block::Extrinsic>>>,
 }
 
@@ -91,18 +89,27 @@ impl<Block: BlockT> NewBlock<Block> {
 
     pub fn empty() -> Self {
         Self {
-            best_block: Default::default(),
-            block_number: 0u32.into(),
-            extrinsics_root: Block::Hash::default(),
+            best_block: 0u32.into(),
+            extrinsic_block: ExtrinsicBlock{
+                number: 0u32.into(),
+                extrinsics_root: Block::Hash::default(),
+            },
             extrinsic: Vec::new(),
         }
     }
 
+    pub fn block_number(&self) -> <Block::Header as HeaderT>::Number {
+        self.extrinsic_block.number
+    }
+
+    pub fn extrinsics_root(&self) -> Block::Hash {
+        self.extrinsic_block.extrinsics_root
+    }
+
     pub fn claim(&self) -> BlockClaim<Block> {
         BlockClaim {
-            best_block: self.best_block.clone(),
-            block_number: self.block_number,
-            extrinsics_root: self.extrinsics_root.clone(),
+            best_block: self.best_block,
+            extrinsic_block: self.extrinsic_block.clone(),
         }
     }
 
@@ -117,27 +124,27 @@ impl<Block: BlockT> NewBlock<Block> {
 
 impl<Block: BlockT> Display for NewBlock<Block> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}:{}:", self.block_number, self.extrinsics_root)?;
+        write!(f, "{}:", self.extrinsic_block)?;
         let groups = self.groups();
         if !groups.is_empty() {
             write!(f, "{groups:?}")?;
         } else {
             write!(f, "None")?;
         }
-        write!(f, "({}:{})", self.best_block.number, self.best_block.hash)
+        write!(f, "({})", self.best_block)
     }
 }
 
 impl<Block: BlockT> Debug for NewBlock<Block> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}:{:?}:", self.block_number, self.extrinsics_root)?;
+        write!(f, "{:?}:", self.extrinsic_block)?;
         let groups = self.groups();
         if !groups.is_empty() {
             write!(f, "{groups:?}")?;
         } else {
             write!(f, "None")?;
         }
-        write!(f, "({}:{:?})", self.best_block.number, self.best_block.hash)
+        write!(f, "({})", self.best_block)
     }
 }
 
@@ -206,23 +213,56 @@ impl<Block: BlockT> Timeout<Block> {
     }
 }
 
+#[derive(Clone, Encode, Decode, PartialEq)]
+pub struct ExtrinsicBlock<B: BlockT> {
+    pub number: <B::Header as HeaderT>::Number,
+    pub extrinsics_root: B::Hash,
+}
+
+impl<B: BlockT> ExtrinsicBlock<B> {
+    pub fn empty() -> Self {
+        Self {
+            number: 0u32.into(),
+            extrinsics_root: Default::default(),
+        }
+    }
+}
+
+impl<Block: BlockT> Display for ExtrinsicBlock<Block> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}:{}", self.number, self.extrinsics_root)
+    }
+}
+
+impl<Block: BlockT> Debug for ExtrinsicBlock<Block> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}:{:?}", self.number, self.extrinsics_root)
+    }
+}
+
+impl<B: BlockT> From<(<B::Header as HeaderT>::Number, B::Hash)> for ExtrinsicBlock<B> {
+    fn from((number, extrinsics_root): (<B::Header as HeaderT>::Number, B::Hash)) -> Self {
+        Self { number, extrinsics_root }
+    }
+}
+
 #[derive(Clone, Encode, Decode)]
 pub enum Payload<Block: BlockT> {
     Prepare(NewBlock<Block>),
-    PreCommit(<Block::Header as HeaderT>::Number),
-    Commit(<Block::Header as HeaderT>::Number),
+    PreCommit(ExtrinsicBlock<Block>),
+    Commit(ExtrinsicBlock<Block>),
 }
 
 impl<Block: BlockT> Payload<Block> {
     pub fn empty() -> Self {
-        Self::Commit(0u32.into())
+        Self::Commit(ExtrinsicBlock::empty())
     }
 
     pub fn block_number(&self) -> <Block::Header as HeaderT>::Number {
         match &self {
-            Self::Prepare(block) => block.block_number,
-            Self::PreCommit(block) => *block,
-            Self::Commit(block) => *block,
+            Self::Prepare(block) => block.extrinsic_block.number,
+            Self::PreCommit(block) => block.number,
+            Self::Commit(block) => block.number,
         }
     }
 
@@ -243,15 +283,14 @@ impl<Block: BlockT> Payload<Block> {
     pub fn encode_data(&self) -> Vec<u8> {
         match &self {
             Self::Prepare(block) => block.claim().digest().encode(),
-            Self::PreCommit(block) => block.encode(),
-            Self::Commit(block) => block.encode(),
+            _ => self.encode(),
         }
     }
 
     pub fn next(&self) -> Option<Self> {
         match &self {
-            Self::Prepare(block) => Some(Self::PreCommit(block.block_number)),
-            Self::PreCommit(block) => Some(Self::Commit(*block)),
+            Self::Prepare(block) => Some(Self::PreCommit(block.extrinsic_block.clone())),
+            Self::PreCommit(block) => Some(Self::Commit(block.clone())),
             _ => None,
         }
     }
@@ -266,15 +305,15 @@ impl<Block: BlockT> Payload<Block> {
     pub fn stage(&self) -> ConsensusStage {
         match &self {
             Self::Prepare(_) => ConsensusStage::Prepare,
-            Self::PreCommit(_) => ConsensusStage::PreCommit,
-            Self::Commit(_) => ConsensusStage::Commit
+            Self::PreCommit(..) => ConsensusStage::PreCommit,
+            Self::Commit(..) => ConsensusStage::Commit
         }
     }
 
     pub fn full_consensus(prepare: &Self, precommit: &Self, commit: &Self) -> bool {
         if !matches!(prepare, Self::Prepare(_))
-            || !matches!(precommit, Self::PreCommit(_))
-            || !matches!(commit, Self::Commit(_)) {
+            || !matches!(precommit, Self::PreCommit(..))
+            || !matches!(commit, Self::Commit(..)) {
             return false;
         }
         if prepare.block_number() != precommit.block_number()
@@ -299,8 +338,8 @@ impl<Block: BlockT> Debug for Payload<Block> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match &self {
             Self::Prepare(block) => write!(f, "{}:{block:?}", self.stage()),
-            Self::PreCommit(block) =>  write!(f, "{}:{block}", self.stage()),
-            Self::Commit(block) =>  write!(f, "{}:{block}", self.stage()),
+            Self::PreCommit(block) =>  write!(f, "{}:{block:?}", self.stage()),
+            Self::Commit(block) =>  write!(f, "{}:{block:?}", self.stage()),
         }
     }
 }
@@ -564,25 +603,22 @@ impl<Block: BlockT> ConsensusMessage<Block> {
 
 #[derive(Clone, Debug, Encode, Decode, PartialEq)]
 pub struct BlockClaim<Block: BlockT> {
-    pub best_block: BlockInfo<Block>,
-    pub block_number: <Block::Header as HeaderT>::Number,
-    pub extrinsics_root: Block::Hash,
+    pub best_block: <Block::Header as HeaderT>::Number,
+    pub extrinsic_block: ExtrinsicBlock<Block>,
 }
 
 impl<Block: BlockT> BlockClaim<Block> {
     pub fn empty() -> Self {
         Self {
-            best_block: Default::default(),
-            block_number: 0u32.into(),
-            extrinsics_root: Default::default(),
+            best_block: 0u32.into(),
+            extrinsic_block: ExtrinsicBlock::empty(),
         }
     }
 
     /// Should be same with [NewBlock::digest]
     pub fn digest(&self) -> Block::Hash {
         let mut data = self.best_block.encode();
-        data.append(&mut self.block_number.encode());
-        data.append(&mut self.extrinsics_root.encode());
+        data.append(&mut self.extrinsic_block.encode());
         <<Block::Header as HeaderT>::Hashing as HashT>::hash_of(&data)
     }
 }
@@ -590,12 +626,11 @@ impl<Block: BlockT> BlockClaim<Block> {
 #[derive(Debug, Clone, Encode, Decode)]
 pub struct BlockCommit<B: BlockT> {
     base_block: <B::Header as HeaderT>::Number,
-    /// parent block commit
-    parent_commit_hash: B::Hash,
+    /// parent block commit hash
+    parent_commit: B::Hash,
     view: ViewNumber,
-    block_number: <B::Header as HeaderT>::Number,
-    extrinsics_root: B::Hash,
-    commit_hash: B::Hash,
+    extrinsic_block: ExtrinsicBlock<B>,
+    precommit: B::Hash,
     signature: AggregateSignature,
     timestamp: Timestamp,
 }
@@ -604,11 +639,10 @@ impl<B: BlockT> BlockCommit<B> {
     pub fn empty() -> Self {
         Self {
             base_block: 0u32.into(),
-            parent_commit_hash: Default::default(),
+            parent_commit: Default::default(),
             view: Default::default(),
-            block_number: 0u32.into(),
-            extrinsics_root: Default::default(),
-            commit_hash: Default::default(),
+            extrinsic_block: ExtrinsicBlock::empty(),
+            precommit: Default::default(),
             signature: Default::default(),
             timestamp: Default::default(),
         }
@@ -619,7 +653,7 @@ impl<B: BlockT> BlockCommit<B> {
     }
 
     pub fn parent_commit_hash(&self) -> B::Hash {
-        self.parent_commit_hash
+        self.parent_commit
     }
 
     pub fn view(&self) -> ViewNumber {
@@ -627,10 +661,14 @@ impl<B: BlockT> BlockCommit<B> {
     }
 
     pub fn commit_hash(&self) -> B::Hash {
-        if self.block_number == 0u32.into() {
+        if self.extrinsic_block.number == 0u32.into() {
             return B::Hash::default();
         }
-        self.commit_hash
+        // We should calculate final commit hash to ensure the extrinsics_root is correct.
+        let mut data = self.view.encode();
+        data.append(&mut self.precommit.encode());
+        data.append(&mut Payload::Commit(self.extrinsic_block.clone()).encode_data());
+        <<B::Header as HeaderT>::Hashing as HashT>::hash_of(&data)
     }
 
     pub fn generate(prepare: (&Proposal<B>, QC<B>), precommit: (&Proposal<B>, QC<B>), commit: (&Proposal<B>, QC<B>)) -> Option<Self> {
@@ -645,12 +683,11 @@ impl<B: BlockT> BlockCommit<B> {
         }
         let block_claim = prepare.0.payload.block_claim()?;
         let block_commit = BlockCommit {
-            base_block: block_claim.best_block.number,
-            parent_commit_hash: prepare.0.qc.proposal_hash,
+            base_block: block_claim.best_block,
+            parent_commit: prepare.0.qc.proposal_hash,
             view: commit.1.view,
-            block_number: block_claim.block_number,
-            extrinsics_root: block_claim.extrinsics_root,
-            commit_hash: commit.1.proposal_hash,
+            extrinsic_block: block_claim.extrinsic_block,
+            precommit: precommit.1.proposal_hash,
             signature: commit.1.signature,
             timestamp: commit.1.timestamp,
         };
@@ -661,9 +698,13 @@ impl<B: BlockT> BlockCommit<B> {
         &self,
         authorities: &AuthorityList,
         block_number: <B::Header as HeaderT>::Number,
+        extrinsics_root: B::Hash,
     ) -> Result<(), HotstuffError> {
         if block_number != self.block_number() {
             return Err(HotstuffError::VerifyClaim(format!("Incorrect block number {block_number}/{}", self.block_number()).into()));
+        }
+        if extrinsics_root != self.extrinsics_root() {
+            return Err(HotstuffError::VerifyClaim(format!("Incorrect block {block_number} extrinsics_root: {extrinsics_root}/{}", self.extrinsics_root()).into()));
         }
         let commit_qc: QC<B> = QC {
             view: self.view,
@@ -676,11 +717,11 @@ impl<B: BlockT> BlockCommit<B> {
     }
 
     pub fn block_number(&self) -> <B::Header as HeaderT>::Number {
-        self.block_number
+        self.extrinsic_block.number
     }
 
     pub fn extrinsics_root(&self) -> B::Hash {
-        self.extrinsics_root
+        self.extrinsic_block.extrinsics_root
     }
 
     pub fn commit_time(&self) -> &Timestamp {

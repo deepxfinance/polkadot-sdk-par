@@ -365,10 +365,9 @@ where
             self.oracle.round_tx(),
             group_output.groups
                 .into_iter()
-                .map(|g| g.iter().map(|(i, tx)| (*i, Some(tx.hash().clone()), tx.data().clone())).collect())
+                .map(|g| g.iter().map(|(i, tx)| (*i, tx.hash().clone(), tx.data().clone())).collect())
                 .collect(),
-            group_output.single.iter().map(|(i, tx)| (*i, Some(tx.hash().clone()), tx.data().clone())).collect(),
-            true,
+            group_output.single.iter().map(|(i, tx)| (*i, tx.hash().clone(), tx.data().clone())).collect(),
             false,
             true,
         )
@@ -479,7 +478,6 @@ where
         inherent_digests: Digest,
         extrinsic: (Vec<Vec<Block::Extrinsic>>, Vec<Block::Extrinsic>),
         round_tx: usize,
-        allow_extend: bool,
         merge_in_thread_order: bool,
         limit_execution_time: bool,
     ) -> Result<(Proposal<Block, Self::Transaction, Self::Proof>, BlockExecuteInfo<Block>), Self::Error> {
@@ -494,7 +492,6 @@ where
             inherent_digests,
             extrinsic,
             round_tx,
-            allow_extend,
             merge_in_thread_order,
             limit_execution_time,
         ).await
@@ -512,7 +509,6 @@ where
         round_tx: usize,
         linear_execute_time: Duration,
         estimated_merge_time: Duration,
-        allow_extend: bool,
         merge_in_thread_order: bool,
         limit_execution_time: bool
     ) -> Result<(Proposal<Block, Self::Transaction, Self::Proof>, BlockExecuteInfo<Block>), Self::Error> {
@@ -527,7 +523,6 @@ where
             round_tx,
             linear_execute_time,
             estimated_merge_time,
-            allow_extend,
             merge_in_thread_order,
             limit_execution_time,
         ).await

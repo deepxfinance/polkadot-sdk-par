@@ -100,9 +100,8 @@ where
         linear_execute_time: Duration,
         estimated_merge_time: Duration,
         round_tx: usize,
-        mut extrinsic_group: Vec<Vec<(usize, Option<<A as TransactionPool>::Hash>, Block::Extrinsic)>>,
-        mut single_group: Vec<(usize, Option<<A as TransactionPool>::Hash>, Block::Extrinsic)>,
-        allow_extend: bool,
+        mut extrinsic_group: Vec<Vec<(usize, <A as TransactionPool>::Hash, Block::Extrinsic)>>,
+        mut single_group: Vec<(usize, <A as TransactionPool>::Hash, Block::Extrinsic)>,
         merge_in_thread_order: bool,
         limit_execution_time: bool,
     ) -> Result<(Proposal<Block, backend::TransactionFor<B, Block>, PR::Proof>, BlockExecuteInfo<Block>), sp_blockchain::Error> {
@@ -140,7 +139,7 @@ where
                 Ok(_) => {},
             }
         }
-        inherent_info.applied = inherent_length;
+        inherent_info.total = inherent_length;
         inherent_info.time = inherent_start.elapsed();
         recorder.inherent_finish(inherent_info);
 
@@ -148,14 +147,12 @@ where
         let (mth_invalid, single_invalid, final_end_reason) = self.multi_single_process(
             parent_number,
             &mut block_builder,
-            deadline,
             round_tx,
             linear_execute_time.as_micros(),
             estimated_merge_time,
             extrinsic_group,
             single_group,
             inherents.clone(),
-            allow_extend,
             merge_in_thread_order,
             limit_execution_time,
             &mut recorder,
@@ -216,14 +213,12 @@ where
         &self,
         parent_number: <<Block as BlockT>::Header as HeaderT>::Number,
         block_builder: &mut BlockBuilder<'a, Block, C, B>,
-        block_deadline: time::Instant,
         round_tx: usize,
         multi_single_micros: u128,
         estimated_merge_time: time::Duration,
-        multi_groups: Vec<Vec<(usize, Option<<A as TransactionPool>::Hash>, Block::Extrinsic)>>,
-        single_group: Vec<(usize, Option<<A as TransactionPool>::Hash>, Block::Extrinsic)>,
+        multi_groups: Vec<Vec<(usize, <A as TransactionPool>::Hash, Block::Extrinsic)>>,
+        single_group: Vec<(usize, <A as TransactionPool>::Hash, Block::Extrinsic)>,
         inherents: Vec<Block::Extrinsic>,
-        allow_extend: bool,
         merge_in_thread_order: bool,
         limit_execution_time: bool,
         recorder: &mut InfoRecorder<Block>,
@@ -270,13 +265,11 @@ where
             self.spawn_execute_groups(
                 parent_number,
                 block_builder,
-                block_deadline.clone(),
                 mth_execute_deadline.clone(),
                 inherents.clone(),
                 multi_groups,
                 merge_tx.clone(),
                 round_tx,
-                allow_extend,
                 limit_execution_time,
             );
 
@@ -302,7 +295,7 @@ where
                 recorder.threads
                     .values()
                     .filter(|info| info.thread > 0)
-                    .map(|info| info.applied + info.extend.as_ref().map(|e| e.applied).unwrap_or_default())
+                    .map(|info| info.total)
                     .sum::<usize>(),
             );
             (mth_unqueue_invalid, end_reason)
@@ -313,15 +306,12 @@ where
         // 6. execute all single thread transactions.
         let (single_invalid, end_reason, single_thread_info) = Self::execute_one_thread_txs(
             parent_number + One::one(),
-            block_deadline,
             single_deadline,
             block_builder,
             inherents.clone(),
             single_group,
             0,
             round_tx,
-            false,
-            allow_extend,
             limit_execution_time,
         );
         recorder.threads.insert(0, single_thread_info);
@@ -335,13 +325,11 @@ where
         &self,
         parent_number: <<Block as BlockT>::Header as HeaderT>::Number,
         block_builder: &mut BlockBuilder<Block, C, B>,
-        block_deadline: time::Instant,
         mth_execute_deadline: time::Instant,
         inherents: Vec<<Block as BlockT>::Extrinsic>,
-        extrinsic_group: Vec<Vec<(usize, Option<<A as TransactionPool>::Hash>, Block::Extrinsic)>>,
+        extrinsic_group: Vec<Vec<(usize, <A as TransactionPool>::Hash, Block::Extrinsic)>>,
         merge_tx: Sender<(MergeType<A, Block>, Option<ThreadExecutionInfo<Block>>)>,
         round_tx: usize,
-        allow_extend: bool,
         limit_execution_time: bool,
     ) {
         let (init_changes, _, init_recorder) = block_builder.api.take_all_changes();
@@ -374,15 +362,12 @@ where
                     };
                     let (unqueue_invalid, end_reason, thread_info) = Self::execute_one_thread_txs(
                         block.clone(),
-                        block_deadline,
                         mth_execute_deadline,
                         &mut thread_builder,
                         thread_inherents.clone(),
                         pending_txs,
                         i + 1,
                         round_tx,
-                        false,
-                        allow_extend,
                         limit_execution_time,
                     );
 
@@ -398,19 +383,16 @@ where
 
     fn execute_one_thread_txs(
         block: <<Block as BlockT>::Header as HeaderT>::Number,
-        block_deadline: time::Instant,
         thread_deadline: time::Instant,
         block_builder: &mut BlockBuilder<Block, C, B>,
         inherents: Vec<<Block as BlockT>::Extrinsic>,
-        mut pending_txs: Vec<(usize, Option<<A as TransactionPool>::Hash>, Block::Extrinsic)>,
+        mut pending_txs: Vec<(usize, <A as TransactionPool>::Hash, Block::Extrinsic)>,
         thread: usize,
         round_tx: usize,
-        is_extend: bool,
-        allow_extend: bool,
         limit_execution_time: bool,
     ) -> (Vec<<A as TransactionPool>::Hash>, EndProposingReason, ThreadExecutionInfo<Block>) {
         let mut thread_info = ThreadExecutionInfo::new(thread);
-        let mut filter_transactions: HashSet<Block::Hash> = pending_txs.iter().filter_map(|(_, tx, _)| tx.clone()).collect();
+        let mut filter_transactions: HashSet<Block::Hash> = pending_txs.iter().map(|(_, tx, _)| tx.clone()).collect();
         if pending_txs.is_empty() {
             return (Vec::new(), EndProposingReason::NoMoreTransactions, thread_info);
         }
@@ -425,11 +407,8 @@ where
                 block_builder.push(inherent).unwrap();
             }
         }
-        let mut total_invalid_length = 0usize;
         let mut unqueue_invalid = Vec::new();
         let initial_applied = block_builder.extrinsics.len();
-        let total_tx = pending_txs.len();
-        let mut total_nonce_err_tx = 0usize;
         // thread txs should be same order with pool.
         pending_txs.sort_by(|a, b| a.0.cmp(&b.0));
         let mut round_execute_collect = Vec::new();
@@ -443,123 +422,74 @@ where
             if time::Instant::now() > thread_deadline && limit_execution_time {
                 break (EndProposingReason::HitDeadline, "HitThreadDeadline")
             }
-            let mut execute_txs = pending_txs[..tx_number].to_vec();
+            let execute_txs = pending_txs[..tx_number].to_vec();
             pending_txs = pending_txs[tx_number..].to_vec();
             let batch_txs = execute_txs.iter().map(|(_, _, e)| e.clone()).collect();
             let timeout = if limit_execution_time {
                 let batch_start = time::Instant::now();
                 thread_deadline.duration_since(batch_start)
             } else {
-                time::Duration::from_secs(u64::MAX)
+                Duration::from_secs(u64::MAX)
             };
-            let (results, rollback, stale, future) = block_builder.push_batch(batch_txs, timeout);
-            thread_info.stale_or_future += stale.len() + future.len();
-            let invalid_nonce_length = stale.len() + future.len();
-            total_nonce_err_tx += invalid_nonce_length;
-            let mut executed = results.len();
-            round_execute_collect.push(executed - invalid_nonce_length);
-            if rollback.is_empty() {
-                for (_, result) in results.into_iter().enumerate() {
-                    match result {
-                        Ok(()) => (),
-                        Err(ApplyExtrinsicFailed(Validity(e))) if e.exhausted_resources() => {
-                            if !is_extend && limit_execution_time {
-                                should_break = Some(EndProposingReason::HitBlockWeightLimit);
-                            }
+            let (results, mut invalid_tx, future_or_exhausted) = block_builder.push_batch(batch_txs, timeout);
+            thread_info.invalid += invalid_tx.len();
+            thread_info.future_or_exhausted += future_or_exhausted.len();
+            let executed = results.len();
+            round_execute_collect.push(executed);
+            for (_, result) in results.iter().enumerate() {
+                match result {
+                    Ok(()) => (),
+                    Err(ApplyExtrinsicFailed(Validity(e))) if e.exhausted_resources() => {
+                        if limit_execution_time {
+                            should_break = Some(EndProposingReason::HitBlockWeightLimit);
                         }
-                        Err(ApplyExtrinsicFailed(Validity(e))) if e.stale_or_future() => (),
-                        Err(e) => panic!("Err({e:?}) should Rollback"),
                     }
+                    _ => (),
                 }
-            } else {
-                thread_info.rollback += rollback.len();
-                executed = 0;
             }
             // clear invalid extrinsic.
-            let mut invalid: Vec<_> = [rollback, stale, future].into_iter().flatten().collect();
-            invalid.sort_by(|a, b| a.0.cmp(&b.0));
-            total_invalid_length += invalid.len();
-            let mut remove_offset = 0usize;
-            for (index, e) in invalid {
-                if let Some(invalid_hash) = &execute_txs[index - remove_offset].1 {
-                    trace!("[{invalid_hash:?}] Invalid transaction: {e}");
-                    if let ApplyExtrinsicFailed(Validity(e)) = e {
-                        if e.future() || e.exhausted_resources() {
-                            filter_transactions.remove(&invalid_hash);
-                        } else {
-                            unqueue_invalid.push(invalid_hash.clone());
-                        }
-                    }
-                }
-                // drop this rollback extrinsic
-                execute_txs.remove(index - remove_offset);
-                remove_offset += 1;
+            invalid_tx.sort_by(|a, b| a.0.cmp(&b.0));
+            for (index, e) in invalid_tx {
+                let invalid_hash = &execute_txs[index].1;
+                trace!("[{invalid_hash:?}] Invalid transaction: {e}");
+                unqueue_invalid.push(invalid_hash.clone());
             }
-            // push unexecuted extrinsic back to `pending_txs`
-            if execute_txs.len() > executed {
-                pending_txs = [execute_txs[executed..].to_vec(), pending_txs].concat();
+            for (index, _) in future_or_exhausted {
+                let future_or_exhausted_hash = &execute_txs[index].1;
+                filter_transactions.remove(future_or_exhausted_hash);
             }
             if let Some(break_reason) = should_break {
                 break (break_reason, "HitBlockWeightLimit");
             }
         };
-        let applied = block_builder.extrinsics.len() - initial_applied;
-        thread_info.applied = applied;
+        thread_info.total = block_builder.extrinsics.len() - initial_applied;
         thread_info.transactions = filter_transactions.into_iter().collect();
-        // TODO show this later, not block execute.
+        // TODO should we loop call this `E::extend_extrinsic`? does it will generate new transaction by extended result?
+        let _extend_extrinsics = E::extend_extrinsic(&*block_builder.api, block_builder.parent_hash);
         Self::thread_finish_log(
-            is_extend,
             block,
             &thread_name,
             thread_start,
             thread_time,
             reason,
             &block_builder,
-            applied,
-            total_invalid_length,
-            total_nonce_err_tx,
-            total_tx,
+            &thread_info,
             round_execute_collect,
             limit_execution_time,
         );
         thread_info.time = thread_start.elapsed();
-        if allow_extend && !is_extend {
-            // TODO should we loop call this `E::extend_extrinsic`? does it will generate new transaction by extended result?
-            let extend_extrinsics = E::extend_extrinsic(&*block_builder.api, block_builder.parent_hash);
-            if !extend_extrinsics.is_empty() {
-                let (_extend_unqueue_invalid, _extend_end_reason, extend_info) = Self::execute_one_thread_txs(
-                    block,
-                    block_deadline,
-                    block_deadline,
-                    block_builder,
-                    inherents,
-                    extend_extrinsics.into_iter().enumerate().map(|(i, tx)| (i, None, tx)).collect(),
-                    thread,
-                    round_tx,
-                    true,
-                    allow_extend,
-                    // execute extend extrinsics which must execute finish.
-                    false,
-                );
-                thread_info.extend = Some(Box::new(extend_info));
-            }
-        }
 
         (unqueue_invalid, end_reason, thread_info)
     }
 
     fn thread_finish_log(
-        extend: bool,
         block: <<Block as BlockT>::Header as HeaderT>::Number,
         thread_name: &String,
         thread_start: time::Instant,
-        thread_time: time::Duration,
+        thread_time: Duration,
         reason: &str,
         block_builder: &BlockBuilder<Block, C, B>,
-        applied: usize,
-        invalid: usize,
-        total_nonce_err_tx: usize,
-        total_tx: usize,
+        thread_info: &ThreadExecutionInfo<Block>,
         round_execute_collect: Vec<usize>,
         limit_execution_time: bool,
     ) {
@@ -588,7 +518,6 @@ where
             times.sort_by(|a, b| b.1[0].cmp(&a.1[0]));
             (round_times, times, execute_time_count, commit_time, rollback_time)
         };
-        let thread_name = if extend { format!("{thread_name}-extend") } else { thread_name.clone() };
         let (round_times, times, execute_time, commit_time, rollback_time) = times(&block_builder, &thread_name);
         let extra = thread_start.elapsed().as_nanos().saturating_sub(execute_time);
         let round_with_times = round_execute_collect.iter().zip(round_times.into_iter()).map(|(txs, time)| {
@@ -608,10 +537,13 @@ where
         };
         debug!(
             target: LOG_TARGET,
-            "[Execute Block {block}] Thread {thread_name} {reason}({}{} ms) {applied}/{}/{total_nonce_err_tx}/{total_tx} executed in {} rounds([(num, avg, avg_exe, avg_io, avg_rb, avg_w)]: {round_with_times:?}).",
+            "[Execute Block {block}] Thread {thread_name} {reason}({}{} ms) {}/{}({}/{}) executed in {} rounds([(num, avg, avg_exe, avg_io, avg_rb, avg_w)]: {round_with_times:?}).",
             thread_start.elapsed().as_millis(),
             limit_millis_info,
-            invalid.saturating_sub(total_nonce_err_tx),
+            thread_info.applied(),
+            thread_info.total,
+            thread_info.invalid,
+            thread_info.future_or_exhausted,
             round_execute_collect.len(),
         );
     }
@@ -948,7 +880,6 @@ where
         inherent_digests: Digest,
         extrinsic: (Vec<Vec<Block::Extrinsic>>, Vec<Block::Extrinsic>),
         round_tx: usize,
-        allow_extend: bool,
         merge_in_thread_order: bool,
         limit_execution_time: bool,
     ) -> Result<
@@ -984,10 +915,9 @@ where
             round_tx,
             extrinsic.0
                 .into_iter()
-                .map(|g| g.into_iter().enumerate().map(|(i, tx)| (i, Some(<<<Block as BlockT>::Header as Header>::Hashing as traits::Hash>::hash(&tx.encode())), tx)).collect())
+                .map(|g| g.into_iter().enumerate().map(|(i, tx)| (i, <<<Block as BlockT>::Header as Header>::Hashing as traits::Hash>::hash(&tx.encode()), tx)).collect())
                 .collect(),
-            extrinsic.1.into_iter().enumerate().map(|(i, tx)| (i, Some(<<<Block as BlockT>::Header as Header>::Hashing as traits::Hash>::hash(&tx.encode())), tx)).collect(),
-            allow_extend,
+            extrinsic.1.into_iter().enumerate().map(|(i, tx)| (i, <<<Block as BlockT>::Header as Header>::Hashing as traits::Hash>::hash(&tx.encode()), tx)).collect(),
             merge_in_thread_order,
             limit_execution_time,
         )
@@ -1024,7 +954,6 @@ where
         round_tx: usize,
         linear_execute_time: Duration,
         estimated_merge_time: Duration,
-        allow_extend: bool,
         merge_in_thread_order: bool,
         limit_execution_time: bool,
     ) -> Result<
@@ -1062,10 +991,9 @@ where
             round_tx,
             multi_groups
                 .into_iter()
-                .map(|g| g.into_iter().enumerate().map(|(i, tx)| (i, Some(<<<Block as BlockT>::Header as Header>::Hashing as traits::Hash>::hash(&tx.encode())), tx)).collect())
+                .map(|g| g.into_iter().enumerate().map(|(i, tx)| (i, <<<Block as BlockT>::Header as Header>::Hashing as traits::Hash>::hash(&tx.encode()), tx)).collect())
                 .collect(),
-            single.into_iter().enumerate().map(|(i, tx)| (i, Some(<<<Block as BlockT>::Header as Header>::Hashing as traits::Hash>::hash(&tx.encode())), tx)).collect(),
-            allow_extend,
+            single.into_iter().enumerate().map(|(i, tx)| (i, <<<Block as BlockT>::Header as Header>::Hashing as traits::Hash>::hash(&tx.encode()), tx)).collect(),
             merge_in_thread_order,
             limit_execution_time,
         )

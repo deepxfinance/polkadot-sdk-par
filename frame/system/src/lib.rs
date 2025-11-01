@@ -1388,7 +1388,7 @@ impl<T: Config> Pallet<T> {
 
 		#[cfg(feature = "std")]
 		let extrinsics_root_start = std::time::Instant::now();
-		let extrinsics = (0..ExtrinsicCount::<T>::take().unwrap_or_default())
+		let extrinsics = (1..ExtrinsicCount::<T>::take().unwrap_or_default())
 			.map(ExtrinsicData::<T>::take)
 			.collect();
 		let extrinsics_root = extrinsics_data_root::<T::Hashing>(extrinsics);

@@ -66,7 +66,6 @@ pub trait BlockPropose<Block: BlockT> {
         inherent_digests: Digest,
         extrinsic: (Vec<Vec<Block::Extrinsic>>, Vec<Block::Extrinsic>),
         round_tx: usize,
-        allow_extend: bool,
         merge_in_thread_order: bool,
         limit_execution_time: bool,
     ) -> Result<
@@ -86,7 +85,6 @@ pub trait BlockPropose<Block: BlockT> {
         round_tx: usize,
         linear_execute_time: Duration,
         estimated_merge_time: Duration,
-        allow_extend: bool,
         merge_in_thread_order: bool,
         limit_execution_time: bool,
     ) -> Result<
