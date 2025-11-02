@@ -38,7 +38,6 @@ pub mod bls_crypto {
 	use crate::RuntimeAuthorityId;
 
 	use sp_application_crypto::{app_crypto, bls381};
-	use sp_core::ByteArray;
 
 	app_crypto!(bls381, HOTSTUFF_KEY_TYPE);
 

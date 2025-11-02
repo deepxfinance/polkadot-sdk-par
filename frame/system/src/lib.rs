@@ -1413,7 +1413,7 @@ impl<T: Config> Pallet<T> {
 		let storage_root_time = storage_root_start.elapsed().as_micros();
 		#[cfg(feature = "std")]
 		log::debug!(
-			target: "mth_authorship",
+			target: "authorship",
 			"finalize block {} micros(extrinsic_root: {extrinsics_root_time} micros, storage_root: {storage_root_time} micros)",
 			finalize_start.elapsed().as_micros(),
 		);
