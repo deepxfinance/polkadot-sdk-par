@@ -12,7 +12,7 @@ use futures::{Future, StreamExt};
 use log::warn;
 use tokio::sync::oneshot::{Receiver, Sender};
 use tokio::sync::RwLock;
-use hotstuff_primitives::ConsensusLog;
+use hotstuff_primitives::{ConsensusLog, RuntimeAuthorityId};
 use hotstuff_primitives::digests::CompatibleDigestItem;
 use sc_basic_authorship::{BlockExecuteInfo, BlockOracle, BlockPropose};
 use sc_client_api::{
@@ -206,9 +206,9 @@ where
 						block.fork_choice = Some(ForkChoiceStrategy::Custom(true));
 					}
 					if let Some(commit) = block_commit {
-						for consensus_log in find_consensus_logs::<Block>(&header) {
+						for consensus_log in find_consensus_logs::<Block, RuntimeAuthorityId>(&header) {
 							if let ConsensusLog::AuthoritiesChange(authorities) = consensus_log {
-								let authority_list = authorities.into_iter().map(|a| (a, 0)).collect();
+								let authority_list = authorities.into_iter().map(|a| (a.into(), 0)).collect();
 								self.persistent_data.authority_set.inner().update_authorities_change(commit.view(), commit.block_number(), authority_list);
 								crate::aux_schema::update_authority_set::<Block, _, _>(
 									&self.persistent_data.authority_set.inner(),

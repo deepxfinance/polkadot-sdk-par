@@ -50,7 +50,7 @@ use sp_inherents::CreateInherentDataProviders;
 use sp_runtime::traits::Zero;
 use sp_runtime::transaction_validity::TransactionSource;
 use sp_timestamp::Timestamp;
-use crate::message::NewBlock;
+use crate::executor::NewBlockMission;
 use crate::oracle::HotsOracle;
 use crate::state::ConsensusState;
 
@@ -113,7 +113,7 @@ where
         network: HotstuffNetworkBridge<B, N, S>,
         synchronizer: Synchronizer<B, C>,
         proposer_factory: Arc<RwLock<PF>>,
-        mut local_timer_duration: u64,
+        local_timer_duration: u64,
         slot_duration: SlotDuration,
         oracle: Arc<O>,
         consensus_msg_tx: Sender<(bool, ConsensusMessage<B>)>,
@@ -136,9 +136,6 @@ where
         };
         let processed = synchronizer.get_high_proposal().unwrap().unwrap_or(Proposal::empty());
         info!(target: CLIENT_LOG_TARGET, "Start consensus worker with local_timer_duration: {local_timer_duration} millis, slot_duration: {} millis", slot_duration.as_millis());
-        if !consensus_state.is_authority() {
-            local_timer_duration = u64::MAX;
-        }
         Self {
             state: consensus_state,
             network,
@@ -209,10 +206,10 @@ where
     }
 
     pub async fn run(mut self) {
-        if let Some(ref id) = self.state.local_authority_id {
-            info!(target: CLIENT_LOG_TARGET, "Local authority id is: {id}, start with view {} processed: {} high_qc {}", self.state.view, self.processed.view, self.state.high_qc.view);
-        } else {
+        if self.state.local_authority_ids.is_empty() {
             info!(target: CLIENT_LOG_TARGET, "Local is not authority, start with view {} processed: {} high_qc {}", self.state.view, self.processed.view, self.state.high_qc.view);
+        } else {
+            info!(target: CLIENT_LOG_TARGET, "Local authority id is: {:?}, start with view {} processed: {} high_qc {}", self.state.local_authority_ids, self.state.view, self.processed.view, self.state.high_qc.view);
         }
         self.recover().await;
         self.local_timer.reset();
@@ -304,9 +301,8 @@ where
 
         if !local {
             self.state.verify_timeout(timeout)?;
-            timeout.high_qc.verify(self.state.authority_list(timeout.high_qc.view)?)?;
             if timeout.high_qc.view >= self.state.view {
-                self.handle_qc(&timeout.high_qc);
+                self.update_by_qc(&timeout.high_qc);
             }
         }
 
@@ -359,11 +355,11 @@ where
 
     pub async fn handle_block_import(&mut self, header: &B::Header) -> Result<(), HotstuffError> {
         if let Some(commit) = find_block_commit::<B>(header) {
-            for consensus_log in find_consensus_logs::<B>(header) {
+            for consensus_log in find_consensus_logs::<B, RuntimeAuthorityId>(header) {
                 match consensus_log {
                     ConsensusLog::AuthoritiesChange(authorities) => {
                         // changes authorities list.
-                        let authority_list = authorities.into_iter().map(|a| (a, 0)).collect();
+                        let authority_list = authorities.into_iter().map(|a| (a.into(), 0)).collect();
                         if let Err(e) = self.state.change_authorities(commit.view(), *header.number(), authority_list) {
                             warn!(target: CLIENT_LOG_TARGET, "~~ handle_block_import. change_authorities block {} failed: {e:?}", header.number());
                         }
@@ -434,12 +430,12 @@ where
                 self.processed = proposal.clone();
             }
             if let Some(tc) = proposal.tc.as_ref() {
-                self.handle_qc(&tc.high_qc);
+                self.update_by_qc(&tc.high_qc);
                 if tc.view >= self.state.view() {
                     self.advance_view(tc.view);
                 }
             }
-            self.handle_qc(&proposal.qc);
+            self.update_by_qc(&proposal.qc);
         }
         // the qc mission is triggered before this proposal generate.
         self.trigger_qc_mission(&proposal.qc, local).await?;
@@ -473,18 +469,10 @@ where
 
         if let Some(vote) = self.state.make_vote(&proposal) {
             trace!(target: CLIENT_LOG_TARGET, "~~ handle proposal({from}). make vote. view {}", vote.view);
-            // If the current authority is the leader of the next view, it directly processes the
-            // vote. Otherwise, it sends the vote to the next leader.
-            if self.state.is_next_leader() {
-                if let Err(e) = self.consensus_msg_tx.send((true, ConsensusMessage::Vote(vote))).await {
-                    warn!(target: CLIENT_LOG_TARGET, "~~ handle proposal({from}). Can't inform self of `Vote` for {e:?}.");
-                }
-            } else {
-                let vote_message = ConsensusMessage::Vote(vote);
-                let leader = self.state.view_leader(self.state.view + 1)
-                    .ok_or(HotstuffError::Other(format!("No next leader for view {}", self.state.view + 1)))?;
-                self.network.send_to_authorities(vec![&leader], vote_message.encode())?;
-            }
+            let vote_message = ConsensusMessage::Vote(vote);
+            let leader = self.state.view_leader(proposal.payload.base, self.state.view + 1)
+                .ok_or(HotstuffError::Other(format!("No next leader for view {}", self.state.view + 1)))?;
+            self.network.send_to_authorities(vec![&leader], vote_message.encode())?;
         }
         Ok(())
     }
@@ -499,15 +487,16 @@ where
         );
 
         if !local {
+            if vote.view < self.state.view() { return Err(HotstuffError::ExpiredVote); }
             self.state.verify_vote(vote)?;
         }
 
         if let Some(mut qc) = self.state.add_vote(vote)? {
             trace!(target: CLIENT_LOG_TARGET, "~~ handle_vote({from} self.view {}). QC.view {}, proposal_hash {}", self.state.view(), qc.view, qc.proposal_hash);
-            if self.state.is_leader_for(self.state.view().max(qc.view + 1)) {
+            if self.state.is_leader_for(qc.base, self.state.view().max(qc.view + 1)) {
                 self.handle_qc_timestamp(&mut qc).await?;
                 self.trigger_qc_mission(&qc, true).await?;
-                self.handle_qc(&qc);
+                self.update_by_qc(&qc);
                 self.generate_proposal(None).await?;
             }
         }
@@ -515,7 +504,7 @@ where
         Ok(())
     }
 
-    fn handle_qc(&mut self, qc: &QC<B>) {
+    fn update_by_qc(&mut self, qc: &QC<B>) {
         if qc.view >= self.state.view() {
             self.advance_view(qc.view);
         }
@@ -602,18 +591,17 @@ where
                 return Ok(());
             }
         };
-        if !qc_proposal.payload.stage().finish() { return Ok(()); }
+        if !qc_proposal.payload.stage.finish() { return Ok(()); }
         // grandpa -> parent(grandpa_qc) -> qc_proposal(parent_qc) -> qc
         match self.synchronizer.get_proposal_ancestors(&qc_proposal) {
             Ok(Some((parent, grandpa))) => {
-                let new_block = match grandpa.payload.block_data() {
-                    Some(new_block) => new_block,
-                    None => return Ok(())
+                if grandpa.payload.extrinsics.is_none() {
+                    return Ok(())
                 };
-                if new_block.block_number() <= self.client.info().best_number {
+                if grandpa.payload.block_number() <= self.client.info().best_number {
                     return Ok(());
                 }
-                let new_block_number = new_block.block_number();
+                let new_block_number = grandpa.payload.block_number();
                 if qc_proposal.view > self.commit.view() {
                     let commit = match BlockCommit::generate(
                         (&grandpa, parent.qc.clone()),
@@ -630,15 +618,21 @@ where
                         commit.view(),
                         grandpa.qc.view,
                     );
-                    if self.executor_tx.send(ExecutorMission::Consensus((commit.clone(), new_block.clone()).into())).is_err() {
+                    let extrinsics = grandpa.payload.extrinsics.clone().unwrap();
+                    let mission = ExecutorMission::Consensus(NewBlockMission {
+                        commit: commit.clone(),
+                        block: grandpa.payload.block.clone(),
+                        extrinsics: extrinsics.clone(),
+                    });
+                    if self.executor_tx.send(mission).is_err() {
                         warn!(target: CLIENT_LOG_TARGET, "~~ trigger_qc_mission({from}). block {new_block_number} execute mission send failed");
                     }
                     if let Some((pre_view, extrinsic)) = self.commit_extrinsic.get_mut(&commit.block_number()) {
                         if commit.view() > *pre_view {
-                            *extrinsic = new_block.extrinsic.clone();
+                            *extrinsic = extrinsics;
                         }
                     } else {
-                        self.commit_extrinsic.insert(commit.block_number(), (commit.view(), new_block.extrinsic.clone()));
+                        self.commit_extrinsic.insert(commit.block_number(), (commit.view(), extrinsics));
                     }
                     self.commit = commit;
                     // if full consensus for a new block success, reset timer.
@@ -662,7 +656,7 @@ where
             self.state.verify_tc(&tc)?;
             tc.high_qc.verify(self.state.authority_list(tc.high_qc.view)?)?;
         }
-        self.handle_qc(&tc.high_qc);
+        self.update_by_qc(&tc.high_qc);
         if tc.view >= self.state.view() {
             self.advance_view(tc.view);
             self.local_timer.reset();
@@ -748,7 +742,7 @@ where
                 }
             }
         };
-        let high_state = format!("{}:{}", high_proposal.payload.stage(), high_proposal.payload.block_number());
+        let high_state = format!("{}:{}", high_proposal.payload.stage, high_proposal.payload.block_number());
         let (payload, time) = if let Some(next_payload) = high_proposal.payload.next() {
             // if processed is latest, get next payload by processed.payload.
             (Some(next_payload), Default::default())
@@ -765,7 +759,7 @@ where
             (None, Default::default())
         };
         if let Some(payload) = &payload {
-            trace!(target: CLIENT_LOG_TARGET, "~~ get_proposal_payload. {info}({high_state}) next {}:{} in {} micros", payload.stage(), payload.block_number(), time.as_micros());
+            trace!(target: CLIENT_LOG_TARGET, "~~ get_proposal_payload. {info}({high_state}) next {}:{} in {} micros", payload.stage, payload.block_number(), time.as_micros());
         }
         payload
     }
@@ -811,11 +805,12 @@ where
             .collect::<Vec<Vec<u8>>>();
         extrinsic_data.extend(single.iter().map(|e| e.encode()).collect::<Vec<Vec<u8>>>());
         (
-            Payload::Prepare(NewBlock {
-                best_block: info.best_number,
-                extrinsic_block: (block_number, extrinsics_data_root::<<B::Header as HeaderT>::Hashing>(extrinsic_data)).into(),
-                extrinsic: vec![multi, vec![single]],
-            }),
+            Payload {
+                base: self.state.best_view,
+                stage: ConsensusStage::Prepare,
+                block: (block_number, extrinsics_data_root::<<B::Header as HeaderT>::Hashing>(extrinsic_data)).into(),
+                extrinsics: Some(vec![multi, vec![single]]),
+            },
             start.elapsed(),
         )
     }
@@ -840,7 +835,7 @@ where
 
     // check proposal.payload have consist parents in local for final Commit
     fn ensure_parents(&self, proposal: &Proposal<B>) -> Result<bool, HotstuffError> {
-        match proposal.payload.stage() {
+        match proposal.payload.stage {
             ConsensusStage::Prepare => Ok(true),
             ConsensusStage::PreCommit => self.synchronizer.get_proposal_parent(proposal).map(|r| r.is_some()),
             ConsensusStage::Commit => self.synchronizer.get_proposal_ancestors(proposal).map(|r| r.is_some()),
@@ -850,32 +845,30 @@ where
     // return if we should keep pending_proposal.
     fn check_payload(&self, proposal: &Proposal<B>) -> Result<bool, HotstuffError> {
         let info = self.client.info();
-        if proposal.payload.block_number() > info.best_number.saturating_add(2u32.into()) && self.state.is_authority() {
+        let payload = &proposal.payload;
+        if payload.block_number() > info.best_number.saturating_add(2u32.into()) && self.state.find_authority(proposal.view).is_some() {
             // if propose new block is much more than local best block, do not vote for it.
-            debug!(target: CLIENT_LOG_TARGET, "Meet proposal new_block {} > local_best_block {}(+2). skip vote and pending it!", proposal.payload.block_number(), info.best_number);
+            debug!(target: CLIENT_LOG_TARGET, "Meet proposal new_block {} > local_best_block {}(+2). skip vote and pending it!", payload.block_number(), info.best_number);
             return Ok(true);
         }
-        if proposal.payload.block_number() < self.commit.block_number() {
-            return Err(PayloadError::BlockRollBack(format!("Next/Processed: {}/{}", proposal.payload.block_number(), self.commit.block_number())).into());
+        if payload.block_number() < self.commit.block_number() {
+            return Err(PayloadError::BlockRollBack(format!("Next/Processed: {}/{}", payload.block_number(), self.commit.block_number())).into());
         }
-        let new_block = match &proposal.payload {
-            Payload::Prepare(new_block) => new_block,
-            _ => return Ok(false),
-        };
+        if payload.stage != ConsensusStage::Prepare { return Ok(false); }
         let parent_commit_hash = self.commit.commit_hash();
-        if self.commit.block_number().saturating_add(1u32.into()) == new_block.block_number() {
+        if self.commit.block_number().saturating_add(1u32.into()) == payload.block_number() {
             if parent_commit_hash != proposal.parent_hash() {
                 return Err(PayloadError::BaseBlock(format!("proposal {} incorrect parent {} commit {parent_commit_hash} {}", proposal.view, self.commit.block_number(), proposal.parent_hash())).into());
             }
         } else {
             return Err(PayloadError::BaseBlock(format!("proposal {} no local parent commit to check", proposal.view)).into());
         }
-        if new_block.extrinsic.is_empty() {
+        if payload.extrinsics.is_none() {
             return Ok(false);
         }
         // verify extrinsic
         let start = std::time::Instant::now();
-        let groups: Vec<_> = new_block.extrinsic.clone().into_iter().flatten().collect();
+        let groups: Vec<_> = payload.extrinsics.clone().unwrap().into_iter().flatten().collect();
         let mut extrinsic_data = vec![];
         let extrinsic: Vec<_> = groups
             .into_iter()
@@ -885,8 +878,8 @@ where
             }).collect::<Vec<_>>())
             .collect();
         let extrinsics_root = extrinsics_data_root::<<B::Header as HeaderT>::Hashing>(extrinsic_data);
-        if extrinsics_root != new_block.extrinsics_root() {
-            return Err(PayloadError::ExtrinsicErr(format!("Incorrect extrinsics_root/payload: {extrinsics_root}/{})", new_block.extrinsics_root())).into());
+        if extrinsics_root != payload.block.extrinsics_root {
+            return Err(PayloadError::ExtrinsicErr(format!("Incorrect extrinsics_root/payload: {extrinsics_root}/{})", payload.block.extrinsics_root)).into());
         }
         let mut check_tasks: Vec<JoinHandle<Result<(usize, Duration), HotstuffError>>> = vec![];
         for thread_extrinsic in extrinsic {
@@ -1081,7 +1074,7 @@ where
 
     let synchronizer = Synchronizer::<B, C>::new(client.clone());
     let high_proposal = synchronizer.get_high_proposal().unwrap();
-    let consensus_state = ConsensusState::<B, C>::new(client.clone(), keystore, high_proposal, persistent_data, Vec::new());
+    let consensus_state = ConsensusState::<B, C>::new(client.clone(), keystore, high_proposal, persistent_data);
     let peer_authority = consensus_state.make_peer_authority(network.local_peer_id().to_base58());
     let network = HotstuffNetworkBridge::new(network.clone(), sync.clone(), hotstuff_protocol_name, authorities, peer_authority);
 

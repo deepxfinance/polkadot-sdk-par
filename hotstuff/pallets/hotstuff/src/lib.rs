@@ -78,6 +78,9 @@ pub mod pallet {
 		/// The maximum number of authorities that the pallet can hold.
 		type MaxAuthorities: Get<u32>;
 
+		/// Delay blocks for authorities change.
+		type AuthorityApplyDelay: Get<u32>;
+
 		/// A way to check whether a given validator is disabled and should not be authoring blocks.
 		/// Blocks authored by a disabled validator will lead to a panic as part of this module's
 		/// initialization.
@@ -113,7 +116,18 @@ pub mod pallet {
 
 	#[pallet::hooks]
 	impl<T: Config> Hooks<BlockNumberFor<T>> for Pallet<T> {
-		fn on_initialize(_: BlockNumberFor<T>) -> Weight {
+		fn on_initialize(n: BlockNumberFor<T>) -> Weight {
+			if let Some((authorities, target_block)) = Self::pending_authorities() {
+				if n == target_block {
+					Self::change_authorities(authorities);
+					<PendingAuthorities<T>>::take();
+					T::DbWeight::get().reads_writes(1,2);
+				} else {
+					T::DbWeight::get().reads(1);
+				}
+			} else {
+				T::DbWeight::get().reads(1);
+			}
 			if let Some(new_slot) = Self::current_slot_from_digests() {
 				let current_slot = CurrentSlot::<T>::get();
 
@@ -152,6 +166,12 @@ pub mod pallet {
 
 	/// The current authority set.
 	#[pallet::storage]
+	#[pallet::getter(fn pending_authorities)]
+	pub(super) type PendingAuthorities<T: Config> =
+		StorageValue<_, (BoundedVec<T::AuthorityId, T::MaxAuthorities>, BlockNumberFor<T>), OptionQuery>;
+
+	/// The current authority set.
+	#[pallet::storage]
 	#[pallet::getter(fn authorities)]
 	pub(super) type Authorities<T: Config> =
 		StorageValue<_, BoundedVec<T::AuthorityId, T::MaxAuthorities>, ValueQuery>;
@@ -180,7 +200,7 @@ pub mod pallet {
 	impl<T: Config> Pallet<T> {
 		#[pallet::call_index(0)]
 		#[pallet::weight(0)]
-		pub fn change_authorities_immediate(
+		pub fn change_pending_authorities(
 			origin: OriginFor<T>,
 			new_authorities: Vec<T::AuthorityId>,
 		) -> DispatchResultWithPostInfo {
@@ -195,7 +215,7 @@ pub mod pallet {
 					);
 				}
 				let bounded = <BoundedVec<_, T::MaxAuthorities>>::truncate_from(new_authorities);
-				Self::change_authorities(bounded);
+				Self::set_pending_authorities(bounded);
 			}
 			Ok(().into())
 		}
@@ -203,6 +223,23 @@ pub mod pallet {
 }
 
 impl<T: pallet::Config> Pallet<T> {
+	pub fn set_pending_authorities(new: BoundedVec<T::AuthorityId, T::MaxAuthorities>) {
+		if new.is_empty() {
+			log::warn!(target: LOG_TARGET, "Ignoring empty authority change.");
+
+			return;
+		}
+
+		let target_block = frame_system::<T>::block_number().saturating_add(T::AuthorityApplyDelay::get().saturated_into());
+		<PendingAuthorities<T>>::put((new.clone(), target_block.clone()));
+
+		let log = DigestItem::Consensus(
+			HOTSTUFF_ENGINE_ID,
+			ConsensusLog::AuthoritiesPending(new.into_inner(), target_block).encode(),
+		);
+		<frame_system::Pallet<T>>::deposit_log(log);
+	}
+
 	/// Change authorities.
 	///
 	/// The storage will be applied immediately.

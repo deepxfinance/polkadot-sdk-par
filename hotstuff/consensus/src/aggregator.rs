@@ -138,6 +138,7 @@ impl<Engine: EngineBLS> QCMaker<Engine> {
 		}
 		let signature = <&DistinctMessages<Engine> as Signed>::signature(&&aggregator);
 		Ok(Some(QC::<B> {
+			base: vote.base,
 			proposal_hash: vote.proposal_hash,
 			view: vote.view,
 			stage: vote.stage,
@@ -216,7 +217,7 @@ impl AggregateSignature {
 			.map_err(|e| HotstuffError::InvalidAggregatedSignature(e.to_string()))?;
 		let mut verifier = DistinctMessages::<Engine>::new();
 		for i in self.mask.iter_ones() {
-			if i > authorities.len() {
+			if i >= authorities.len() {
 				return Err(HotstuffError::InvalidAggregatedSignature(format!("No expected authority index {i}")));
 			}
 			let authority_public_key = PublicKey::<Engine>::from_bytes(authorities[i].0.clone().into_inner().as_ref())

@@ -21,34 +21,29 @@ use sp_timestamp::Timestamp;
 use crate::client::ClientForHotstuff;
 use crate::find_block_commit;
 use crate::import::ImportLock;
-use crate::message::{BlockCommit, NewBlock};
+use crate::message::{BlockCommit, ExtrinsicBlock};
 use crate::oracle::HotsOracle;
 
 const LOG_TARGET: &str = "hots_executor";
 
-
 #[derive(Clone, Debug, Encode, Decode)]
 pub struct NewBlockMission<B: BlockT> {
-    commit: BlockCommit<B>,
-    block: NewBlock<B>
+    pub commit: BlockCommit<B>,
+    pub block: ExtrinsicBlock<B>,
+    pub extrinsics: Vec<Vec<Vec<B::Extrinsic>>>,
 }
 
 impl<B: BlockT> NewBlockMission<B> {
     pub fn empty() -> Self {
         Self {
             commit: BlockCommit::empty(),
-            block: NewBlock::empty(),
+            block: ExtrinsicBlock::empty(),
+            extrinsics: Vec::new(),
         }
     }
 
     pub fn block_number(&self) -> <B::Header as HeaderT>::Number {
         self.commit.block_number()
-    }
-}
-
-impl<B: BlockT> From<(BlockCommit<B>, NewBlock<B>)> for NewBlockMission<B> {
-    fn from((commit, block): (BlockCommit<B>, NewBlock<B>)) -> Self {
-        Self { commit, block }
     }
 }
 
@@ -218,7 +213,7 @@ where
         let proposer = self.proposer_factory.write().await.init(&parent_header).await.expect("proposer init");
         let mut multi = vec![];
         let mut single = vec![];
-        let extrinsic = mission.block.extrinsic.clone();
+        let extrinsic = mission.extrinsics.clone();
         if extrinsic.len() >= 1 {
             multi = extrinsic[0].clone();
         }

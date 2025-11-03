@@ -198,10 +198,10 @@ impl<Block: BlockT> Timeout<Block> {
         <<Block::Header as HeaderT>::Hashing as HashT>::hash_of(&data)
     }
 
-    pub fn verify(&self, authorities: &AuthorityList) -> Result<(), HotstuffError> {
+    pub fn verify(&self, authorities: &AuthorityList, high_qc_authorities: &AuthorityList) -> Result<(), HotstuffError> {
         let (index, _) = find_authority_index(authorities, &self.voter)
             .ok_or(HotstuffError::UnknownAuthority(self.voter.to_owned()))?;
-        let message =  extend_message(index, self.digest().as_ref());
+        let message = extend_message(index, self.digest().as_ref());
         self.signature.as_ref().ok_or(HotstuffError::NullSignature).and_then(|signature| {
             if !AuthorityPair::verify(signature, message, &self.voter) {
                 return Err(HotstuffError::InvalidSignature(self.voter.to_owned()));
@@ -209,7 +209,11 @@ impl<Block: BlockT> Timeout<Block> {
             Ok(())
         })?;
 
-        self.high_qc.verify(authorities)
+        if let Err(e) = self.high_qc.verify(high_qc_authorities) {
+            println!("verify timeout high_qc view {} authorities: {high_qc_authorities:?}", self.high_qc.view);
+            return Err(e)
+        }
+        Ok(())
     }
 }
 
@@ -247,99 +251,94 @@ impl<B: BlockT> From<(<B::Header as HeaderT>::Number, B::Hash)> for ExtrinsicBlo
 }
 
 #[derive(Clone, Encode, Decode)]
-pub enum Payload<Block: BlockT> {
-    Prepare(NewBlock<Block>),
-    PreCommit(ExtrinsicBlock<Block>),
-    Commit(ExtrinsicBlock<Block>),
+pub struct Payload<Block: BlockT> {
+    // /// payload base view number.
+    // pub base: ViewNumber,
+    pub stage: ConsensusStage,
+    pub block: ExtrinsicBlock<Block>,
+    pub extrinsics: Option<Vec<Vec<Vec<Block::Extrinsic>>>>,
 }
 
 impl<Block: BlockT> Payload<Block> {
     pub fn empty() -> Self {
-        Self::Commit(ExtrinsicBlock::empty())
+        Self {
+            // base: 0,
+            stage: ConsensusStage::Commit,
+            block: ExtrinsicBlock::empty(),
+            extrinsics: None,
+        }
     }
 
     pub fn block_number(&self) -> <Block::Header as HeaderT>::Number {
-        match &self {
-            Self::Prepare(block) => block.extrinsic_block.number,
-            Self::PreCommit(block) => block.number,
-            Self::Commit(block) => block.number,
-        }
+        self.block.number
     }
 
     pub fn extrinsic(&self) -> Option<&Vec<Vec<Vec<Block::Extrinsic>>>> {
-        match self {
-            Self::Prepare(block) => Some(&block.extrinsic),
-            _ => None,
-        }
-    }
-
-    pub fn block_claim(&self) -> Option<BlockClaim<Block>> {
-        match self {
-            Self::Prepare(block) => Some(block.claim()),
-            _ => None,
-        }
+        self.extrinsics.as_ref()
     }
 
     pub fn encode_data(&self) -> Vec<u8> {
-        match &self {
-            Self::Prepare(block) => block.claim().digest().encode(),
-            _ => self.encode(),
-        }
+        (self.stage, self.block.clone()).encode()
     }
 
     pub fn next(&self) -> Option<Self> {
-        match &self {
-            Self::Prepare(block) => Some(Self::PreCommit(block.extrinsic_block.clone())),
-            Self::PreCommit(block) => Some(Self::Commit(block.clone())),
+        match &self.stage {
+            ConsensusStage::Prepare => Some(Self {
+                // base: self.base,
+                stage: ConsensusStage::PreCommit,
+                block: self.block.clone(),
+                extrinsics: None,
+            }),
+            ConsensusStage::PreCommit => Some(Self {
+                // base: self.base,
+                stage: ConsensusStage::Commit,
+                block: self.block.clone(),
+                extrinsics: None,
+            }),
             _ => None,
-        }
-    }
-
-    pub fn block_data(&self) -> Option<&NewBlock<Block>> {
-        match &self {
-            Self::Prepare(block) => Some(block),
-            _ => None,
-        }
-    }
-
-    pub fn stage(&self) -> ConsensusStage {
-        match &self {
-            Self::Prepare(_) => ConsensusStage::Prepare,
-            Self::PreCommit(..) => ConsensusStage::PreCommit,
-            Self::Commit(..) => ConsensusStage::Commit
         }
     }
 
     pub fn full_consensus(prepare: &Self, precommit: &Self, commit: &Self) -> bool {
-        if !matches!(prepare, Self::Prepare(_))
-            || !matches!(precommit, Self::PreCommit(..))
-            || !matches!(commit, Self::Commit(..)) {
+        if prepare.stage != ConsensusStage::Prepare || precommit.stage != ConsensusStage::PreCommit
+            || commit.stage != ConsensusStage::Commit
+        {
             return false;
         }
-        if prepare.block_number() != precommit.block_number()
-            || precommit.block_number() != commit.block_number() {
+        // if prepare.base != precommit.base || precommit.base != precommit.base {
+        //     return false;
+        // }
+        if prepare.block != precommit.block || precommit.block != precommit.block {
             return false;
         }
         true
+    }
+
+    pub fn groups(&self) -> Option<Vec<Vec<u32>>> {
+        self.extrinsics.as_ref().map(|groups| {
+            groups
+                .iter()
+                .map(|g|
+                    g.iter().map(|extrinsic| extrinsic.len() as u32).collect::<Vec<u32>>()
+                )
+                .collect::<Vec<Vec<u32>>>()
+
+        })
     }
 }
 
 impl<Block: BlockT> Display for Payload<Block> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        match &self {
-            Self::Prepare(block) => write!(f, "{}:{block}", self.stage()),
-            Self::PreCommit(block) =>  write!(f, "{}:{block}", self.stage()),
-            Self::Commit(block) =>  write!(f, "{}:{block}", self.stage()),
-        }
+        write!(f, "{}:{}", self.stage, self.block)
     }
 }
 
 impl<Block: BlockT> Debug for Payload<Block> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        match &self {
-            Self::Prepare(block) => write!(f, "{}:{block:?}", self.stage()),
-            Self::PreCommit(block) =>  write!(f, "{}:{block:?}", self.stage()),
-            Self::Commit(block) =>  write!(f, "{}:{block:?}", self.stage()),
+        if let Some(groups) = self.groups() {
+            write!(f, "{}:{}:{groups:?}", self.stage, self.block)
+        } else {
+            write!(f, "{}:{}", self.stage, self.block)
         }
     }
 }
@@ -406,6 +405,7 @@ impl<Block: BlockT> Proposal<Block> {
 /// Quorum certificate for a block.
 #[derive(Debug, Clone, Encode, Decode)]
 pub struct QC<Block: BlockT> {
+    // pub base: ViewNumber,
     pub view: ViewNumber,
     /// proposal hash.
     pub proposal_hash: Block::Hash,
@@ -451,6 +451,7 @@ impl<Block: BlockT> QC<Block> {
 impl<Block: BlockT> Default for QC<Block> {
     fn default() -> Self {
         Self {
+            // base: 0,
             view: 0,
             proposal_hash: BlockCommit::<Block>::empty().commit_hash(),
             signature: AggregateSignature::default(),
@@ -625,7 +626,8 @@ impl<Block: BlockT> BlockClaim<Block> {
 
 #[derive(Debug, Clone, Encode, Decode)]
 pub struct BlockCommit<B: BlockT> {
-    base_block: <B::Header as HeaderT>::Number,
+    // /// consensus base on the view for authority list.
+    // base: ViewNumber,
     /// parent block commit hash
     parent_commit: B::Hash,
     view: ViewNumber,
@@ -638,7 +640,7 @@ pub struct BlockCommit<B: BlockT> {
 impl<B: BlockT> BlockCommit<B> {
     pub fn empty() -> Self {
         Self {
-            base_block: 0u32.into(),
+            // base: Default::default(),
             parent_commit: Default::default(),
             view: Default::default(),
             extrinsic_block: ExtrinsicBlock::empty(),
@@ -648,9 +650,9 @@ impl<B: BlockT> BlockCommit<B> {
         }
     }
 
-    pub fn base_block(&self) -> <B::Header as HeaderT>::Number {
-        self.base_block
-    }
+    // pub fn base(&self) -> ViewNumber {
+    //     self.base
+    // }
 
     pub fn parent_commit_hash(&self) -> B::Hash {
         self.parent_commit
@@ -667,7 +669,7 @@ impl<B: BlockT> BlockCommit<B> {
         // We should calculate final commit hash to ensure the extrinsics_root is correct.
         let mut data = self.view.encode();
         data.append(&mut self.precommit.encode());
-        data.append(&mut Payload::Commit(self.extrinsic_block.clone()).encode_data());
+        data.append(&mut (ConsensusStage::Commit, self.extrinsic_block.clone()).encode());
         <<B::Header as HeaderT>::Hashing as HashT>::hash_of(&data)
     }
 
@@ -681,12 +683,11 @@ impl<B: BlockT> BlockCommit<B> {
             || precommit.0.qc.proposal_hash != prepare.1.proposal_hash {
             return None;
         }
-        let block_claim = prepare.0.payload.block_claim()?;
         let block_commit = BlockCommit {
-            base_block: block_claim.best_block,
+            // base: commit.1.base,
             parent_commit: prepare.0.qc.proposal_hash,
             view: commit.1.view,
-            extrinsic_block: block_claim.extrinsic_block,
+            extrinsic_block: commit.0.payload.block.clone(),
             precommit: precommit.1.proposal_hash,
             signature: commit.1.signature,
             timestamp: commit.1.timestamp,
@@ -707,6 +708,7 @@ impl<B: BlockT> BlockCommit<B> {
             return Err(HotstuffError::VerifyClaim(format!("Incorrect block {block_number} extrinsics_root: {extrinsics_root}/{}", self.extrinsics_root()).into()));
         }
         let commit_qc: QC<B> = QC {
+            // base: self.base,
             view: self.view,
             proposal_hash: self.commit_hash(),
             signature: self.signature.clone(),

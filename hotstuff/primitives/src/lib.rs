@@ -135,7 +135,9 @@ pub type AuthorityList<AuthorityId> = Vec<(AuthorityId, AuthorityWeight)>;
 
 /// An consensus log item for Hotstuff.
 #[derive(Decode, Encode)]
-pub enum ConsensusLog<AuthorityId: Codec> {
+pub enum ConsensusLog<AuthorityId: Codec, N: Codec> {
+	#[codec(index = 0)]
+	AuthoritiesPending(Vec<AuthorityId>, N),
 	/// The authorities have changed.
 	#[codec(index = 1)]
 	AuthoritiesChange(Vec<AuthorityId>),
