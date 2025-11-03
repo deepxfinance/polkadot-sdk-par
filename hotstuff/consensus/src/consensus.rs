@@ -68,7 +68,7 @@ pub struct ConsensusWorker<
     Error: std::error::Error + Send + From<ConsensusError> + 'static,
     O: BlockOracle<B> + HotsOracle<B> + Sync + Send + 'static,
 > {
-    state: ConsensusState<B>,
+    state: ConsensusState<B, C>,
 
     network: HotstuffNetworkBridge<B, N, S>,
     client: Arc<C>,
@@ -107,7 +107,7 @@ where
 {
     #![allow(clippy::too_many_arguments)]
     pub fn new(
-        consensus_state: ConsensusState<B>,
+        consensus_state: ConsensusState<B, C>,
         client: Arc<C>,
         sync: S,
         network: HotstuffNetworkBridge<B, N, S>,
@@ -280,7 +280,7 @@ where
         self.state.increase_last_voted_view();
         let message = ConsensusMessage::Timeout(timeout.clone());
 
-        self.network.send_to_authorities(self.state.authorities(), message.encode())?;
+        self.network.send_to_authorities(self.state.authorities(self.state.view())?, message.encode())?;
 
         if let Err(e) = self.consensus_msg_tx.send((true, ConsensusMessage::Timeout(timeout))).await {
             warn!(target: CLIENT_LOG_TARGET, "$L$ handle_local_timer. Can't inform self `Timeout` for {e:?}.");
@@ -304,7 +304,7 @@ where
 
         if !local {
             self.state.verify_timeout(timeout)?;
-            timeout.high_qc.verify(&self.state.authorities)?;
+            timeout.high_qc.verify(self.state.authority_list(timeout.high_qc.view)?)?;
             if timeout.high_qc.view >= self.state.view {
                 self.handle_qc(&timeout.high_qc);
             }
@@ -329,7 +329,7 @@ where
 
     pub async fn handle_proposal_request(&self, request: &ProposalRequest<B>) -> Result<(), HotstuffError> {
         // only reply to authorities
-        request.verify(&self.state.authorities)?;
+        request.verify(self.state.authority_list(self.state.view())?)?;
         let proposals = match &request.requests {
             ProposalReq::Keys(keys) => {
                 let mut proposals = vec![];
@@ -359,6 +359,19 @@ where
 
     pub async fn handle_block_import(&mut self, header: &B::Header) -> Result<(), HotstuffError> {
         if let Some(commit) = find_block_commit::<B>(header) {
+            for consensus_log in find_consensus_logs::<B>(header) {
+                match consensus_log {
+                    ConsensusLog::AuthoritiesChange(authorities) => {
+                        // changes authorities list.
+                        let authority_list = authorities.into_iter().map(|a| (a, 0)).collect();
+                        if let Err(e) = self.state.change_authorities(commit.view(), *header.number(), authority_list) {
+                            warn!(target: CLIENT_LOG_TARGET, "~~ handle_block_import. change_authorities block {} failed: {e:?}", header.number());
+                        }
+                        // since we allow pre consensus block, we accept even authorities change.
+                    },
+                    ConsensusLog::OnDisabled(index) => self.state.disable_authority(*header.number(), index),
+                }
+            }
             let (deleted, deleted_invalid) = self.synchronizer.clear_all_before(ProposalKey::digest(commit.parent_commit_hash()))?;
             if !deleted.is_empty() || !deleted_invalid.is_empty() {
                 trace!(target: CLIENT_LOG_TARGET, "~~ handle_block_import. Block {} imported, delete proposals {deleted:?}, invalid proposals: {deleted_invalid:?}", header.number());
@@ -374,17 +387,6 @@ where
         }
         if self.executor_tx.send(ExecutorMission::Imported(header.clone())).is_err() {
             warn!(target: CLIENT_LOG_TARGET, "~~ handle_block_import. Notify executor block {} imported failed", header.number());
-        }
-        for consensus_log in find_consensus_logs::<B>(header) {
-            match consensus_log {
-                ConsensusLog::AuthoritiesChange(authorities) => {
-                    // changes authorities list.
-                    self.state
-                        .change_authorities(*header.number(), authorities.into_iter().map(|a| (a, 0)).collect());
-                    // since we allow pre consensus block, we accept even authorities change.
-                },
-                ConsensusLog::OnDisabled(index) => self.state.disable_authority(*header.number(), index),
-            }
         }
         // try handle pending proposal.
         if let Some(pending_proposal) = self.pending_proposal.take() {
@@ -424,7 +426,7 @@ where
         }
         if !local {
             self.state.verify_proposal(&proposal)?;
-            proposal.qc.verify(&self.state.authorities)?;
+            proposal.qc.verify(self.state.authority_list(proposal.qc.view)?)?;
         }
         self.synchronizer.save_proposal(&proposal)?;
         if !local {
@@ -531,7 +533,7 @@ where
             None => {
                 if let Some(req) = self.state.make_proposal_request(ProposalReq::Keys(vec![ProposalKey::digest(qc.proposal_hash)])) {
                     let message = ConsensusMessage::GetProposal(req);
-                    self.network.send_to_authorities(self.state.authorities(), message.encode())?;
+                    self.network.send_to_authorities(self.state.authorities(self.state.view)?, message.encode())?;
                 }
                 return Err(HotstuffError::GetProposal(format!("No proposal for commit qc of proposal {}, skip for can't check timestamp", qc.proposal_hash)));
             }
@@ -594,7 +596,7 @@ where
             None => {
                 if let Some(req) = self.state.make_proposal_request(ProposalReq::Keys(vec![ProposalKey::digest(qc.proposal_hash)])) {
                     let message = ConsensusMessage::GetProposal(req);
-                    self.network.send_to_authorities(self.state.authorities(), message.encode())?;
+                    self.network.send_to_authorities(self.state.authorities(self.state.view())?, message.encode())?;
                 }
                 debug!(target: CLIENT_LOG_TARGET, "Can't trigger qc mission for no proposal of qc: {}", qc.view);
                 return Ok(());
@@ -658,7 +660,7 @@ where
         let from = if local { "local" } else { "network" };
         if !local {
             self.state.verify_tc(&tc)?;
-            tc.high_qc.verify(&self.state.authorities)?;
+            tc.high_qc.verify(self.state.authority_list(tc.high_qc.view)?)?;
         }
         self.handle_qc(&tc.high_qc);
         if tc.view >= self.state.view() {
@@ -710,7 +712,7 @@ where
                 if encoded_message.len() > self.network_notification_limit {
                     warn!(target: CLIENT_LOG_TARGET, "~~ generate_proposal. Proposal {} message exceed max notification limit {}/{}", proposal.view, encoded_message.len(), self.network_notification_limit);
                 };
-                self.network.send_to_authorities(self.state.authorities(), encoded_message)?;
+                self.network.send_to_authorities(self.state.authorities(self.state.view())?, encoded_message)?;
 
                 if let Err(e) = self.consensus_msg_tx.send((true, ConsensusMessage::Propose(proposal))).await {
                     warn!(target: CLIENT_LOG_TARGET, "~~ generate_proposal. Can't inform self of `Propose` for {e:?}.");
@@ -1074,12 +1076,12 @@ where
     SC: SelectChain<B>,
     O: BlockOracle<B> + HotsOracle<B> + Sync + Send + 'static,
 {
-    let LinkHalf { client, .. } = link;
+    let LinkHalf { client, select_chain: _, persistent_data } = link;
     let authorities = get_authorities_from_client::<B, BE, C>(client.clone());
 
     let synchronizer = Synchronizer::<B, C>::new(client.clone());
     let high_proposal = synchronizer.get_high_proposal().unwrap();
-    let consensus_state = ConsensusState::<B>::new(keystore, high_proposal, authorities.clone(), Vec::new());
+    let consensus_state = ConsensusState::<B, C>::new(client.clone(), keystore, high_proposal, persistent_data, Vec::new());
     let peer_authority = consensus_state.make_peer_authority(network.local_peer_id().to_base58());
     let network = HotstuffNetworkBridge::new(network.clone(), sync.clone(), hotstuff_protocol_name, authorities, peer_authority);
 

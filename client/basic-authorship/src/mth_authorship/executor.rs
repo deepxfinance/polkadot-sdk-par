@@ -535,15 +535,18 @@ where
         } else {
             "".to_string()
         };
+        let invalid_info = if thread_info.invalid > 0 || thread_info.future_or_exhausted > 0 {
+            format!("({}/{})", thread_info.invalid, thread_info.future_or_exhausted)
+        } else {
+            "".to_string()
+        };
         debug!(
             target: LOG_TARGET,
-            "[Execute Block {block}] Thread {thread_name} {reason}({}{} ms) {}/{}({}/{}) executed in {} rounds([(num, avg, avg_exe, avg_io, avg_rb, avg_w)]: {round_with_times:?}).",
+            "[Execute Block {block}] Thread {thread_name} {reason}({}{} ms) {}/{}{invalid_info} executed in {} rounds([(num, avg, avg_exe, avg_io, avg_rb, avg_w)]: {round_with_times:?}).",
             thread_start.elapsed().as_millis(),
             limit_millis_info,
             thread_info.applied(),
             thread_info.total,
-            thread_info.invalid,
-            thread_info.future_or_exhausted,
             round_execute_collect.len(),
         );
     }

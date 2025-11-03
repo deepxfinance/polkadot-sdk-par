@@ -31,8 +31,8 @@ use sp_consensus::Error as ConsensusError;
 use sp_consensus_slots::Slot;
 use sp_core::Pair;
 use sp_runtime::DigestItem;
-use sp_runtime::generic::BlockId;
 use sp_runtime::traits::{Header, NumberFor, Zero};
+use crate::aux_schema::PersistentData;
 use crate::message::BlockCommit;
 
 pub const LOG_TARGET: &str = "hots";
@@ -204,6 +204,7 @@ impl<N> Default for CompatibilityMode<N> {
     }
 }
 
+#[allow(unused)]
 fn authorities<A, B, C>(
     client: &C,
     parent_hash: B::Hash,
@@ -292,10 +293,9 @@ pub fn find_block_commit<B: BlockT>(header: &B::Header) -> Option<BlockCommit<B>
 ///
 /// This digest item will always return `Some` when used with `as_hotstuff_seal`.
 pub fn check_header_slot_and_seal<B: BlockT, C, P: Pair>(
-    client: &C,
     slot_now: Slot,
     mut header: B::Header,
-    compatibility_mode: &CompatibilityMode<NumberFor<B>>,
+    persistent_data: &PersistentData<B>,
 ) -> Result<(B::Header, Slot, DigestItem, DigestItem), SealVerificationError<B::Header>>
 where
     P::Signature: Codec,
@@ -316,22 +316,10 @@ where
         // check the signature is valid under the expected authority and
         // chain state.
         let commit: BlockCommit<B> = seal_commit.as_hotstuff_seal().ok_or(SealVerificationError::InvalidBlockCommit)?;
-        let base_block = commit.base_block();
-        let base_hash = client.block_hash_from_id(&BlockId::Number(base_block))
-            .map_err(|_| SealVerificationError::InvalidBlockCommit)?
-            .ok_or(SealVerificationError::InvalidBlockCommit)?;
-        let authorities = authorities(
-            client,
-            base_hash,
-            *header.number(),
-            compatibility_mode,
-        )
-            .map_err(|e| SealVerificationError::GetAuthorities(format!("get authortites from #{} err {e:?}", base_block)))?;
-        let authorities = authorities
-            .iter()
-            .map(|id| (id.clone().into(), 0))
-            .collect::<AuthorityList>();
-        if let Err(e) = commit.verify(&authorities, *header.number(), *header.extrinsics_root()) {
+        let authority_set = persistent_data.authority_set.inner();
+        let authorities = authority_set.authorities_for_view(commit.view())
+            .ok_or(SealVerificationError::GetAuthorities(format!("get authorities for view {} failed", commit.view())))?;
+        if let Err(e) = commit.verify(authorities, *header.number(), *header.extrinsics_root()) {
             log::warn!(target: LOG_TARGET, "check_header qc.verify err: {e:?} for header: {header:?}");
             return Err(SealVerificationError::InvalidBlockCommit);
         }

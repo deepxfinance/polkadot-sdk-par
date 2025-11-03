@@ -2,6 +2,7 @@
 use std::{marker::PhantomData, sync::Arc};
 
 use codec::Decode;
+use hotstuff_primitives::RuntimeAuthorityId;
 use sc_client_api::{AuxStore, Backend, BlockchainEvents, CallExecutor, ExecutionStrategy, ExecutorProvider, Finalizer, LockImportRun, StorageProvider};
 use sc_consensus::BlockImport;
 use sp_api::{ProvideRuntimeApi, TransactionFor};
@@ -74,12 +75,12 @@ pub(crate) trait BlockSyncRequester<Block: BlockT> {
 pub struct LinkHalf<Block: BlockT, C, SC> {
     pub client: Arc<C>,
     pub select_chain: Option<PhantomData<SC>>,
-    pub(crate) persistent_data: aux_schema::PersistentData<Block>,
+    pub persistent_data: aux_schema::PersistentData<Block>,
 }
 
 impl<Block: BlockT, C, SC> LinkHalf<Block, C, SC> {
     /// Get the shared authority set.
-    pub fn shared_authority_set(&self) -> &SharedAuthoritySet<Block::Hash, NumberFor<Block>> {
+    pub fn shared_authority_set(&self) -> &SharedAuthoritySet<NumberFor<Block>> {
         &self.persistent_data.authority_set
     }
 }
@@ -96,7 +97,7 @@ where
     Client: ExecutorProvider<Block, Executor = E> + HeaderBackend<Block>,
 {
     fn get(&self) -> Result<Vec<AuthorityId>, ClientError> {
-        self.executor()
+        let runtime_authorities: Vec<RuntimeAuthorityId> = self.executor()
             .call(
                 self.expect_block_hash_from_id(&BlockId::Number(Zero::zero()))?,
                 "HotstuffApi_authorities",
@@ -111,7 +112,8 @@ where
                         err,
                     )
                 })
-            })
+            })?;
+        Ok(runtime_authorities.into_iter().map(|runtime_authority| runtime_authority.into()).collect())
     }
 }
 
@@ -147,7 +149,6 @@ where
         move || {
             let authorities = genesis_authorities_provider.get()?;
 
-            // TODO just for dev.
             let authorities = authorities
                 .iter()
                 .map(|p| (p.clone(), 1))
@@ -158,7 +159,7 @@ where
     )?;
 
     Ok((
-        HotstuffBlockImport::new(client.clone(), role, Arc::new(executor), oracle),
+        HotstuffBlockImport::new(client.clone(), role, Arc::new(executor), oracle, persistent_data.clone()),
         LinkHalf {
             client,
             select_chain: None,

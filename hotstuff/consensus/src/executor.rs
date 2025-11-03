@@ -146,28 +146,23 @@ where
     }
 
     // execute one block, return if remove this mission and execute info.
-    async fn execute_mission(&mut self, mission: NewBlockMission<B>) -> (bool, Option<BlockExecuteInfo<B>>) {
-        let mut execute_info = None;
+    async fn execute_mission(&mut self, mission: NewBlockMission<B>) -> Result<BlockExecuteInfo<B>, String> {
         let best_block = self.client.info().best_number;
         let best_hash = self.client.info().best_hash;
         let mission_block = mission.block_number();
         if mission_block > best_block.saturating_add(1u32.into()) {
-            debug!(target: LOG_TARGET, "skip next block number: {mission_block} for too far than best {best_block}");
-            return (false, execute_info);
+            return Err(format!("skip next block number: {mission_block} for too far than best {best_block}"));
         }
         if self.client.info().best_number >= mission_block {
-            debug!(target: LOG_TARGET, "skip next block number: {mission_block} for best_block {}", self.client.info().best_number);
-            return (true, execute_info);
+            return Err(format!("skip next block number: {mission_block} for best_block {}", self.client.info().best_number));
         }
         let parent_hash = match self.client.block_hash_from_id(&BlockId::Number(mission_block.saturating_sub(1u32.into()))) {
             Ok(Some(parent_hash)) => parent_hash,
             Ok(None) => {
-                debug!(target: LOG_TARGET, "skip next block number: {mission_block} for no parent hash");
-                return (false, execute_info);
+                return Err(format!("skip next block number: {mission_block} for no parent hash"));
             },
             Err(e) => {
-                debug!(target: LOG_TARGET, "skip next block number: {mission_block} for get parent hash error: {e:?}");
-                return (false, execute_info);
+                return Err(format!("skip next block number: {mission_block} for get parent hash error: {e:?}"));
             }
         };
         // check parent block's commit qc hash. ensure correct chain fork.
@@ -176,27 +171,22 @@ where
                 Ok(Some(parent_header)) => match find_block_commit::<B>(&parent_header) {
                     Some(parent_commit) => if parent_commit.commit_hash() != mission.commit.parent_commit_hash()
                         || mission_block != parent_commit.block_number().saturating_add(1u32.into()) {
-                        debug!(
-                            target: LOG_TARGET,
+                        return Err(format!(
                             "skip next block number: {mission_block} for no expected parent {} commit_qc_hash {} expect: {}",
                             parent_commit.block_number(),
                             parent_commit.commit_hash(),
                             mission.commit.parent_commit_hash(),
-                        );
-                        return (true, execute_info);
+                        ));
                     },
                     None => {
-                        error!(target: LOG_TARGET, "skip next block number: {mission_block} for no parent header have no commit!!!");
-                        return (false, execute_info);
+                        return Err(format!("skip next block number: {mission_block} for no parent header have no commit!!!"));
                     }
                 },
                 Ok(None) => {
-                    debug!(target: LOG_TARGET, "skip next block number: {mission_block} for no parent header");
-                    return (false, execute_info);
+                    return Err(format!("skip next block number: {mission_block} for no parent header"));
                 },
                 Err(e) => {
-                    debug!(target: LOG_TARGET, "skip next block number: {mission_block} for get parent header error: {e:?}");
-                    return (false, execute_info);
+                    return Err(format!("skip next block number: {mission_block} for get parent header error: {e:?}"));
                 }
             }
         }
@@ -209,15 +199,13 @@ where
         {
             Ok(x) => x,
             Err(e) => {
-                warn!(target: LOG_TARGET, "Unable to author block in slot. Failure creating inherent data provider: {e}");
-                return (false, execute_info);
+                return Err(format!("Unable to author block in slot. Failure creating inherent data provider: {e}"));
             },
         };
         debug!(target: LOG_TARGET, "Start #{mission_block} with view {} (best {best_block}:{best_hash})", mission.commit.view());
         let slot = inherent_data_providers.slot();// Never yield the same slot twice.
         if slot <= self.last_slot {
-            warn!(target: LOG_TARGET, "Best block number: {best_block}, next block number: {mission_block} Skipped for last_slot {}, current_slot {slot}", self.last_slot);
-            return (true, execute_info);
+            return Err(format!("Best block number: {best_block}, next block number: {mission_block} Skipped for last_slot {}, current_slot {slot}", self.last_slot));
         }
         let inherent_data = inherent_data_providers.create_inherent_data().await.expect("create_inherent_data");
 
@@ -255,15 +243,14 @@ where
         ).await {
             Ok(propose) => propose,
             Err(e) => {
-                warn!(target: LOG_TARGET, "Propose block {mission_block} failed for {e:?}");
-                return (false, execute_info);
+                return Err(format!("Propose block {mission_block} failed for {e:?}"));
             }
         };
         // generate import params
         let (block, _storage_proof) = (proposal.block, proposal.proof);
         let (header, body) = block.deconstruct();
         if *header.extrinsics_root() != mission.commit.extrinsics_root() {
-            log::error!(target: LOG_TARGET, "Propose block {mission_block} check extrinsics_root incorrect calculated {} expected {}", header.extrinsics_root(), mission.commit.extrinsics_root());
+            return Err(format!("Propose block {mission_block} check extrinsics_root incorrect calculated {} expected {}", header.extrinsics_root(), mission.commit.extrinsics_root()));
         }
         let block_import_params = match self.block_import_params(
             header,
@@ -275,11 +262,9 @@ where
         ).await {
             Ok(import_params) => import_params,
             Err(e) => {
-                warn!(target: LOG_TARGET, "Propose block {mission_block} get block_import_params failed for {e:?}");
-                return (false, execute_info);
+                return Err(format!("Propose block {mission_block} get block_import_params failed for {e:?}"));
             }
         };
-        execute_info = Some(info);
         // import block
         let header = block_import_params.post_header();
         let current = Timestamp::current().as_millis();
@@ -300,13 +285,12 @@ where
                         warn!(target: LOG_TARGET, "FinalizeBlock #{} ({}) failed for {e:?}", header.number(), header.hash());
                     }
                 }
+                Ok(info)
             },
             Err(err) => {
-                warn!(target: LOG_TARGET, "Import block {}:{} built on {parent_hash:?}: {err}", header.number(), header.hash());
-                return (false, execute_info);
+                Err(format!("Import block {}:{} built on {parent_hash:?}: {err}", header.number(), header.hash()))
             },
         }
-        (true, execute_info)
     }
 
     async fn try_execute_all(&mut self) {
@@ -335,12 +319,20 @@ where
                 },
             };
             self.import.lock(BlockOrigin::ConsensusBroadcast, *pending_block).await;
-            let (remove, execute_info) = self.execute_mission(mission).await;
+            let result = self.execute_mission(mission).await;
             self.import.unlock(BlockOrigin::ConsensusBroadcast, *pending_block).await;
-            if remove { removes.push(*pending_block); }
-            if let Some(info) = execute_info {
-                self.oracle.update_execute_info(&info);
+            match result {
+                Ok(info) => {
+                    self.oracle.update_execute_info(&info);
+                    removes.push(*pending_block);
+                },
+                Err(e) => {
+                    debug!(target: LOG_TARGET, "ExecuteFailed: {e}");
+                }
             }
+        }
+        if !removes.is_empty() {
+            trace!(target: LOG_TARGET, "execute removing blocks: {removes:?}");
         }
         for block in removes {
             self.missions.remove(&block);

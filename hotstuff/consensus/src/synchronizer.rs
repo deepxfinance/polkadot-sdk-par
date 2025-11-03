@@ -49,7 +49,6 @@ pub fn view_key(view: ViewNumber) -> Vec<u8> {
 	format!("{VIEW_PREFIX}_{view}").as_bytes().to_vec()
 }
 
-// Synchronizer synchronizes replicas to the same view.
 pub struct Synchronizer<B: BlockT, C: AuxStore + HeaderBackend<B>> {
 	store: Store<C>,
 	high_view: ViewNumber,

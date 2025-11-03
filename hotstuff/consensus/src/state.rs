@@ -1,28 +1,83 @@
 use std::cmp::max;
 use std::marker::PhantomData;
+use std::sync::Arc;
 use log::trace;
 use w3f_bls::TinyBLS381;
 use sp_application_crypto::AppCrypto;
 use sp_core::crypto::ByteArray;
 use sp_keystore::KeystorePtr;
 use sp_runtime::traits::{Block as BlockT, Header as HeaderT};
-use crate::{
-    AuthorityId, AuthorityList, AuthoritySignature,
-    aggregator::Aggregator,
-    message::{
-        Proposal, Timeout, Vote, QC, TC, Payload,
-        PeerAuthority, ProposalReq, ProposalRequest,
-    },
-    primitives::{HotstuffError, ViewNumber},
-    CLIENT_LOG_TARGET,
-};
-use hotstuff_primitives::{AuthorityIndex, HOTSTUFF_KEY_TYPE};
+use crate::{AuthorityId, AuthorityList, AuthoritySignature, aggregator::Aggregator, message::{
+    Proposal, Timeout, Vote, QC, TC, Payload,
+    PeerAuthority, ProposalReq, ProposalRequest,
+}, primitives::{HotstuffError, ViewNumber}, CLIENT_LOG_TARGET, find_consensus_logs};
+use hotstuff_primitives::{AuthorityIndex, ConsensusLog, HOTSTUFF_KEY_TYPE};
+use sc_client_api::AuxStore;
+use sp_blockchain::HeaderBackend;
+use crate::aux_schema::PersistentData;
 use crate::message::extend_message;
 
+pub struct Authority<B: BlockT, C: AuxStore + HeaderBackend<B>> {
+    pub client: Arc<C>,
+    pub cache_size: usize,
+    pub cache: Vec<(ViewNumber, <B::Header as HeaderT>::Number, AuthorityList)>,
+    pub persistent_data: PersistentData<B>,
+}
+
+impl<B: BlockT, C: AuxStore + HeaderBackend<B>> Authority<B, C> {
+    pub fn load_from_persistent_data(&mut self) -> Result<(), HotstuffError> {
+        let authority_set = self.persistent_data.authority_set.inner();
+        if authority_set.authority_set_changes.as_ref().is_empty() {
+            self.cache.push((0, 0u32.into(), authority_set.current_authorities.clone()));
+        }
+        for (view, block) in authority_set.authority_set_changes.as_ref().iter().rev().take(self.cache_size) {
+            if let Some(authority_list) = authority_set.authorities_for_view(*view) {
+                self.cache.push((*view, *block, authority_list.clone()));
+            } else {
+                let authority_list = self.get_authorities_from_backend(*view, *block)?;
+                self.cache.push((*view, *block, authority_list));
+            }
+        }
+        Ok(())
+    }
+
+    pub fn authorities_from_cache(&self, view: ViewNumber) -> Option<&AuthorityList> {
+        for (v, _, authorities) in self.cache.iter() {
+            if *v == 0 || view > *v { return Some(authorities); }
+        }
+        None
+    }
+
+    pub fn get_authorities_from_backend(&self, view: ViewNumber, block: <B::Header as HeaderT>::Number) -> Result<AuthorityList, HotstuffError> {
+        let block_hash = self.client.hash(block)
+            .map_err(|e| HotstuffError::ClientError(e.to_string()))?
+            .ok_or(HotstuffError::ClientError(format!("Block {block} should have hash")))?;
+        let header = self.client.header(block_hash)
+            .map_err(|e| HotstuffError::ClientError(e.to_string()))?
+            .ok_or(HotstuffError::ClientError(format!("Block {block}:{block_hash} should have header")))?;
+        for consensus_log in find_consensus_logs::<B>(&header) {
+            if let ConsensusLog::AuthoritiesChange(authorities) = consensus_log {
+                return Ok(authorities.into_iter().map(|a| (a, 0)).collect());
+            }
+        }
+        Err(HotstuffError::InvalidAuthority(format!("can't get authorities for view {view} block {block}")))
+    }
+
+    pub fn update_authorities(&mut self, view: ViewNumber, block: <B::Header as HeaderT>::Number, authority_list: AuthorityList) -> bool {
+        if view > self.cache.first().map(|(v, _, _)| *v).unwrap_or_default() {
+            self.cache.insert(0, (view, block, authority_list));
+            self.cache.resize(self.cache_size, (0, 0u32.into(), Vec::new()));
+            true
+        } else {
+            false
+        }
+    }
+}
+
 // the core of hotstuff
-pub struct ConsensusState<B: BlockT> {
+pub struct ConsensusState<B: BlockT, C: AuxStore + HeaderBackend<B>> {
     pub keystore: KeystorePtr,
-    pub authorities: AuthorityList,
+    pub authority: Authority<B, C>,
     pub disabled_authorities: Vec<AuthorityIndex>,
     pub local_authority_id: Option<AuthorityId>,
     pub local_authority_index: Option<u16>,
@@ -35,13 +90,24 @@ pub struct ConsensusState<B: BlockT> {
     pub aggregator: Aggregator<B, TinyBLS381>,
 }
 
-impl<B: BlockT> ConsensusState<B> {
+impl<B: BlockT, C: AuxStore + HeaderBackend<B>> ConsensusState<B, C> {
     pub fn new(
+        client: Arc<C>,
         keystore: KeystorePtr,
         high_proposal: Option<Proposal<B>>,
-        authorities: AuthorityList,
+        persistent_data: PersistentData<B>,
         disabled_authorities: Vec<AuthorityIndex>,
     ) -> Self {
+        let mut authority = Authority {
+            client,
+            cache_size: 10,
+            cache: Vec::new(),
+            persistent_data,
+        };
+        authority.load_from_persistent_data().unwrap();
+        let authorities = authority
+            .authorities_from_cache(high_proposal.as_ref().map(|p| p.view).unwrap_or_default())
+            .unwrap();
         let local_authority_id = authorities
             .iter()
             .enumerate()
@@ -54,7 +120,7 @@ impl<B: BlockT> ConsensusState<B> {
             local_authority_id: local_authority_id.clone().map(|(_, p)| p.clone()),
             local_authority_index: local_authority_id.map(|(id, _)| id as u16),
             keystore,
-            authorities,
+            authority,
             disabled_authorities,
             view: 0,
             last_voted_view: 0,
@@ -70,19 +136,22 @@ impl<B: BlockT> ConsensusState<B> {
         state
     }
 
-    pub fn change_authorities(&mut self, _block: <B::Header as HeaderT>::Number, authorities: AuthorityList) {
-        let local_authority_id = authorities
-            .iter()
-            .enumerate()
-            .find(|(_, (p, _))| {
-                self.keystore
-                    .has_keys(&[(p.to_raw_vec(), HOTSTUFF_KEY_TYPE)])
-            })
-            .map(|(index, (p, _))| (index, p.clone()));
-        self.local_authority_id = local_authority_id.clone().map(|(_, p)| p.clone());
-        self.local_authority_index = local_authority_id.map(|(id, _)| id as u16);
-        self.authorities = authorities;
-        self.disabled_authorities.clear();
+    pub fn change_authorities(&mut self, view: ViewNumber, block: <B::Header as HeaderT>::Number, authority_list: AuthorityList) -> Result<(), HotstuffError> {
+        let updated = self.authority.update_authorities(view, block, authority_list.clone());
+        if updated {
+            let local_authority_id = authority_list
+                .iter()
+                .enumerate()
+                .find(|(_, (p, _))| {
+                    self.keystore
+                        .has_keys(&[(p.to_raw_vec(), HOTSTUFF_KEY_TYPE)])
+                })
+                .map(|(index, (p, _))| (index as u16, p.clone()));
+            self.local_authority_id = local_authority_id.clone().map(|(_, p)| p.clone());
+            self.local_authority_index = local_authority_id.map(|(id, _)| id);
+            self.disabled_authorities.clear();
+        }
+        Ok(())
     }
 
     pub fn disable_authority(&mut self, _block: <B::Header as HeaderT>::Number, _index: AuthorityIndex) {
@@ -101,8 +170,13 @@ impl<B: BlockT> ConsensusState<B> {
         self.local_authority_id.is_some()
     }
 
-    pub fn authorities(&self) -> Vec<&AuthorityId> {
-        self.authorities.iter().map(|a| &a.0).collect()
+    pub fn authority_list(&self, view: ViewNumber) -> Result<&AuthorityList, HotstuffError> {
+        self.authority.authorities_from_cache(view).ok_or(HotstuffError::InvalidAuthority(format!("can't get authorities for view {view}")))
+    }
+
+    pub fn authorities(&self, view: ViewNumber) -> Result<Vec<&AuthorityId>, HotstuffError> {
+        self.authority_list(view)
+            .map(|a| a.iter().map(|a| &a.0).collect())
     }
 
     pub fn message_with_id(&self, msg: &[u8]) -> Result<Vec<u8>, HotstuffError> {
@@ -250,7 +324,7 @@ impl<B: BlockT> ConsensusState<B> {
     }
 
     pub fn verify_timeout(&self, timeout: &Timeout<B>) -> Result<(), HotstuffError> {
-        timeout.verify(&self.authorities)
+        timeout.verify(self.authority_list(timeout.view)?)
     }
 
     pub fn verify_proposal(&self, proposal: &Proposal<B>) -> Result<(), HotstuffError> {
@@ -261,7 +335,7 @@ impl<B: BlockT> ConsensusState<B> {
             }
             None => return Err(HotstuffError::Other("Local empty authorities to verify proposal".into())),
         }
-        proposal.verify(&self.authorities)?;
+        proposal.verify(self.authority_list(proposal.view)?)?;
         Ok(())
     }
 
@@ -279,7 +353,7 @@ impl<B: BlockT> ConsensusState<B> {
             return Err(HotstuffError::ExpiredVote);
         }
 
-        vote.verify(&self.authorities)
+        vote.verify(self.authority_list(vote.view)?)
     }
 
     pub fn verify_tc(&self, tc: &TC<B>) -> Result<(), HotstuffError> {
@@ -287,17 +361,19 @@ impl<B: BlockT> ConsensusState<B> {
             return Err(HotstuffError::InvalidTC);
         }
 
-        tc.verify(&self.authorities)
+        tc.verify(self.authority_list(tc.view)?)
     }
 
     // add a verified timeout then try return a TC.
     pub fn add_timeout(&mut self, timeout: &Timeout<B>) -> Result<Option<TC<B>>, HotstuffError> {
-        self.aggregator.add_timeout(timeout, &self.authorities)
+        let authority_list = self.authority_list(timeout.view)?.clone();
+        self.aggregator.add_timeout(timeout, &authority_list)
     }
 
     // add a verified vote and try return a QC.
     pub fn add_vote(&mut self, vote: &Vote<B>) -> Result<Option<QC<B>>, HotstuffError> {
-        self.aggregator.add_vote(vote.clone(), &self.authorities)
+        let authority_list = self.authority_list(vote.view)?.clone();
+        self.aggregator.add_vote(vote.clone(), &authority_list)
     }
 
     pub fn update_high_qc(&mut self, qc: &QC<B>) {
@@ -313,11 +389,12 @@ impl<B: BlockT> ConsensusState<B> {
     }
 
     pub fn view_leader(&self, view: ViewNumber) -> Option<&AuthorityId> {
-        if self.authorities.is_empty() {
+        let authorities = self.authority_list(view).ok()?;
+        if authorities.is_empty() {
             return None;
         }
-        let leader_index = view % self.authorities.len() as ViewNumber;
-        Some(&self.authorities[leader_index as usize].0)
+        let leader_index = view % authorities.len() as ViewNumber;
+        Some(&authorities[leader_index as usize].0)
     }
 
     pub fn is_leader_for(&self, view: ViewNumber) -> bool {

@@ -141,6 +141,7 @@ pub fn new_partial(
 
 				Ok((slot, timestamp))
 			},
+			persistent_data: hotstuff_link.persistent_data.clone(),
 			spawner: &task_manager.spawn_essential_handle(),
 			registry: config.prometheus_registry(),
 			check_for_equivocation: Default::default(),

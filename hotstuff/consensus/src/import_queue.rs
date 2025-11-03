@@ -44,6 +44,7 @@ use sp_runtime::{
 };
 use sp_timestamp::Timestamp;
 use std::{fmt::Debug, hash::Hash, marker::PhantomData, sync::Arc};
+use crate::aux_schema::PersistentData;
 
 /// check a header has been signed by the right key. If the slot is too far in the future, an error
 /// will be returned. If it's successful, returns the pre-header and the digest item
@@ -51,11 +52,10 @@ use std::{fmt::Debug, hash::Hash, marker::PhantomData, sync::Arc};
 ///
 /// This digest item will always return `Some` when used with `as_hotstuff_seal`.
 fn check_header<C, B: BlockT, P: Pair>(
-    client: &C,
     slot_now: Slot,
     header: B::Header,
     hash: B::Hash,
-    compatibility_mode: &CompatibilityMode<NumberFor<B>>,
+    persistent_data: &PersistentData<B>,
     _check_for_equivocation: CheckForEquivocation,
 ) -> Result<CheckedHeader<B::Header, (Slot, DigestItem, DigestItem)>, Error<B>>
 where
@@ -65,7 +65,7 @@ where
     P::Public: Encode + Decode + PartialEq + Clone,
 {
     let check_result =
-        crate::check_header_slot_and_seal::<B, C, P>(client, slot_now, header, compatibility_mode);
+        crate::check_header_slot_and_seal::<B, C, P>(slot_now, header, persistent_data);
 
     match check_result {
         Ok((header, slot, seal_groups, seal_commit)) =>
@@ -83,40 +83,43 @@ where
 }
 
 /// A verifier for Hotstuff blocks.
-pub struct HotstuffVerifier<C, P, CIDP, N> {
+pub struct HotstuffVerifier<B: BlockT, C, P, CIDP, N> {
     client: Arc<C>,
     phantom: PhantomData<P>,
     create_inherent_data_providers: CIDP,
+    persistent_data: PersistentData<B>,
     check_for_equivocation: CheckForEquivocation,
     telemetry: Option<TelemetryHandle>,
-    compatibility_mode: CompatibilityMode<N>,
+    _compatibility_mode: CompatibilityMode<N>,
 }
 
-impl<C, P, CIDP, N> HotstuffVerifier<C, P, CIDP, N> {
+impl<B: BlockT, C, P, CIDP, N> HotstuffVerifier<B, C, P, CIDP, N> {
     pub(crate) fn new(
         client: Arc<C>,
         create_inherent_data_providers: CIDP,
+        persistent_data: PersistentData<B>,
         check_for_equivocation: CheckForEquivocation,
         telemetry: Option<TelemetryHandle>,
-        compatibility_mode: CompatibilityMode<N>,
+        _compatibility_mode: CompatibilityMode<N>,
     ) -> Self {
         Self {
             client,
             create_inherent_data_providers,
+            persistent_data,
             check_for_equivocation,
             telemetry,
-            compatibility_mode,
+            _compatibility_mode,
             phantom: PhantomData,
         }
     }
 }
 
-impl<C, P, CIDP, N> HotstuffVerifier<C, P, CIDP, N>
+impl<B: BlockT, C, P, CIDP, N> HotstuffVerifier<B, C, P, CIDP, N>
 where
     P: Send + Sync + 'static,
     CIDP: Send,
 {
-    async fn check_inherents<B: BlockT>(
+    async fn check_inherents(
         &self,
         block: B,
         at_hash: B::Hash,
@@ -149,7 +152,7 @@ where
 }
 
 #[async_trait::async_trait]
-impl<B: BlockT, C, P, CIDP> Verifier<B> for HotstuffVerifier<C, P, CIDP, NumberFor<B>>
+impl<B: BlockT, C, P, CIDP> Verifier<B> for HotstuffVerifier<B, C, P, CIDP, NumberFor<B>>
 where
     C: ProvideRuntimeApi<B> + HeaderBackend<B> + Send + Sync + AuxStore,
     C::Api: BlockBuilderApi<B> + HotstuffApi<B, RuntimeAuthorityId> + ApiExt<B>,
@@ -196,11 +199,10 @@ where
 
         // headers
         let checked_header = check_header::<C, B, P>(
-            &self.client,
             slot_now + 1,
             block.header,
             hash,
-            &self.compatibility_mode,
+            &self.persistent_data,
             self.check_for_equivocation,
         )
             .map_err(|e| e.to_string())?;
@@ -303,6 +305,8 @@ pub struct ImportQueueParams<'a, Block: BlockT, I, C, S, CIDP> {
     pub client: Arc<C>,
     /// Something that can create the inherent data providers.
     pub create_inherent_data_providers: CIDP,
+    /// Persistent data for authorities,
+    pub persistent_data: PersistentData<Block>,
     /// The spawner to spawn background tasks.
     pub spawner: &'a S,
     /// The prometheus registry.
@@ -324,6 +328,7 @@ pub fn import_queue<P, Block, I, C, S, CIDP>(
         justification_import,
         client,
         create_inherent_data_providers,
+        persistent_data,
         spawner,
         registry,
         check_for_equivocation,
@@ -353,9 +358,10 @@ where
     CIDP: CreateInherentDataProviders<Block, Timestamp> + Sync + Send + 'static,
     CIDP::InherentDataProviders: InherentDataProviderExt + Send + Sync,
 {
-    let verifier = build_verifier::<P, _, _, _>(BuildVerifierParams {
+    let verifier = build_verifier::<Block, P, _, _, _>(BuildVerifierParams {
         client,
         create_inherent_data_providers,
+        persistent_data,
         check_for_equivocation,
         telemetry,
         compatibility_mode,
@@ -365,11 +371,13 @@ where
 }
 
 /// Parameters of [`build_verifier`].
-pub struct BuildVerifierParams<C, CIDP, N> {
+pub struct BuildVerifierParams<B: BlockT, C, CIDP, N> {
     /// The client to interact with the chain.
     pub client: Arc<C>,
     /// Something that can create the inherent data providers.
     pub create_inherent_data_providers: CIDP,
+    /// Persistent data for authorities.
+    pub persistent_data: PersistentData<B>,
     /// Should we check for equivocation?
     pub check_for_equivocation: CheckForEquivocation,
     /// Telemetry instance used to report telemetry metrics.
@@ -381,18 +389,20 @@ pub struct BuildVerifierParams<C, CIDP, N> {
 }
 
 /// Build the [`HotstuffVerifier`]
-pub fn build_verifier<P, C, CIDP, N>(
+pub fn build_verifier<B: BlockT, P, C, CIDP, N>(
     BuildVerifierParams {
         client,
         create_inherent_data_providers,
+        persistent_data,
         check_for_equivocation,
         telemetry,
         compatibility_mode,
-    }: BuildVerifierParams<C, CIDP, N>,
-) -> HotstuffVerifier<C, P, CIDP, N> {
-    HotstuffVerifier::<_, P, _, _>::new(
+    }: BuildVerifierParams<B, C, CIDP, N>,
+) -> HotstuffVerifier<B, C, P, CIDP, N> {
+    HotstuffVerifier::<B, _, P, _, _>::new(
         client,
         create_inherent_data_providers,
+        persistent_data,
         check_for_equivocation,
         telemetry,
         compatibility_mode,

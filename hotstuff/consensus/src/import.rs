@@ -12,6 +12,7 @@ use futures::{Future, StreamExt};
 use log::warn;
 use tokio::sync::oneshot::{Receiver, Sender};
 use tokio::sync::RwLock;
+use hotstuff_primitives::ConsensusLog;
 use hotstuff_primitives::digests::CompatibleDigestItem;
 use sc_basic_authorship::{BlockExecuteInfo, BlockOracle, BlockPropose};
 use sc_client_api::{
@@ -25,7 +26,8 @@ use sp_api::TransactionFor;
 use sp_blockchain::BlockStatus;
 use sp_consensus::{BlockOrigin, Error as ConsensusError};
 use sp_runtime::{generic::BlockId, traits::{Block as BlockT, Header as HeaderT, NumberFor, One}, Digest, Justification, Saturating};
-use crate::{client::ClientForHotstuff, find_block_commit, primitives::{HotstuffError, HotstuffError::*}};
+use crate::{client::ClientForHotstuff, find_block_commit, find_consensus_logs, primitives::{HotstuffError, HotstuffError::*}};
+use crate::aux_schema::PersistentData;
 use crate::message::BlockCommit;
 
 const LOG_TARGET: &str = "hots_import";
@@ -50,6 +52,7 @@ pub struct HotstuffBlockImport<Backend, Block: BlockT, Client, E, O> {
 	role: Role,
 	executor: Arc<E>,
 	oracle: Arc<O>,
+	persistent_data: PersistentData<Block>,
     import_lock: Arc<RwLock<HashMap<<Block::Header as HeaderT>::Number, BlockNotification<Block>>>>,
 	phantom: PhantomData<(Backend, Block)>,
 }
@@ -127,7 +130,6 @@ where
 			}
 			let inherent_digest = Digest { logs: vec![post_digests.logs()[0].clone()] };
 			let groups: Vec<u32> = post_digests.logs()[post_digests_len - 2].as_hotstuff_seal().ok_or(ConsensusError::ClientImport("Invalid post_digests for groups".into()))?;
-			// TODO !!!MUST should we check actual extrinsic_root in header with BlockCommit in header.digest?
 			futures::executor::block_on(async {
 				self
 					.executor
@@ -203,7 +205,22 @@ where
 						// This ForkChoiceStrategy::Custom(true) will set `is_new_best` to true.
 						block.fork_choice = Some(ForkChoiceStrategy::Custom(true));
 					}
+					if let Some(commit) = block_commit {
+						for consensus_log in find_consensus_logs::<Block>(&header) {
+							if let ConsensusLog::AuthoritiesChange(authorities) = consensus_log {
+								let authority_list = authorities.into_iter().map(|a| (a, 0)).collect();
+								self.persistent_data.authority_set.inner().update_authorities_change(commit.view(), commit.block_number(), authority_list);
+								crate::aux_schema::update_authority_set::<Block, _, _>(
+									&self.persistent_data.authority_set.inner(),
+									|insert| self.inner.insert_aux(insert, []),
+								)
+									.map_err(|e| ConsensusError::ClientImport(e.to_string()))?;
+								break;
+							}
+						}
+					}
 					let result = (&*self.inner).import_block(block).await;
+					// TODO update persistent data if authority changes.
 					if result.is_ok() && self.inner.info().finalized_number < *header.number() {
 						if let Err(e) = self.inner.finalize_block(header.hash(), None, true) {
 							warn!(target: LOG_TARGET, "FinalizeBlock #{} ({}) failed for {e:?}", header.number(), header.hash());
@@ -227,6 +244,7 @@ impl<Backend, Block: BlockT, Client, E, O> Clone for HotstuffBlockImport<Backend
 			role: self.role.clone(),
 			executor: self.executor.clone(),
 			oracle: self.oracle.clone(),
+			persistent_data: self.persistent_data.clone(),
             import_lock: self.import_lock.clone(),
 			phantom: PhantomData,
 		}
@@ -286,12 +304,13 @@ where
 }
 
 impl<Backend, Block: BlockT, Client, E, O> HotstuffBlockImport<Backend, Block, Client, E, O> {
-	pub fn new(inner: Arc<Client>, role: Role, executor: Arc<E>, oracle: Arc<O>) -> HotstuffBlockImport<Backend, Block, Client, E, O> {
+	pub fn new(inner: Arc<Client>, role: Role, executor: Arc<E>, oracle: Arc<O>, persistent_data: PersistentData<Block>) -> HotstuffBlockImport<Backend, Block, Client, E, O> {
 		HotstuffBlockImport {
             inner,
             role,
             executor,
 			oracle,
+			persistent_data,
             import_lock: Arc::new(RwLock::new(HashMap::new())),
             phantom: PhantomData,
         }
@@ -345,13 +364,9 @@ where
 		);
 		let orign = block.origin;
 		let number = *block.header.number();
-		if orign != BlockOrigin::ConsensusBroadcast {
-			self.lock(orign, number).await;
-		}
+		self.lock(orign, number).await;
 		let import_result = self.import_one(block).await;
-		if orign != BlockOrigin::ConsensusBroadcast {
-			self.unlock(orign, number).await;
-		}
+		self.unlock(orign, number).await;
 		import_result.map(|(r, mut block_execute_info)| {
 			if let Some(info) = block_execute_info.take() {
 				self.oracle.update_execute_info(&info);
