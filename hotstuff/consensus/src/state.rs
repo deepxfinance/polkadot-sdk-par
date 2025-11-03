@@ -1,4 +1,5 @@
 use std::cmp::max;
+use std::collections::HashSet;
 use std::marker::PhantomData;
 use std::sync::Arc;
 use log::trace;
@@ -15,11 +16,12 @@ use hotstuff_primitives::{AuthorityIndex, ConsensusLog, RuntimeAuthorityId, HOTS
 use sc_client_api::AuxStore;
 use sp_blockchain::HeaderBackend;
 use crate::aux_schema::PersistentData;
-use crate::message::extend_message;
+use crate::message::{extend_message, CommitQC};
 
 pub struct Authority<B: BlockT, C: AuxStore + HeaderBackend<B>> {
     pub client: Arc<C>,
     pub cache_size: usize,
+    pub pending: Option<(Option<ViewNumber>, <B::Header as HeaderT>::Number, AuthorityList)>,
     pub cache: Vec<(ViewNumber, <B::Header as HeaderT>::Number, AuthorityList)>,
     pub persistent_data: PersistentData<B>,
 }
@@ -27,6 +29,9 @@ pub struct Authority<B: BlockT, C: AuxStore + HeaderBackend<B>> {
 impl<B: BlockT, C: AuxStore + HeaderBackend<B>> Authority<B, C> {
     pub fn load_from_persistent_data(&mut self) -> Result<(), HotstuffError> {
         let authority_set = self.persistent_data.authority_set.inner();
+        if let Some((pending_block, pending_authorities)) = authority_set.pending_authority_set.as_ref() {
+            self.pending = Some((None, *pending_block, pending_authorities.clone()))
+        }
         if authority_set.authority_set_changes.as_ref().is_empty() {
             self.cache.push((0, 0u32.into(), authority_set.current_authorities.clone()));
         }
@@ -41,7 +46,25 @@ impl<B: BlockT, C: AuxStore + HeaderBackend<B>> Authority<B, C> {
         Ok(())
     }
 
+    pub fn on_block_commit(&mut self, commit_view: ViewNumber, commit_block: <B::Header as HeaderT>::Number) {
+        if let Some((view, b, _)) = &mut self.pending {
+            if commit_block == *b {
+                if let Some(view) = view {
+                    // update if higher view for this block commit.
+                    *view = (*view).max(commit_view);
+                } else {
+                    *view = Some(commit_view);
+                }
+            }
+        }
+    }
+
     pub fn authorities_from_cache(&self, view: ViewNumber) -> Option<&AuthorityList> {
+        if let Some((Some(v), _, authorities)) = self.pending.as_ref() {
+            if view > *v {
+                return Some(authorities);
+            }
+        }
         for (v, _, authorities) in self.cache.iter() {
             if *v == 0 || view > *v { return Some(authorities); }
         }
@@ -63,7 +86,31 @@ impl<B: BlockT, C: AuxStore + HeaderBackend<B>> Authority<B, C> {
         Err(HotstuffError::InvalidAuthority(format!("can't get authorities for view {view} block {block}")))
     }
 
+    pub fn update_pending_authorities(&mut self, block: <B::Header as HeaderT>::Number, authority_list: AuthorityList) -> bool {
+        if let Some((_, b, al)) = self.pending.clone() {
+            if block > b {
+                if block == b && al != authority_list {
+                    log::warn!(target: CLIENT_LOG_TARGET, "Pending authorities for block {block} changed which should not happen!!!");
+                }
+                self.pending = Some((None, block, authority_list));
+                return true;
+            }
+        } else {
+            self.pending = Some((None, block, authority_list));
+            return true;
+        }
+        false
+    }
+
     pub fn update_authorities(&mut self, view: ViewNumber, block: <B::Header as HeaderT>::Number, authority_list: AuthorityList) -> bool {
+        if let Some((_, b, al)) = self.pending.clone() {
+            if b >= block {
+                if b == block && authority_list != al {
+                    log::error!(target: CLIENT_LOG_TARGET, "Pending authorities not match actual authorities applied at block {block}");
+                }
+                self.pending.take();
+            }
+        }
         if view > self.cache.first().map(|(v, _, _)| *v).unwrap_or_default() {
             self.cache.insert(0, (view, block, authority_list));
             self.cache.resize(self.cache_size, (0, 0u32.into(), Vec::new()));
@@ -98,6 +145,7 @@ impl<B: BlockT, C: AuxStore + HeaderBackend<B>> ConsensusState<B, C> {
         let mut authority = Authority {
             client,
             cache_size: 10,
+            pending: None,
             cache: Vec::new(),
             persistent_data,
         };
@@ -128,8 +176,13 @@ impl<B: BlockT, C: AuxStore + HeaderBackend<B>> ConsensusState<B, C> {
         state
     }
 
+    pub fn change_pending_authorities(&mut self, block: <B::Header as HeaderT>::Number, authority_list: AuthorityList) -> Result<(), HotstuffError> {
+        self.authority.update_pending_authorities(block, authority_list);
+        Ok(())
+    }
+
     pub fn change_authorities(&mut self, view: ViewNumber, block: <B::Header as HeaderT>::Number, authority_list: AuthorityList) -> Result<(), HotstuffError> {
-        self.authority.update_authorities(view, block, authority_list.clone());
+        self.authority.update_authorities(view, block, authority_list);
         Ok(())
     }
 
@@ -169,9 +222,20 @@ impl<B: BlockT, C: AuxStore + HeaderBackend<B>> ConsensusState<B, C> {
         self.authority.authorities_from_cache(view).ok_or(HotstuffError::InvalidAuthority(format!("can't get authorities for view {view}")))
     }
 
-    pub fn authorities(&self, view: ViewNumber) -> Result<Vec<&AuthorityId>, HotstuffError> {
-        self.authority_list(view)
-            .map(|a| a.iter().map(|a| &a.0).collect())
+    pub fn authorities(&self, view: ViewNumber, with_pending: bool) -> Result<Vec<&AuthorityId>, HotstuffError> {
+        if with_pending {
+            let mut authorities: HashSet<&AuthorityId> = self.authority_list(view)
+                .map(|a| a.iter().map(|a| &a.0).collect())?;
+            if let Some((_, _, pending_authorities)) = self.authority.pending.as_ref() {
+                for (a, _) in pending_authorities.iter() {
+                    authorities.insert(a);
+                }
+            }
+            Ok(authorities.into_iter().collect())
+        } else {
+            self.authority_list(view)
+                .map(|a| a.iter().map(|a| &a.0).collect())
+        }
     }
 
     pub fn make_timeout(&self) -> Result<Option<Timeout<B>>, HotstuffError> {
@@ -266,6 +330,27 @@ impl<B: BlockT, C: AuxStore + HeaderBackend<B>> ConsensusState<B, C> {
         Some(vote)
     }
 
+    pub fn make_commit_qc(&self, qc: QC<B>) -> Option<CommitQC<B>> {
+        let (index, authority_id) = match self.find_authority(qc.view) {
+            Some(r) => r,
+            None => return None,
+        };
+        let mut commit_qc = CommitQC::<B>::new(qc, authority_id.clone());
+
+        commit_qc.signature = self
+            .keystore
+            .sign_with(
+                AuthorityId::ID,
+                AuthorityId::CRYPTO_ID,
+                authority_id.as_slice(),
+                &extend_message(index, commit_qc.digest().as_ref()),
+            )
+            .ok()?
+            .and_then(|data| AuthoritySignature::try_from(data).ok());
+
+        Some(commit_qc)
+    }
+
     pub fn make_peer_authority(&self, peer_id: String) -> Option<PeerAuthority<B>> {
         if self.local_authority_ids.is_empty() { return None; }
         let author_id = self.local_authority_ids[0].clone();
@@ -331,7 +416,7 @@ impl<B: BlockT, C: AuxStore + HeaderBackend<B>> ConsensusState<B, C> {
             }
             None => return Err(HotstuffError::Other(format!("can't find authorities to verify proposal {}", proposal.view))),
         }
-        proposal.verify(self.authority_list(proposal.view)?)?;
+        proposal.verify(self.authority_list(proposal.view)?, self.authority_list(proposal.qc.view)?)?;
         Ok(())
     }
 

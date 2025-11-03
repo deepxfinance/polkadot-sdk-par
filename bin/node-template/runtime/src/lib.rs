@@ -202,6 +202,7 @@ impl pallet_hotstuff::Config for Runtime {
 
 	type DisabledValidators = ();
 	type MaxAuthorities = ConstU32<32>;
+	type AuthorityApplyDelay = ConstU32<3>;
 	type AllowMultipleBlocksPerSlot = ConstBool<false>;
 
 	type WeightInfo = ();

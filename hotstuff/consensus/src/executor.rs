@@ -295,8 +295,9 @@ where
         blocks.sort();
         let mut removes = vec![];
         for pending_block in &blocks[1..]  {
+            let mission_block = pending_block.saturating_sub(1u32.into());
             let mission = match self.missions.get(pending_block) {
-                Some(pending_mission) => match self.missions.get(&pending_block.saturating_sub(1u32.into())) {
+                Some(pending_mission) => match self.missions.get(&mission_block) {
                     Some(mission) => if pending_mission.commit.parent_commit_hash() == mission.commit.commit_hash() {
                         mission.clone()
                     } else {
@@ -309,17 +310,17 @@ where
                     },
                 },
                 None => {
-                    error!(target: LOG_TARGET, "break for no block mission {}", pending_block);
+                    error!(target: LOG_TARGET, "break for no pending block mission {pending_block}");
                     break
                 },
             };
-            self.import.lock(BlockOrigin::ConsensusBroadcast, *pending_block).await;
+            self.import.lock(BlockOrigin::ConsensusBroadcast, mission_block).await;
             let result = self.execute_mission(mission).await;
-            self.import.unlock(BlockOrigin::ConsensusBroadcast, *pending_block).await;
+            self.import.unlock(BlockOrigin::ConsensusBroadcast, mission_block).await;
             match result {
                 Ok(info) => {
                     self.oracle.update_execute_info(&info);
-                    removes.push(*pending_block);
+                    removes.push(mission_block);
                 },
                 Err(e) => {
                     debug!(target: LOG_TARGET, "ExecuteFailed: {e}");

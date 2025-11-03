@@ -252,8 +252,6 @@ impl<B: BlockT> From<(<B::Header as HeaderT>::Number, B::Hash)> for ExtrinsicBlo
 
 #[derive(Clone, Encode, Decode)]
 pub struct Payload<Block: BlockT> {
-    // /// payload base view number.
-    // pub base: ViewNumber,
     pub stage: ConsensusStage,
     pub block: ExtrinsicBlock<Block>,
     pub extrinsics: Option<Vec<Vec<Vec<Block::Extrinsic>>>>,
@@ -262,7 +260,6 @@ pub struct Payload<Block: BlockT> {
 impl<Block: BlockT> Payload<Block> {
     pub fn empty() -> Self {
         Self {
-            // base: 0,
             stage: ConsensusStage::Commit,
             block: ExtrinsicBlock::empty(),
             extrinsics: None,
@@ -284,13 +281,11 @@ impl<Block: BlockT> Payload<Block> {
     pub fn next(&self) -> Option<Self> {
         match &self.stage {
             ConsensusStage::Prepare => Some(Self {
-                // base: self.base,
                 stage: ConsensusStage::PreCommit,
                 block: self.block.clone(),
                 extrinsics: None,
             }),
             ConsensusStage::PreCommit => Some(Self {
-                // base: self.base,
                 stage: ConsensusStage::Commit,
                 block: self.block.clone(),
                 extrinsics: None,
@@ -305,9 +300,6 @@ impl<Block: BlockT> Payload<Block> {
         {
             return false;
         }
-        // if prepare.base != precommit.base || precommit.base != precommit.base {
-        //     return false;
-        // }
         if prepare.block != precommit.block || precommit.block != precommit.block {
             return false;
         }
@@ -383,7 +375,7 @@ impl<Block: BlockT> Proposal<Block> {
         <<Block::Header as HeaderT>::Hashing as HashT>::hash_of(&data)
     }
 
-    pub fn verify(&self, authorities: &AuthorityList) -> Result<(), HotstuffError> {
+    pub fn verify(&self, authorities: &AuthorityList, qc_authorities: &AuthorityList) -> Result<(), HotstuffError> {
         let (index, _) = find_authority_index(authorities, &self.author)
             .ok_or(HotstuffError::UnknownAuthority(self.author.to_owned()))?;
         let message =  extend_message(index, self.digest().as_ref());
@@ -394,7 +386,7 @@ impl<Block: BlockT> Proposal<Block> {
             Ok(())
         })?;
 
-        self.qc.verify(authorities)
+        self.qc.verify(qc_authorities)
     }
 
     pub fn parent_hash(&self) -> Block::Hash {
@@ -405,7 +397,6 @@ impl<Block: BlockT> Proposal<Block> {
 /// Quorum certificate for a block.
 #[derive(Debug, Clone, Encode, Decode)]
 pub struct QC<Block: BlockT> {
-    // pub base: ViewNumber,
     pub view: ViewNumber,
     /// proposal hash.
     pub proposal_hash: Block::Hash,
@@ -451,7 +442,6 @@ impl<Block: BlockT> QC<Block> {
 impl<Block: BlockT> Default for QC<Block> {
     fn default() -> Self {
         Self {
-            // base: 0,
             view: 0,
             proposal_hash: BlockCommit::<Block>::empty().commit_hash(),
             signature: AggregateSignature::default(),
@@ -466,6 +456,37 @@ impl<Block: BlockT> PartialEq for QC<Block> {
         self.proposal_hash == other.proposal_hash
             && self.view == other.view
             && self.stage == other.stage
+    }
+}
+
+/// Commit Quorum certificate for a block.
+#[derive(Debug, Clone, Encode, Decode)]
+pub struct CommitQC<Block: BlockT> {
+    pub qc: QC<Block>,
+    pub author: AuthorityId,
+    pub signature: Option<AuthoritySignature>,
+}
+
+impl<Block: BlockT> CommitQC<Block> {
+    pub fn new(qc: QC<Block>, author: AuthorityId) -> Self {
+        Self { author, qc, signature: None }
+    }
+
+    pub fn digest(&self) -> Block::Hash {
+        self.qc.proposal_hash
+    }
+
+    pub fn verify(&self, authorities: &AuthorityList) -> Result<(), HotstuffError> {
+        let (index, _) = find_authority_index(authorities, &self.author)
+            .ok_or(HotstuffError::UnknownAuthority(self.author.to_owned()))?;
+        let message = extend_message(index, self.digest().as_ref());
+        self.signature.as_ref().ok_or(HotstuffError::NullSignature).and_then(|signature| {
+            if !AuthorityPair::verify(signature, message, &self.author) {
+                return Err(HotstuffError::InvalidSignature(self.author.to_owned()));
+            }
+            Ok(())
+        })?;
+        self.qc.verify(authorities)
     }
 }
 
@@ -587,8 +608,10 @@ impl<Block: BlockT> ProposalRequest<Block> {
 pub enum ConsensusMessage<B: BlockT> {
     Greeting(PeerAuthority<B>),
     GetProposal(ProposalRequest<B>),
+    ResponseProposal(Vec<Proposal<B>>),
     Propose(Proposal<B>),
     Vote(Vote<B>),
+    CommitQC(CommitQC<B>),
     Timeout(Timeout<B>),
     TC(TC<B>),
     SyncRequest(B::Hash, AuthorityId),
@@ -626,8 +649,6 @@ impl<Block: BlockT> BlockClaim<Block> {
 
 #[derive(Debug, Clone, Encode, Decode)]
 pub struct BlockCommit<B: BlockT> {
-    // /// consensus base on the view for authority list.
-    // base: ViewNumber,
     /// parent block commit hash
     parent_commit: B::Hash,
     view: ViewNumber,
@@ -640,7 +661,6 @@ pub struct BlockCommit<B: BlockT> {
 impl<B: BlockT> BlockCommit<B> {
     pub fn empty() -> Self {
         Self {
-            // base: Default::default(),
             parent_commit: Default::default(),
             view: Default::default(),
             extrinsic_block: ExtrinsicBlock::empty(),
@@ -649,10 +669,6 @@ impl<B: BlockT> BlockCommit<B> {
             timestamp: Default::default(),
         }
     }
-
-    // pub fn base(&self) -> ViewNumber {
-    //     self.base
-    // }
 
     pub fn parent_commit_hash(&self) -> B::Hash {
         self.parent_commit
@@ -684,7 +700,6 @@ impl<B: BlockT> BlockCommit<B> {
             return None;
         }
         let block_commit = BlockCommit {
-            // base: commit.1.base,
             parent_commit: prepare.0.qc.proposal_hash,
             view: commit.1.view,
             extrinsic_block: commit.0.payload.block.clone(),
@@ -708,7 +723,6 @@ impl<B: BlockT> BlockCommit<B> {
             return Err(HotstuffError::VerifyClaim(format!("Incorrect block {block_number} extrinsics_root: {extrinsics_root}/{}", self.extrinsics_root()).into()));
         }
         let commit_qc: QC<B> = QC {
-            // base: self.base,
             view: self.view,
             proposal_hash: self.commit_hash(),
             signature: self.signature.clone(),

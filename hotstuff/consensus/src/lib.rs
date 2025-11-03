@@ -270,11 +270,11 @@ pub fn find_pre_digest<B: BlockT, Signature: Codec>(
 }
 
 /// Find all ConsensusLog digests from header.
-pub fn find_consensus_logs<B: BlockT, AuthorityId: Codec>(header: &B::Header) -> Vec<ConsensusLog<AuthorityId>> {
+pub fn find_consensus_logs<B: BlockT, AuthorityId: Codec>(header: &B::Header) -> Vec<ConsensusLog<AuthorityId, NumberFor<B>>> {
     header.digest()
         .logs()
         .iter()
-        .filter_map(|log| log.consensus_try_to::<ConsensusLog<AuthorityId>>(&HOTSTUFF_ENGINE_ID))
+        .filter_map(|log| log.consensus_try_to::<ConsensusLog<AuthorityId, NumberFor<B>>>(&HOTSTUFF_ENGINE_ID))
         .collect()
 }
 

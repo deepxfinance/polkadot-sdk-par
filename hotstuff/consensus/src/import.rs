@@ -206,17 +206,27 @@ where
 						block.fork_choice = Some(ForkChoiceStrategy::Custom(true));
 					}
 					if let Some(commit) = block_commit {
+						let mut authorities_updated = false;
 						for consensus_log in find_consensus_logs::<Block, RuntimeAuthorityId>(&header) {
-							if let ConsensusLog::AuthoritiesChange(authorities) = consensus_log {
-								let authority_list = authorities.into_iter().map(|a| (a.into(), 0)).collect();
-								self.persistent_data.authority_set.inner().update_authorities_change(commit.view(), commit.block_number(), authority_list);
-								crate::aux_schema::update_authority_set::<Block, _, _>(
-									&self.persistent_data.authority_set.inner(),
-									|insert| self.inner.insert_aux(insert, []),
-								)
-									.map_err(|e| ConsensusError::ClientImport(e.to_string()))?;
-								break;
+							match consensus_log {
+								ConsensusLog::AuthoritiesPending(authorities, target_block) => {
+									let authority_list = authorities.into_iter().map(|a| (a.into(), 0)).collect();
+									self.persistent_data.authority_set.inner().update_pending_authorities(target_block, authority_list);
+								}
+								ConsensusLog::AuthoritiesChange(authorities) => {
+									let authority_list = authorities.into_iter().map(|a| (a.into(), 0)).collect();
+									self.persistent_data.authority_set.inner().update_authorities_change(commit.view(), commit.block_number(), authority_list);
+									authorities_updated = true;
+								}
+								_ => {}
 							}
+						}
+						if authorities_updated {
+							crate::aux_schema::update_authority_set::<Block, _, _>(
+								&self.persistent_data.authority_set.inner(),
+								|insert| self.inner.insert_aux(insert, []),
+							)
+								.map_err(|e| ConsensusError::ClientImport(e.to_string()))?;
 						}
 					}
 					let result = (&*self.inner).import_block(block).await;

@@ -118,8 +118,10 @@ impl<B: BlockT> sc_network_gossip::Validator<B> for GossipValidator<B> {
 			let message_vew = match &message {
 				ConsensusMessage::Greeting(_) => return ValidationResult::ProcessAndDiscard(ConsensusMessage::<B>::gossip_topic()),
 				ConsensusMessage::GetProposal(_) => return ValidationResult::ProcessAndDiscard(ConsensusMessage::<B>::gossip_topic()),
+				ConsensusMessage::ResponseProposal(_) => return ValidationResult::ProcessAndDiscard(ConsensusMessage::<B>::gossip_topic()),
 				ConsensusMessage::Propose(proposal) => proposal.view,
 				ConsensusMessage::Vote(vote) => vote.view,
+				ConsensusMessage::CommitQC(commit_qc) => commit_qc.qc.view,
 				ConsensusMessage::Timeout(timeout) => timeout.view,
 				ConsensusMessage::TC(tc) => tc.view,
 				_ => 0,
@@ -131,7 +133,7 @@ impl<B: BlockT> sc_network_gossip::Validator<B> for GossipValidator<B> {
 			}
 			// Decide message result
 			return match message {
-				ConsensusMessage::Propose(_) | ConsensusMessage::Vote(_)
+				ConsensusMessage::Propose(_) | ConsensusMessage::Vote(_) | ConsensusMessage::CommitQC(_)
 				| ConsensusMessage::Timeout(_) | ConsensusMessage::TC(_) =>
 					ValidationResult::ProcessAndDiscard(ConsensusMessage::<B>::gossip_topic()),
 				_ => ValidationResult::Discard,
@@ -147,6 +149,7 @@ impl<B: BlockT> sc_network_gossip::Validator<B> for GossipValidator<B> {
 				let message_vew = match message {
 					ConsensusMessage::Propose(proposal) => proposal.view,
 					ConsensusMessage::Vote(vote) => vote.view,
+					ConsensusMessage::CommitQC(commit_qc) => commit_qc.qc.view,
 					ConsensusMessage::Timeout(timeout) => timeout.view,
 					ConsensusMessage::TC(tc) => tc.view,
 					_ => 0,
@@ -175,7 +178,9 @@ impl<B: BlockT> sc_network_gossip::Validator<B> for GossipValidator<B> {
 				let message_vew = match message {
 					ConsensusMessage::Greeting(_) => return true,
 					ConsensusMessage::GetProposal(_) => return true,
+					ConsensusMessage::ResponseProposal(_) => return true,
 					ConsensusMessage::Propose(proposal) => proposal.view,
+					ConsensusMessage::CommitQC(commit_qc) => commit_qc.qc.view,
 					ConsensusMessage::Vote(vote) => vote.view,
 					ConsensusMessage::Timeout(timeout) => timeout.view,
 					ConsensusMessage::TC(tc) => tc.view,

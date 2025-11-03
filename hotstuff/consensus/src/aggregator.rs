@@ -138,7 +138,6 @@ impl<Engine: EngineBLS> QCMaker<Engine> {
 		}
 		let signature = <&DistinctMessages<Engine> as Signed>::signature(&&aggregator);
 		Ok(Some(QC::<B> {
-			base: vote.base,
 			proposal_hash: vote.proposal_hash,
 			view: vote.view,
 			stage: vote.stage,

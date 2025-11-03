@@ -29,7 +29,7 @@ use frame_support::{
 use hotstuff_primitives::{AuthorityIndex, ConsensusLog, Slot, HOTSTUFF_ENGINE_ID};
 use log;
 use frame_support::dispatch::DispatchResultWithPostInfo;
-use frame_system::pallet_prelude::OriginFor;
+use frame_system::pallet_prelude::{BlockNumberFor, OriginFor};
 use sp_runtime::{
 	generic::DigestItem,
 	traits::{IsMember, Member, SaturatedConversion, Saturating, Zero},
@@ -205,17 +205,21 @@ pub mod pallet {
 			new_authorities: Vec<T::AuthorityId>,
 		) -> DispatchResultWithPostInfo {
 			ensure_root(origin)?;
-			let last_authorities = Self::authorities();
-			if last_authorities != new_authorities {
-				if new_authorities.len() as u32 > T::MaxAuthorities::get() {
-					log::warn!(
-						target: LOG_TARGET,
-						"next authorities list larger than {}, truncating",
-						T::MaxAuthorities::get(),
-					);
+			if Self::pending_authorities().is_some() {
+				log::warn!(target: LOG_TARGET,"pending authorities not applied, this will not make change");
+			} else {
+				let last_authorities = Self::authorities();
+				if last_authorities != new_authorities {
+					if new_authorities.len() as u32 > T::MaxAuthorities::get() {
+						log::warn!(
+							target: LOG_TARGET,
+							"next authorities list larger than {}, truncating",
+							T::MaxAuthorities::get(),
+						);
+					}
+					let bounded = <BoundedVec<_, T::MaxAuthorities>>::truncate_from(new_authorities);
+					Self::set_pending_authorities(bounded);
 				}
-				let bounded = <BoundedVec<_, T::MaxAuthorities>>::truncate_from(new_authorities);
-				Self::set_pending_authorities(bounded);
 			}
 			Ok(().into())
 		}
@@ -230,7 +234,7 @@ impl<T: pallet::Config> Pallet<T> {
 			return;
 		}
 
-		let target_block = frame_system::<T>::block_number().saturating_add(T::AuthorityApplyDelay::get().saturated_into());
+		let target_block = <frame_system::Pallet<T>>::block_number().saturating_add(T::AuthorityApplyDelay::get().saturated_into());
 		<PendingAuthorities<T>>::put((new.clone(), target_block.clone()));
 
 		let log = DigestItem::Consensus(
@@ -257,7 +261,7 @@ impl<T: pallet::Config> Pallet<T> {
 
 		let log = DigestItem::Consensus(
 			HOTSTUFF_ENGINE_ID,
-			ConsensusLog::AuthoritiesChange(new.into_inner()).encode(),
+			ConsensusLog::<T::AuthorityId, BlockNumberFor<T>>::AuthoritiesChange(new.into_inner()).encode(),
 		);
 		<frame_system::Pallet<T>>::deposit_log(log);
 	}
@@ -394,7 +398,7 @@ impl<T: pallet::Config> OneSessionHandler<T::AccountId> for Pallet<T> {
 	fn on_disabled(i: u32) {
 		let log = DigestItem::Consensus(
 			HOTSTUFF_ENGINE_ID,
-			ConsensusLog::<T::AuthorityId>::OnDisabled(i as AuthorityIndex).encode(),
+			ConsensusLog::<T::AuthorityId, BlockNumberFor<T>>::OnDisabled(i as AuthorityIndex).encode(),
 		);
 
 		<frame_system::Pallet<T>>::deposit_log(log);

@@ -51,6 +51,7 @@ use sp_runtime::traits::Zero;
 use sp_runtime::transaction_validity::TransactionSource;
 use sp_timestamp::Timestamp;
 use crate::executor::NewBlockMission;
+use crate::message::CommitQC;
 use crate::oracle::HotsOracle;
 use crate::state::ConsensusState;
 
@@ -231,6 +232,11 @@ where
                                 trace!(target: CLIENT_LOG_TARGET, "[handle_proposal_request({from})] has error {e:?}");
                             }
                         },
+                        ConsensusMessage::ResponseProposal(proposals) => {
+                            if let Err(e) = self.handle_proposal_response(&proposals).await {
+                                trace!(target: CLIENT_LOG_TARGET, "[handle_proposal_response({from})] has error {e:?}");
+                            }
+                        },
                         ConsensusMessage::BlockImport(header) => {
                             if let Err(e) = self.handle_block_import(&header).await {
                                 debug!(target: CLIENT_LOG_TARGET, "[handle_block_import({from})] has error {e:?}");
@@ -244,6 +250,11 @@ where
                         ConsensusMessage::Vote(vote) => {
                             if let Err(e) = self.handle_vote(&vote, local).await{
                                 trace!(target: CLIENT_LOG_TARGET, "[handle_vote({from})] has error {e:?}");
+                            }
+                        },
+                        ConsensusMessage::CommitQC(qc) => {
+                            if let Err(e) = self.handle_commit_qc(&qc, local).await{
+                                trace!(target: CLIENT_LOG_TARGET, "[handle_commit_qc({from})] has error {e:?}");
                             }
                         },
                         ConsensusMessage::Timeout(timeout) => {
@@ -277,7 +288,7 @@ where
         self.state.increase_last_voted_view();
         let message = ConsensusMessage::Timeout(timeout.clone());
 
-        self.network.send_to_authorities(self.state.authorities(self.state.view())?, message.encode())?;
+        self.network.send_to_authorities(self.state.authorities(self.state.view(), true)?, message.encode())?;
 
         if let Err(e) = self.consensus_msg_tx.send((true, ConsensusMessage::Timeout(timeout))).await {
             warn!(target: CLIENT_LOG_TARGET, "$L$ handle_local_timer. Can't inform self `Timeout` for {e:?}.");
@@ -340,6 +351,7 @@ where
                 self.synchronizer.get_proposals(from.clone(), to.clone())?
             }
         };
+        if proposals.is_empty() { return Ok(()); }
         trace!(
             target: CLIENT_LOG_TARGET,
             "~~ handle_proposal_request. Response {} proposals to {}({:?}).",
@@ -347,8 +359,18 @@ where
             request.authority,
             proposals.iter().map(|p| p.view).collect::<Vec<_>>(),
         );
+        self.network.send_to_authorities(vec![&request.authority], ConsensusMessage::ResponseProposal(proposals).encode())?;
+        Ok(())
+    }
+
+    pub async fn handle_proposal_response(&mut self, proposals: &Vec<Proposal<B>>) -> Result<(), HotstuffError> {
         for proposal in proposals {
-            self.network.send_to_authorities(vec![&request.authority], ConsensusMessage::Propose(proposal).encode())?;
+            if self.synchronizer.get_proposal(ProposalKey::digest(proposal.digest()))?.is_some() {
+                continue;
+            }
+            self.state.verify_proposal(&proposal)?;
+            self.synchronizer.save_proposal(&proposal)?;
+            // TODO use proposals.
         }
         Ok(())
     }
@@ -357,8 +379,16 @@ where
         if let Some(commit) = find_block_commit::<B>(header) {
             for consensus_log in find_consensus_logs::<B, RuntimeAuthorityId>(header) {
                 match consensus_log {
+                    ConsensusLog::AuthoritiesPending(authorities, target_block) => {
+                        debug!(target: CLIENT_LOG_TARGET, "~~ handle_block_import. change_pending_authorities block {target_block} view {} authorities: {}", commit.view(), authorities.len());
+                        let authority_list = authorities.into_iter().map(|a| (a.into(), 0)).collect();
+                        if let Err(e) = self.state.change_pending_authorities(target_block, authority_list) {
+                            warn!(target: CLIENT_LOG_TARGET, "~~ handle_block_import. change_pending_authorities block {} failed: {e:?}", header.number());
+                        }
+                    }
                     ConsensusLog::AuthoritiesChange(authorities) => {
                         // changes authorities list.
+                        debug!(target: CLIENT_LOG_TARGET, "~~ handle_block_import. change_authorities block {} view {} authorities: {}", commit.block_number(), commit.view(), authorities.len());
                         let authority_list = authorities.into_iter().map(|a| (a.into(), 0)).collect();
                         if let Err(e) = self.state.change_authorities(commit.view(), *header.number(), authority_list) {
                             warn!(target: CLIENT_LOG_TARGET, "~~ handle_block_import. change_authorities block {} failed: {e:?}", header.number());
@@ -422,7 +452,6 @@ where
         }
         if !local {
             self.state.verify_proposal(&proposal)?;
-            proposal.qc.verify(self.state.authority_list(proposal.qc.view)?)?;
         }
         self.synchronizer.save_proposal(&proposal)?;
         if !local {
@@ -469,10 +498,15 @@ where
 
         if let Some(vote) = self.state.make_vote(&proposal) {
             trace!(target: CLIENT_LOG_TARGET, "~~ handle proposal({from}). make vote. view {}", vote.view);
-            let vote_message = ConsensusMessage::Vote(vote);
-            let leader = self.state.view_leader(proposal.payload.base, self.state.view + 1)
-                .ok_or(HotstuffError::Other(format!("No next leader for view {}", self.state.view + 1)))?;
-            self.network.send_to_authorities(vec![&leader], vote_message.encode())?;
+            if self.state.is_leader_for(self.state.view + 1) {
+                if let Err(e) = self.consensus_msg_tx.send((true, ConsensusMessage::Vote(vote.clone()))).await {
+                    warn!(target: CLIENT_LOG_TARGET, "~~ vote_for_proposal({from}). Can't inform self `Vote` for {e:?}.");
+                }
+            } else {
+                let leader = self.state.view_leader(self.state.view + 1)
+                    .ok_or(HotstuffError::Other(format!("No next leader for view {}", self.state.view + 1)))?;
+                self.network.send_to_authorities(vec![&leader], ConsensusMessage::Vote(vote).encode())?;
+            }
         }
         Ok(())
     }
@@ -493,15 +527,42 @@ where
 
         if let Some(mut qc) = self.state.add_vote(vote)? {
             trace!(target: CLIENT_LOG_TARGET, "~~ handle_vote({from} self.view {}). QC.view {}, proposal_hash {}", self.state.view(), qc.view, qc.proposal_hash);
-            if self.state.is_leader_for(qc.base, self.state.view().max(qc.view + 1)) {
+            if self.state.is_leader_for(self.state.view().max(qc.view + 1)) {
                 self.handle_qc_timestamp(&mut qc).await?;
+                if qc.stage.finish() {
+                    if let Some(commit_qc) = self.state.make_commit_qc(qc.clone()) {
+                        let message = ConsensusMessage::CommitQC(commit_qc);
+                        self.network.gossip_engine.lock().gossip_message(ConsensusMessage::<B>::gossip_topic(), message.encode(), false);
+                    }
+                }
                 self.trigger_qc_mission(&qc, true).await?;
                 self.update_by_qc(&qc);
-                self.generate_proposal(None).await?;
+
+                if self.state.is_leader() {
+                    self.generate_proposal(None).await?;
+                }
             }
         }
 
         Ok(())
+    }
+
+    pub async fn handle_commit_qc(&mut self, commit_qc: &CommitQC<B>, local: bool) -> Result<(), HotstuffError> {
+        let from = if local { "local" } else { "network" };
+        trace!(target: CLIENT_LOG_TARGET, "~~ handle_commit_qc({from} self.view {}). view {}, hash {}, author {}",
+            self.state.view(),
+            commit_qc.qc.view,
+            commit_qc.qc.proposal_hash,
+            commit_qc.author,
+        );
+        commit_qc.verify(self.state.authority_list(commit_qc.qc.view)?)?;
+        self.trigger_qc_mission(&commit_qc.qc, local).await?;
+        self.update_by_qc(&commit_qc.qc);
+        if self.state.is_leader() {
+            self.generate_proposal(None).await?;
+        }
+        Ok(())
+
     }
 
     fn update_by_qc(&mut self, qc: &QC<B>) {
@@ -522,7 +583,7 @@ where
             None => {
                 if let Some(req) = self.state.make_proposal_request(ProposalReq::Keys(vec![ProposalKey::digest(qc.proposal_hash)])) {
                     let message = ConsensusMessage::GetProposal(req);
-                    self.network.send_to_authorities(self.state.authorities(self.state.view)?, message.encode())?;
+                    self.network.send_to_authorities(self.state.authorities(self.state.view, false)?, message.encode())?;
                 }
                 return Err(HotstuffError::GetProposal(format!("No proposal for commit qc of proposal {}, skip for can't check timestamp", qc.proposal_hash)));
             }
@@ -585,7 +646,7 @@ where
             None => {
                 if let Some(req) = self.state.make_proposal_request(ProposalReq::Keys(vec![ProposalKey::digest(qc.proposal_hash)])) {
                     let message = ConsensusMessage::GetProposal(req);
-                    self.network.send_to_authorities(self.state.authorities(self.state.view())?, message.encode())?;
+                    self.network.send_to_authorities(self.state.authorities(self.state.view(), false)?, message.encode())?;
                 }
                 debug!(target: CLIENT_LOG_TARGET, "Can't trigger qc mission for no proposal of qc: {}", qc.view);
                 return Ok(());
@@ -618,6 +679,7 @@ where
                         commit.view(),
                         grandpa.qc.view,
                     );
+                    self.state.authority.on_block_commit(commit.view(), commit.block_number());
                     let extrinsics = grandpa.payload.extrinsics.clone().unwrap();
                     let mission = ExecutorMission::Consensus(NewBlockMission {
                         commit: commit.clone(),
@@ -706,7 +768,7 @@ where
                 if encoded_message.len() > self.network_notification_limit {
                     warn!(target: CLIENT_LOG_TARGET, "~~ generate_proposal. Proposal {} message exceed max notification limit {}/{}", proposal.view, encoded_message.len(), self.network_notification_limit);
                 };
-                self.network.send_to_authorities(self.state.authorities(self.state.view())?, encoded_message)?;
+                self.network.send_to_authorities(self.state.authorities(self.state.view(), true)?, encoded_message)?;
 
                 if let Err(e) = self.consensus_msg_tx.send((true, ConsensusMessage::Propose(proposal))).await {
                     warn!(target: CLIENT_LOG_TARGET, "~~ generate_proposal. Can't inform self of `Propose` for {e:?}.");
@@ -806,7 +868,6 @@ where
         extrinsic_data.extend(single.iter().map(|e| e.encode()).collect::<Vec<Vec<u8>>>());
         (
             Payload {
-                base: self.state.best_view,
                 stage: ConsensusStage::Prepare,
                 block: (block_number, extrinsics_data_root::<<B::Header as HeaderT>::Hashing>(extrinsic_data)).into(),
                 extrinsics: Some(vec![multi, vec![single]]),

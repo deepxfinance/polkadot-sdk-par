@@ -57,6 +57,7 @@ impl<N: Ord + Clone> AuthoritySetChanges<N> {
 #[derive(Debug, Clone, PartialEq, Encode, Decode)]
 pub struct AuthoritySet<N> {
     pub current_authorities: AuthorityList,
+    pub pending_authority_set: Option<(N, AuthorityList)>,
     pub authority_set_changes: AuthoritySetChanges<N>,
 }
 
@@ -86,24 +87,19 @@ where
 
         Some(AuthoritySet {
             current_authorities: initial,
+            pending_authority_set: None,
             authority_set_changes: AuthoritySetChanges::empty(),
         })
     }
 
-    /// Create a new authority set.
-    #[allow(unused)]
-    pub(crate) fn new(
-        authorities: AuthorityList,
-        authority_set_changes: AuthoritySetChanges<N>,
-    ) -> Option<Self> {
-        if Self::invalid_authority_list(&authorities) {
-            return None;
+    pub fn update_pending_authorities(&mut self, target_block: N, authorities: AuthorityList) {
+        if Self::invalid_authority_list(&authorities) { return; }
+        if let Some((_, last_block)) = self.authority_set_changes.0.last() {
+            if target_block <= *last_block {
+                return;
+            }
         }
-
-        Some(AuthoritySet {
-            current_authorities: authorities,
-            authority_set_changes,
-        })
+        self.pending_authority_set = Some((target_block, authorities));
     }
 
     pub fn update_authorities_change(&mut self, view: u64, block: N, authorities: AuthorityList) {
@@ -113,8 +109,31 @@ where
                 return;
             }
         }
+        if let Some((b, a)) = self.pending_authority_set.clone() {
+            if block >= b {
+                if block == b && a != authorities {
+                    log::error!("Pending authorities not match actual authorities applied");
+                }
+                self.pending_authority_set = None;
+            }
+        }
         self.authority_set_changes.0.push((view, block));
         self.current_authorities = authorities;
+    }
+
+    pub fn authorities_for_block(&self, block: N) -> Option<&AuthorityList> {
+        if let Some((b, authorities)) = self.pending_authority_set.as_ref() {
+            if block > *b { return Some(authorities); }
+        }
+        if let Some((_, last_change_block)) = self.authority_set_changes.0.last().as_ref() {
+            if self.authority_set_changes.0.is_empty() || block > *last_change_block {
+                Some(&self.current_authorities)
+            } else {
+                None
+            }
+        } else {
+            Some(&self.current_authorities)
+        }
     }
 
     pub fn authorities_for_view(&self, view: u64) -> Option<&AuthorityList> {
