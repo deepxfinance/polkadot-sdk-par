@@ -32,7 +32,7 @@ sc-telemetry = { path = "../../client/telemetry" }
 sc-client-api = { path = "../../client/api" }
 sc-consensus = { path = "../../client/consensus/common" }
 sc-consensus-slots = { path = "../../client/consensus/slots" }
-sc-keystore = { path = "../../client/keystore" }
+sc-keystore = { path = "../../client/keystore", features = ["bls-experimental"] }
 sc-network = { path = "../../client/network" }
 sc-network-sync = { path = "../../client/network/sync" }
 sc-network-common = { path = "../../client/network/common" }

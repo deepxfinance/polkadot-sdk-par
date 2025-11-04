@@ -28,7 +28,6 @@ sc-executor = { version = "0.10.0-dev", path = "../../../client/executor" }
 sc-network = { version = "0.10.0-dev", path = "../../../client/network" }
 sc-service = { version = "0.10.0-dev", path = "../../../client/service" }
 sc-telemetry = { version = "4.0.0-dev", path = "../../../client/telemetry" }
-sc-keystore = { version = "4.0.0-dev", path = "../../../client/keystore", features = ["bls-experimental"] }
 sc-transaction-pool = { version = "4.0.0-dev", path = "../../../client/transaction-pool" }
 sc-transaction-pool-api = { version = "4.0.0-dev", path = "../../../client/transaction-pool/api" }
 sc-statement-store = { version = "4.0.0-dev", path = "../../../client/statement-store" }
