@@ -129,11 +129,11 @@ impl<B: BlockT> ExecutionOracle<B> {
             let (pre_execute_time_per_tx, pre_weight) = *self.execute_time_per_tx.lock().unwrap();
             if weight > 0 {
                 let mut total_weight = (pre_weight + weight) as u128;
-                let new_exe_cute_time_per_tx = ave_execute_time.as_micros() * weight as u128 / total_weight
-                    + pre_execute_time_per_tx.as_micros() * pre_weight as u128 / total_weight;
+                let new_exe_cute_time_per_tx = ((((ave_execute_time.as_micros() * weight as u128) << 20)
+                    + ((pre_execute_time_per_tx.as_micros() * pre_weight as u128)  << 20)) / total_weight) >> 20;
                 let new_avg_execute_time = Duration::from_micros(new_exe_cute_time_per_tx as u64);
                 // limit weight
-                if total_weight >> 31 > 0 {
+                if total_weight >> 20 > 0 {
                     total_weight = total_weight >> 1;
                 }
                 *self.execute_time_per_tx.lock().unwrap() = (new_avg_execute_time, total_weight as usize);
