@@ -181,7 +181,7 @@ where
         let hash = block.header.hash();
         let parent_hash = *block.header.parent_hash();
         let timestamp = *find_block_commit::<B>(&block.header)
-            .ok_or(format!("Block {}:{} have not commit", block.header.number(), block.header.hash()))?
+            .ok_or(format!("Block #{}:{} have not commit", block.header.number(), block.header.hash()))?
             .commit_time();
 
         let create_inherent_data_providers = self

@@ -194,7 +194,7 @@ where
 					if let Some((pre, pre_commit)) = reorg {
 						log::warn!(
 							target: LOG_TARGET,
-							"Try replace best block {}:{}({}) -> {}:{}({})",
+							"Try replace best block #{}:{}({}) -> #{}:{}({})",
 							pre.number(),
 							pre.hash(),
 							pre_commit.view(),
@@ -293,7 +293,7 @@ where
         if let Some(receiver) = receiver {
             let _ = receiver.await;
         } else {
-			log::trace!(target: LOG_TARGET, "{origin:?} lock block {number}");
+			log::trace!(target: LOG_TARGET, "{origin:?} lock block #{number}");
 		}
     }
 
@@ -306,9 +306,9 @@ where
 				return;
 			}
             if let Err(_) = notification.notifier.send(()) {
-                log::warn!(target: LOG_TARGET, "notification for block {number} execution result failed");
+                log::warn!(target: LOG_TARGET, "notification for block #{number} execution result failed");
             }
-			log::trace!(target: LOG_TARGET, "{origin:?} unlock block {number}");
+			log::trace!(target: LOG_TARGET, "{origin:?} unlock block #{number}");
         }
     }
 }
@@ -355,7 +355,7 @@ where
 	) -> Result<ImportResult, Self::Error> {
 		log::debug!(
 			target: LOG_TARGET,
-			"ImportBlock({:?}): {}(parent: {:?}, body: {:?}, digests: {}, post_digests: {}, justifications: {:?}, finalized: {}, action: {})",
+			"ImportBlock({:?}): #{}(parent: {:?}, body: {:?}, digests: {}, post_digests: {}, justifications: {:?}, finalized: {}, action: {})",
 			block.origin,
 			block.header.number(),
 			block.header.parent_hash(),
@@ -411,10 +411,10 @@ where
 		let _res: Result<(), sp_blockchain::Error> = self.inner.finalize_block(hash, None, true);
 		match _res {
 			Ok(()) => {
-				println!("🔥💃🏻 success finalize_block {_number:?}, block_hash: {hash:?}");
+				println!("🔥💃🏻 success finalize_block #{_number:?}, block_hash: {hash:?}");
 			},
 			Err(err) => {
-				println!("🔥💃🏻 finalize_block {_number:?}, block_hash: {hash:?} error: {:?}", err);
+				println!("🔥💃🏻 finalize_block #{_number:?}, block_hash: {hash:?} error: {:?}", err);
 			},
 		}
 

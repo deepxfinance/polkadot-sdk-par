@@ -13,11 +13,12 @@ use sp_blockchain::HeaderBackend;
 use sp_core::{Decode, Encode};
 use sp_runtime::traits::Block as BlockT;
 
-use crate::{message::Proposal, primitives::{HotstuffError, ViewNumber}, store::Store, CLIENT_LOG_TARGET};
-use crate::message::ProposalKey;
+use crate::{message::Proposal, primitives::HotstuffError, store::Store, CLIENT_LOG_TARGET};
+use crate::message::{CommitQC, ProposalKey, Round};
 
-pub const HIGH_VIEW_KEY: &str = "hots_high_view";
-pub const VIEW_PREFIX: &str = "hots_view";
+pub const HIGH_ROUND_KEY: &str = "hots_high_round";
+pub const ROUND_PREFIX: &str = "hots_round";
+pub const COMMIT_QC: &str = "hots_commit_qc";
 
 pub struct Timer {
 	delay: Interval,
@@ -45,13 +46,13 @@ impl Future for Timer {
 	}
 }
 
-pub fn view_key(view: ViewNumber) -> Vec<u8> {
-	format!("{VIEW_PREFIX}_{view}").as_bytes().to_vec()
+pub fn round_key(round: Round) -> Vec<u8> {
+	format!("{ROUND_PREFIX}_{round}").as_bytes().to_vec()
 }
 
 pub struct Synchronizer<B: BlockT, C: AuxStore + HeaderBackend<B>> {
 	store: Store<C>,
-	high_view: ViewNumber,
+	high_round: Round,
 	high_digest: B::Hash,
 }
 
@@ -62,51 +63,57 @@ where
 {
 	pub fn new(client: Arc<C>) -> Self {
 		let store = Store::new(client);
-		let (high_view, high_digest): (ViewNumber, B::Hash) = store
-			.get(HIGH_VIEW_KEY.as_ref())
+		let (high_round, high_digest): (Round, B::Hash) = store
+			.get(HIGH_ROUND_KEY.as_ref())
 			.unwrap()
 			.map(|v| Decode::decode(&mut v.as_slice()).unwrap())
 			.unwrap_or_default();
 		Self {
 			store,
-			high_view,
+			high_round,
 			high_digest,
 		}
 	}
 
-	pub fn high_view(&self) -> ViewNumber {
-		self.high_view
+	pub fn high_round(&self) -> Round {
+		self.high_round
 	}
 
 	pub fn high_digest(&self) -> B::Hash {
 		self.high_digest
 	}
 
-	fn save_high_proposal(&mut self, view: ViewNumber, digest: B::Hash) -> Result<(), HotstuffError> {
-		if view >= self.high_view {
-			if view == self.high_view {
+	fn save_high_proposal(&mut self, round: Round, digest: B::Hash) -> Result<(), HotstuffError> {
+		if round >= self.high_round {
+			if round == self.high_round {
 				// TODO should we allow same proposal cover same view?
-				log::warn!(target: CLIENT_LOG_TARGET, "Trying to cover high_proposal(view {view}) {} -> {digest}", self.high_view);
+				log::warn!(target: CLIENT_LOG_TARGET, "Trying to cover high_proposal(round {round}) {} -> {digest}", self.high_round);
 			}
 			self.store
-				.set(HIGH_VIEW_KEY.as_ref(), (view, digest).encode().as_slice())
+				.set(HIGH_ROUND_KEY.as_ref(), (round, digest).encode().as_slice())
 				.map_err(|e| HotstuffError::SaveProposal(e.to_string()))?;
-			self.high_view = view;
+			self.high_round = round;
 			self.high_digest = digest;
 		}
 		Ok(())
+	}
+
+	pub fn save_commit_qc(&mut self, qc: &CommitQC<B>) -> Result<(), HotstuffError> {
+		self.store
+			.set(COMMIT_QC.as_ref(), Encode::encode(qc).as_slice())
+			.map_err(|e| HotstuffError::SaveQC(e.to_string()))
 	}
 
 	pub fn save_proposal(&mut self, proposal: &Proposal<B>) -> Result<(), HotstuffError> {
 		let value = proposal.encode();
 		let key = proposal.digest();
 
-		trace!(target: CLIENT_LOG_TARGET, "~~ save_proposal {} {key} {} parent {}:{}", proposal.view, proposal.payload, proposal.qc.view, proposal.qc.proposal_hash);
+		trace!(target: CLIENT_LOG_TARGET, "~~ save_proposal {} {key} {} parent {}:{}", proposal.round(), proposal.payload, proposal.qc.round(), proposal.qc.proposal_hash);
 		// try save high_view and high_digest
-		self.save_high_proposal(proposal.view, key)?;
+		self.save_high_proposal(proposal.round(), key)?;
 		// save view -> digest
 		self.store
-			.set(view_key(proposal.view).as_slice(), &key.encode().as_ref())
+			.set(round_key(proposal.round()).as_slice(), &key.encode().as_ref())
 			.map_err(|e| HotstuffError::SaveProposal(e.to_string()))?;
 		// save digest -> proposal
 		self.store
@@ -122,26 +129,31 @@ where
 		let mut delete_invalid = vec![];
 		let mut delete_invalid_info = vec![];
 		if let Some(last_proposal) = start_proposal {
-			let mut view = last_proposal.view;
+			let mut round = last_proposal.round();
 			loop {
-				if let Some(proposal) = self.get_proposal(ProposalKey::View(view))? {
-					if view >= self.high_view {
+				if let Some(proposal) = self.get_proposal(ProposalKey::Round(round))? {
+					if round >= self.high_round {
 						break;
 					}
 					let digest = proposal.digest();
-					delete.push(view_key(view));
+					delete.push(round_key(round));
 					delete.push(digest.as_ref().to_vec());
-					delete_info.push(format!("{}:{}", view, digest));
-					// invalid view proposals between (view.parent_view, view)
-					for v in (proposal.qc.view + 1..view).rev() {
-						if let Some(proposal) = self.get_proposal(ProposalKey::View(v))? {
-							let digest = proposal.digest();
-							delete_invalid.push(view_key(proposal.view));
-							delete_invalid.push(digest.as_ref().to_vec());
-							delete_invalid_info.push(format!("{}:{digest}", proposal.view));
+					delete_info.push(format!("{}:{}", round, digest));
+					// invalid view proposals between (view.parent_round, round)
+					let mut inter_round = proposal.qc.round().add_one();
+					loop {
+						if inter_round >= round {
+							break;
 						}
+						if let Some(proposal) = self.get_proposal(ProposalKey::Round(inter_round))? {
+							let digest = proposal.digest();
+							delete_invalid.push(round_key(proposal.round()));
+							delete_invalid.push(digest.as_ref().to_vec());
+							delete_invalid_info.push(format!("{}:{digest}", proposal.round()));
+						}
+						inter_round = inter_round.add_one();
 					}
-					view = proposal.qc.view;
+					round = proposal.qc.round();
 				} else {
 					break;
 				}
@@ -154,21 +166,29 @@ where
 		Ok((delete_info, delete_invalid_info))
 	}
 
+	pub fn get_commit_qc(&self) -> Result<Option<CommitQC<B>>, HotstuffError> {
+		self
+			.store
+			.get(COMMIT_QC.as_ref())
+			.map(|value| value.map(|v| Decode::decode(&mut v.as_slice()).unwrap()))
+			.map_err(|e| HotstuffError::GetProposal(e.to_string()))
+	}
+
 	pub fn get_high_proposal(&self) -> Result<Option<Proposal<B>>, HotstuffError> {
 		self.get_proposal(ProposalKey::digest(self.high_digest))
 	}
 
-	pub fn get_digest(&self, view: ViewNumber) -> Result<Option<B::Hash>, HotstuffError> {
+	pub fn get_digest(&self, round: Round) -> Result<Option<B::Hash>, HotstuffError> {
 		self
 			.store
-			.get(view_key(view).as_slice())
+			.get(round_key(round).as_slice())
 			.map(|value| value.map(|v| Decode::decode(&mut v.as_slice()).unwrap()))
 			.map_err(|e| HotstuffError::GetProposal(e.to_string()))
 	}
 
 	pub fn get_proposal(&self, key: ProposalKey<B>) -> Result<Option<Proposal<B>>, HotstuffError> {
 		match key {
-			ProposalKey::View(view) => match self.get_digest(view)? {
+			ProposalKey::Round(round) => match self.get_digest(round)? {
 				Some(digest) => self.get_proposal(ProposalKey::digest(digest)),
 				None => Ok(None)
 			}
@@ -176,7 +196,7 @@ where
 				self
 					.store
 					.get(digest.as_ref())
-					.map(|value| value.map(|v| Proposal::decode(&mut v.as_slice()).unwrap()))
+					.map(|value| value.map(|v| Decode::decode(&mut v.as_slice()).unwrap()))
 					.map_err(|e| HotstuffError::GetProposal(e.to_string()))
 			}
 		}
@@ -185,7 +205,7 @@ where
 	pub fn get_proposals(&self, from: ProposalKey<B>, to: ProposalKey<B>) -> Result<Vec<Proposal<B>>, HotstuffError> {
 		let mut proposals = vec![];
 		let mut proposal_hash = match to {
-			ProposalKey::View(view) => match self.get_digest(view)? {
+			ProposalKey::Round(round) => match self.get_digest(round)? {
 				Some(digest) => digest,
 				None => return Ok(proposals),
 			},
@@ -195,7 +215,7 @@ where
 			match self.get_proposal(ProposalKey::digest(proposal_hash))? {
 				Some(proposal) => {
 					match &from {
-						ProposalKey::View(view) => if proposal.view <= *view {
+						ProposalKey::Round(round) => if proposal.round() <= *round {
 							break;
 						}
 						ProposalKey::Digest(digest) => if digest == &proposal_hash {
@@ -235,41 +255,41 @@ where
 		self.get_proposal(ProposalKey::digest(proposal.parent_hash()))
 	}
 
-	pub fn revert(&mut self, to_view: ViewNumber, to_digest: B::Hash) -> Result<(ViewNumber, B::Hash), HotstuffError> {
+	pub fn revert(&mut self, to_round: Round, to_digest: B::Hash) -> Result<(Round, B::Hash), HotstuffError> {
 		if let Some(to_proposal) = self.get_proposal(ProposalKey::digest(to_digest))? {
-			if to_proposal.view != to_view {
-				return Err(HotstuffError::Other(format!("revert incorrect to_view {to_view} with to_digest {to_digest}")));
+			if to_proposal.round() != to_round {
+				return Err(HotstuffError::Other(format!("revert incorrect to_round {to_round} with to_digest {to_digest}")));
 			}
 		}
-		let mut view = self.high_view;
+		let mut round = self.high_round;
 		let mut delete = vec![];
 		let mut insert = vec![];
 		let mut final_high_digest = B::Hash::default();
 		loop {
-			if view <= to_view {
+			if round <= to_round {
 				// update hig_view and high_digest.
-				if let Some(digest) = self.get_digest(view)? {
+				if let Some(digest) = self.get_digest(round)? {
 					final_high_digest = digest;
-					insert.push((HIGH_VIEW_KEY.as_bytes().to_vec(), (view, digest).encode()));
+					insert.push((HIGH_ROUND_KEY.as_bytes().to_vec(), (round, digest).encode()));
 					break;
-				} else if view == 0 {
+				} else if round == Round::default() {
 					// clear high_view and high_digest
-					delete.push(HIGH_VIEW_KEY.as_bytes().to_vec());
+					delete.push(HIGH_ROUND_KEY.as_bytes().to_vec());
 					break;
 				}
 			} else {
 				// delete:
 				// 1. view -> digest
 				// 2. digest -> proposal
-				if let Some(digest) = self.get_digest(view)? {
-					delete.push(view_key(view));
+				if let Some(digest) = self.get_digest(round)? {
+					delete.push(round_key(round));
 					delete.push(digest.as_ref().to_vec());
 				}
 			}
-			view = view.saturating_sub(1);
+			round = round.sub_one();
 		}
 		self.store.revert(&insert, &delete)
 			.map_err(|e| HotstuffError::Other(format!("revert delete failed for {e:?}")))?;
-		Ok((view, final_high_digest))
+		Ok((round, final_high_digest))
 	}
 }

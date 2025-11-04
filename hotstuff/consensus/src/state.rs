@@ -16,7 +16,7 @@ use hotstuff_primitives::{AuthorityIndex, ConsensusLog, RuntimeAuthorityId, HOTS
 use sc_client_api::AuxStore;
 use sp_blockchain::HeaderBackend;
 use crate::aux_schema::PersistentData;
-use crate::message::{extend_message, CommitQC};
+use crate::message::{extend_message, CommitQC, ConsensusStage, Round};
 
 pub struct Authority<B: BlockT, C: AuxStore + HeaderBackend<B>> {
     pub client: Arc<C>,
@@ -74,23 +74,23 @@ impl<B: BlockT, C: AuxStore + HeaderBackend<B>> Authority<B, C> {
     pub fn get_authorities_from_backend(&self, view: ViewNumber, block: <B::Header as HeaderT>::Number) -> Result<AuthorityList, HotstuffError> {
         let block_hash = self.client.hash(block)
             .map_err(|e| HotstuffError::ClientError(e.to_string()))?
-            .ok_or(HotstuffError::ClientError(format!("Block {block} should have hash")))?;
+            .ok_or(HotstuffError::ClientError(format!("Block #{block} should have hash")))?;
         let header = self.client.header(block_hash)
             .map_err(|e| HotstuffError::ClientError(e.to_string()))?
-            .ok_or(HotstuffError::ClientError(format!("Block {block}:{block_hash} should have header")))?;
+            .ok_or(HotstuffError::ClientError(format!("Block #{block}:{block_hash} should have header")))?;
         for consensus_log in find_consensus_logs::<B, RuntimeAuthorityId>(&header) {
             if let ConsensusLog::AuthoritiesChange(authorities) = consensus_log {
                 return Ok(authorities.into_iter().map(|a| (a.into(), 0)).collect());
             }
         }
-        Err(HotstuffError::InvalidAuthority(format!("can't get authorities for view {view} block {block}")))
+        Err(HotstuffError::InvalidAuthority(format!("can't get authorities for view {view} block #{block}")))
     }
 
     pub fn update_pending_authorities(&mut self, block: <B::Header as HeaderT>::Number, authority_list: AuthorityList) -> bool {
         if let Some((_, b, al)) = self.pending.clone() {
             if block > b {
                 if block == b && al != authority_list {
-                    log::warn!(target: CLIENT_LOG_TARGET, "Pending authorities for block {block} changed which should not happen!!!");
+                    log::warn!(target: CLIENT_LOG_TARGET, "Pending authorities for block #{block} changed which should not happen!!!");
                 }
                 self.pending = Some((None, block, authority_list));
                 return true;
@@ -106,7 +106,7 @@ impl<B: BlockT, C: AuxStore + HeaderBackend<B>> Authority<B, C> {
         if let Some((_, b, al)) = self.pending.clone() {
             if b >= block {
                 if b == block && authority_list != al {
-                    log::error!(target: CLIENT_LOG_TARGET, "Pending authorities not match actual authorities applied at block {block}");
+                    log::error!(target: CLIENT_LOG_TARGET, "Pending authorities not match actual authorities applied at block #{block}");
                 }
                 self.pending.take();
             }
@@ -126,11 +126,11 @@ pub struct ConsensusState<B: BlockT, C: AuxStore + HeaderBackend<B>> {
     pub keystore: KeystorePtr,
     pub authority: Authority<B, C>,
     pub local_authority_ids: Vec<AuthorityId>,
-    // local view number
-    pub view: ViewNumber,
-    pub last_voted_view: ViewNumber,
-    pub last_proposed_view: ViewNumber,
-    // last_committed_round: ViewNumber,
+    // local Round
+    pub round: Round,
+    pub last_voted: Round,
+    pub last_proposed: Round,
+    pub commit_qc: QC<B>,
     pub high_qc: QC<B>,
     pub aggregator: Aggregator<B, TinyBLS381>,
 }
@@ -139,6 +139,7 @@ impl<B: BlockT, C: AuxStore + HeaderBackend<B>> ConsensusState<B, C> {
     pub fn new(
         client: Arc<C>,
         keystore: KeystorePtr,
+        commit_qc: Option<CommitQC<B>>,
         high_proposal: Option<Proposal<B>>,
         persistent_data: PersistentData<B>,
     ) -> Self {
@@ -162,15 +163,19 @@ impl<B: BlockT, C: AuxStore + HeaderBackend<B>> ConsensusState<B, C> {
             local_authority_ids,
             keystore,
             authority,
-            view: 0,
-            last_voted_view: 0,
-            last_proposed_view: 0,
+            round: Round::default(),
+            last_voted: Round::default(),
+            last_proposed: Round::default(),
+            commit_qc: Default::default(),
             high_qc: Default::default(),
             aggregator: Aggregator::<B, TinyBLS381>::new(),
         };
+        if let Some(commit_qc) = commit_qc {
+            state.commit_qc = commit_qc.qc;
+        }
         if let Some(high_proposal) = high_proposal {
-            state.view = high_proposal.view.saturating_add(1);
-            state.last_voted_view = high_proposal.view;
+            state.round = high_proposal.round().add_one();
+            state.last_voted = high_proposal.round();
             state.high_qc = high_proposal.qc;
         }
         state
@@ -190,12 +195,12 @@ impl<B: BlockT, C: AuxStore + HeaderBackend<B>> ConsensusState<B, C> {
         // TODO not in use. If need: 1. storage on pallet_hotstuff. 2. Initialize on start. 3. Update
     }
 
-    pub fn increase_last_voted_view(&mut self) {
-        self.last_voted_view = max(self.last_voted_view, self.view)
+    pub fn increase_last_voted(&mut self) {
+        self.last_voted = max(self.last_voted, self.round)
     }
 
-    pub fn increase_last_proposed_view(&mut self) {
-        self.last_proposed_view = max(self.last_proposed_view, self.view)
+    pub fn increase_last_proposed(&mut self) {
+        self.last_proposed = max(self.last_proposed, self.round)
     }
 
     pub fn have_authority(&self, authority: &AuthorityId) -> Option<usize> {
@@ -239,14 +244,14 @@ impl<B: BlockT, C: AuxStore + HeaderBackend<B>> ConsensusState<B, C> {
     }
 
     pub fn make_timeout(&self) -> Result<Option<Timeout<B>>, HotstuffError> {
-        let (index, authority_id) = match self.find_authority(self.view) {
+        let (index, authority_id) = match self.find_authority(self.round.view) {
             Some(r) => r,
             None => return Ok(None),
         };
 
         let mut tc: Timeout<B> = Timeout {
             high_qc: self.high_qc.clone(),
-            view: self.view,
+            view: self.round.view,
             voter: authority_id.clone(),
             signature: None,
         };
@@ -267,18 +272,19 @@ impl<B: BlockT, C: AuxStore + HeaderBackend<B>> ConsensusState<B, C> {
 
     pub fn make_proposal(
         &self,
+        parent_qc: QC<B>,
         payload: Payload<B>,
         tc: Option<TC<B>>,
     ) -> Result<Option<Proposal<B>>, HotstuffError> {
-        let (index, authority_id) = match self.find_authority(self.view) {
+        let (index, authority_id) = match self.find_authority(self.round.view) {
             Some(r) => r,
             None => return Ok(None),
         };
         let mut block = Proposal::<B>::new(
-            self.high_qc.clone(),
+            parent_qc,
             tc,
             payload,
-            self.view,
+            self.round.view,
             authority_id.clone(),
             None,
         );
@@ -298,8 +304,8 @@ impl<B: BlockT, C: AuxStore + HeaderBackend<B>> ConsensusState<B, C> {
     }
 
     pub fn make_vote(&mut self, proposal: &Proposal<B>) -> Option<Vote<B>> {
-        if proposal.view <= self.last_voted_view {
-            trace!(target: CLIENT_LOG_TARGET, "make_vote proposal view {}, last_voted_view {}, skip vote for proposal!!!", proposal.view, self.last_voted_view);
+        if proposal.round() <= self.last_voted {
+            trace!(target: CLIENT_LOG_TARGET, "make_vote proposal round {}, last_voted {}, skip vote for proposal!!!", proposal.round(), self.last_voted);
             return None;
         }
         let (index, authority_id) = match self.find_authority(proposal.view) {
@@ -307,7 +313,7 @@ impl<B: BlockT, C: AuxStore + HeaderBackend<B>> ConsensusState<B, C> {
             None => return None,
         };
 
-        self.last_voted_view = max(self.last_voted_view, proposal.view);
+        self.last_voted = max(self.last_voted, proposal.round());
 
         let mut vote = Vote::<B>::new(
             proposal.digest(),
@@ -377,7 +383,7 @@ impl<B: BlockT, C: AuxStore + HeaderBackend<B>> ConsensusState<B, C> {
 
     pub fn make_proposal_request(&self, requests: ProposalReq<B>) -> Option<ProposalRequest<B>> {
         // if not latest authority, can't request proposal.
-        let (_, authority_id) = match self.find_authority(self.view) {
+        let (_, authority_id) = match self.find_authority(self.round.view) {
             Some(r) => r,
             None => return None,
         };
@@ -402,7 +408,7 @@ impl<B: BlockT, C: AuxStore + HeaderBackend<B>> ConsensusState<B, C> {
     }
 
     pub fn view(&self) -> ViewNumber {
-        self.view
+        self.round.view
     }
 
     pub fn verify_timeout(&self, timeout: &Timeout<B>) -> Result<(), HotstuffError> {
@@ -425,7 +431,7 @@ impl<B: BlockT, C: AuxStore + HeaderBackend<B>> ConsensusState<B, C> {
     }
 
     pub fn verify_vote(&self, vote: &Vote<B>) -> Result<(), HotstuffError> {
-        if vote.view < self.view {
+        if vote.round() < self.round {
             return Err(HotstuffError::ExpiredVote);
         }
 
@@ -433,7 +439,7 @@ impl<B: BlockT, C: AuxStore + HeaderBackend<B>> ConsensusState<B, C> {
     }
 
     pub fn verify_tc(&self, tc: &TC<B>) -> Result<(), HotstuffError> {
-        if tc.view < self.view {
+        if tc.view < self.round.view {
             return Err(HotstuffError::InvalidTC);
         }
 
@@ -452,15 +458,27 @@ impl<B: BlockT, C: AuxStore + HeaderBackend<B>> ConsensusState<B, C> {
         self.aggregator.add_vote(vote.clone(), &authority_list)
     }
 
+    pub fn update_commit_qc(&mut self, qc: &QC<B>) {
+        if qc.stage.finish() && qc.round() > self.commit_qc.round() {
+            self.commit_qc = qc.clone()
+        }
+    }
+
     pub fn update_high_qc(&mut self, qc: &QC<B>) {
-        if qc.view > self.high_qc.view {
+        if qc.round() > self.high_qc.round() {
             self.high_qc = qc.clone()
         }
     }
 
     pub fn advance_view_from_target(&mut self, view: ViewNumber) {
-        if self.view <= view {
-            self.view = view + 1;
+        if self.round.view <= view {
+            self.round = (view + 1, ConsensusStage::Prepare).into();
+        }
+    }
+
+    pub fn advance_round_from_target(&mut self, round: Round) {
+        if self.round <= round {
+            self.round = round.add_one();
         }
     }
 
@@ -481,6 +499,6 @@ impl<B: BlockT, C: AuxStore + HeaderBackend<B>> ConsensusState<B, C> {
     }
 
     pub fn is_leader(&self) -> bool {
-        self.is_leader_for(self.view)
+        self.is_leader_for(self.round.view)
     }
 }

@@ -41,7 +41,11 @@ pub enum HotstuffError {
 
 	SaveProposal(String),
 
+	SaveQC(String),
+
 	GetProposal(String),
+
+	GetQC(String),
 
 	Payload(PayloadError),
 

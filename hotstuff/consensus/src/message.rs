@@ -1,4 +1,5 @@
 use std::{collections::HashSet, marker::PhantomData};
+use std::cmp::Ordering;
 use std::fmt::{Debug, Display, Formatter};
 use codec::{Decode, Encode};
 use w3f_bls::TinyBLS381;
@@ -30,9 +31,9 @@ pub fn find_authority_index<'a>(authorities: &'a AuthorityList, author: &Authori
 #[derive(Clone, Encode, Decode, Debug, Copy, Default, PartialEq)]
 pub enum ConsensusStage {
     #[default]
-    Prepare,
-    PreCommit,
-    Commit,
+    Prepare = 1,
+    PreCommit = 2,
+    Commit = 3,
 }
 
 impl ConsensusStage {
@@ -59,92 +60,109 @@ impl Display for ConsensusStage {
     }
 }
 
+#[derive(Clone, Copy, Encode, Decode)]
+pub struct Round {
+    pub view: ViewNumber,
+    pub stage: ConsensusStage,
+}
+
+impl Round {
+    pub fn sub_one(&self) -> Self {
+        let mut view = self.view;
+        let stage = match self.stage {
+            ConsensusStage::Prepare => {
+                view = view.saturating_sub(1);
+                ConsensusStage::Commit
+            },
+            ConsensusStage::PreCommit => ConsensusStage::Commit,
+            ConsensusStage::Commit => ConsensusStage::PreCommit,
+        };
+        (view, stage).into()
+    }
+
+    pub fn add_one(&self) -> Self {
+        let mut view = self.view;
+        let stage = match self.stage {
+            ConsensusStage::Prepare => ConsensusStage::PreCommit,
+            ConsensusStage::PreCommit => ConsensusStage::Commit,
+            ConsensusStage::Commit => {
+                view = view.saturating_add(1);
+                ConsensusStage::Prepare
+            },
+        };
+        (view, stage).into()
+    }
+}
+
+impl Default for Round {
+    fn default() -> Self {
+        Self { view: 0, stage: ConsensusStage::Commit }
+    }
+}
+
+impl From<(ViewNumber, ConsensusStage)> for Round {
+    fn from((view, stage): (ViewNumber, ConsensusStage)) -> Self {
+        Self { view, stage }
+    }
+}
+
+impl PartialOrd for Round {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        if self.view > other.view {
+            Some(Ordering::Greater)
+        } else if self.view== other.view{
+            (self.stage as u8).partial_cmp(&(other.stage as u8))
+        } else {
+            Some(Ordering::Less)
+        }
+    }
+}
+
+impl Eq for Round {}
+
+impl Ord for Round {
+    fn cmp(&self, other: &Self) -> Ordering {
+        if self.view > other.view {
+            Ordering::Greater
+        } else if self.view== other.view{
+            (self.stage as u8).cmp(&(other.stage as u8))
+        } else {
+            Ordering::Less
+        }
+    }
+}
+
+impl Display for Round {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}:{}", self.view, self.stage as u8)
+    }
+}
+
+impl Debug for Round {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}:{}", self.view, self.stage as u8)
+    }
+}
+
+impl PartialEq for Round {
+    fn eq(&self, other: &Self) -> bool {
+        self.view == other.view && self.stage == other.stage
+    }
+}
+
 #[derive(Clone, Copy, Debug, Encode, Decode)]
 pub enum ProposalKey<B: BlockT> {
-    View(ViewNumber),
+    Round(Round),
     Digest(B::Hash),
 }
 
 impl<B: BlockT> ProposalKey<B> {
-    pub fn view(view: ViewNumber) -> ProposalKey<B> {
-        Self::View(view)
+    pub fn round(round: Round) -> ProposalKey<B> {
+        Self::Round(round)
     }
 
     pub fn digest(digest: B::Hash) -> ProposalKey<B> {
         Self::Digest(digest)
-    }
-}
-
-#[derive(Clone, Encode, Decode)]
-pub struct NewBlock<Block: BlockT> {
-    pub best_block: <Block::Header as HeaderT>::Number,
-    pub extrinsic_block: ExtrinsicBlock<Block>,
-    pub extrinsic: Vec<Vec<Vec<Block::Extrinsic>>>,
-}
-
-impl<Block: BlockT> NewBlock<Block> {
-    pub fn digest(&self) -> Block::Hash {
-        self.claim().digest()
-    }
-
-    pub fn empty() -> Self {
-        Self {
-            best_block: 0u32.into(),
-            extrinsic_block: ExtrinsicBlock{
-                number: 0u32.into(),
-                extrinsics_root: Block::Hash::default(),
-            },
-            extrinsic: Vec::new(),
-        }
-    }
-
-    pub fn block_number(&self) -> <Block::Header as HeaderT>::Number {
-        self.extrinsic_block.number
-    }
-
-    pub fn extrinsics_root(&self) -> Block::Hash {
-        self.extrinsic_block.extrinsics_root
-    }
-
-    pub fn claim(&self) -> BlockClaim<Block> {
-        BlockClaim {
-            best_block: self.best_block,
-            extrinsic_block: self.extrinsic_block.clone(),
-        }
-    }
-
-    pub fn groups(&self) -> Vec<Vec<u32>> {
-        let mut groups = Vec::new();
-        for rounds in &self.extrinsic {
-            groups.push(rounds.iter().map(|extrinsic| extrinsic.len() as u32).collect::<Vec<u32>>());
-        }
-        groups
-    }
-}
-
-impl<Block: BlockT> Display for NewBlock<Block> {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}:", self.extrinsic_block)?;
-        let groups = self.groups();
-        if !groups.is_empty() {
-            write!(f, "{groups:?}")?;
-        } else {
-            write!(f, "None")?;
-        }
-        write!(f, "({})", self.best_block)
-    }
-}
-
-impl<Block: BlockT> Debug for NewBlock<Block> {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:?}:", self.extrinsic_block)?;
-        let groups = self.groups();
-        if !groups.is_empty() {
-            write!(f, "{groups:?}")?;
-        } else {
-            write!(f, "None")?;
-        }
-        write!(f, "({})", self.best_block)
     }
 }
 
@@ -161,6 +179,10 @@ pub struct Vote<Block: BlockT> {
 impl<Block: BlockT> Vote<Block> {
     pub fn new(proposal_hash: Block::Hash, view: ViewNumber, stage: ConsensusStage, voter: AuthorityId) -> Self {
         Self { proposal_hash, view, stage, voter, signature: None }
+    }
+
+    pub fn round(&self) -> Round {
+        (self.view, self.stage).into()
     }
 
     pub fn digest(&self) -> Block::Hash {
@@ -183,7 +205,6 @@ impl<Block: BlockT> Vote<Block> {
 // Timeout notification
 #[derive(Debug, Clone, Encode, Decode)]
 pub struct Timeout<Block: BlockT> {
-    // The hightest QC of local node.
     pub high_qc: QC<Block>,
     // The view of local node at timeout.
     pub view: ViewNumber,
@@ -209,10 +230,7 @@ impl<Block: BlockT> Timeout<Block> {
             Ok(())
         })?;
 
-        if let Err(e) = self.high_qc.verify(high_qc_authorities) {
-            println!("verify timeout high_qc view {} authorities: {high_qc_authorities:?}", self.high_qc.view);
-            return Err(e)
-        }
+        self.high_qc.verify(high_qc_authorities)?;
         Ok(())
     }
 }
@@ -321,16 +339,16 @@ impl<Block: BlockT> Payload<Block> {
 
 impl<Block: BlockT> Display for Payload<Block> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}:{}", self.stage, self.block)
+        write!(f, "{}:#{}", self.stage, self.block)
     }
 }
 
 impl<Block: BlockT> Debug for Payload<Block> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         if let Some(groups) = self.groups() {
-            write!(f, "{}:{}:{groups:?}", self.stage, self.block)
+            write!(f, "{}:#{}:{groups:?}", self.stage, self.block)
         } else {
-            write!(f, "{}:{}", self.stage, self.block)
+            write!(f, "{}:#{}", self.stage, self.block)
         }
     }
 }
@@ -366,6 +384,10 @@ impl<Block: BlockT> Proposal<Block> {
         let length = <AuthorityId as ByteArray>::LEN;
         let empty_authority = AuthorityId::from_slice(&vec![1u8; length]).unwrap();
         Self::new(QC::default(), None, Payload::empty(), 0, empty_authority, None)
+    }
+
+    pub fn round(&self) -> Round {
+        (self.view, self.payload.stage).into()
     }
 
     pub fn digest(&self) -> Block::Hash {
@@ -412,18 +434,8 @@ impl<Block: BlockT> QC<Block> {
         self.proposal_hash
     }
 
-    pub fn higher_than(&self, other: &Self) -> bool {
-        if self.view > other.view {
-            true
-        } else if self.view == other.view {
-            match (other.stage, self.stage) {
-                (ConsensusStage::Prepare, ConsensusStage::PreCommit)
-                | (ConsensusStage::PreCommit, ConsensusStage::Commit) => true,
-                _ => false,
-            }
-        } else {
-            false
-        }
+    pub fn round(&self) -> Round {
+        (self.view, self.stage).into()
     }
 
     // Verify if the number of votes in the QC has exceeded (2/3 + 1) of the total authorities.
@@ -445,7 +457,7 @@ impl<Block: BlockT> Default for QC<Block> {
             view: 0,
             proposal_hash: BlockCommit::<Block>::empty().commit_hash(),
             signature: AggregateSignature::default(),
-            stage: ConsensusStage::Prepare,
+            stage: ConsensusStage::Commit,
             timestamp: Default::default(),
         }
     }
@@ -625,35 +637,12 @@ impl<Block: BlockT> ConsensusMessage<Block> {
     }
 }
 
-#[derive(Clone, Debug, Encode, Decode, PartialEq)]
-pub struct BlockClaim<Block: BlockT> {
-    pub best_block: <Block::Header as HeaderT>::Number,
-    pub extrinsic_block: ExtrinsicBlock<Block>,
-}
-
-impl<Block: BlockT> BlockClaim<Block> {
-    pub fn empty() -> Self {
-        Self {
-            best_block: 0u32.into(),
-            extrinsic_block: ExtrinsicBlock::empty(),
-        }
-    }
-
-    /// Should be same with [NewBlock::digest]
-    pub fn digest(&self) -> Block::Hash {
-        let mut data = self.best_block.encode();
-        data.append(&mut self.extrinsic_block.encode());
-        <<Block::Header as HeaderT>::Hashing as HashT>::hash_of(&data)
-    }
-}
-
 #[derive(Debug, Clone, Encode, Decode)]
 pub struct BlockCommit<B: BlockT> {
     /// parent block commit hash
     parent_commit: B::Hash,
     view: ViewNumber,
     extrinsic_block: ExtrinsicBlock<B>,
-    precommit: B::Hash,
     signature: AggregateSignature,
     timestamp: Timestamp,
 }
@@ -664,10 +653,13 @@ impl<B: BlockT> BlockCommit<B> {
             parent_commit: Default::default(),
             view: Default::default(),
             extrinsic_block: ExtrinsicBlock::empty(),
-            precommit: Default::default(),
             signature: Default::default(),
             timestamp: Default::default(),
         }
+    }
+
+    pub fn round(&self) -> Round {
+        (self.view, ConsensusStage::Commit).into()
     }
 
     pub fn parent_commit_hash(&self) -> B::Hash {
@@ -678,13 +670,27 @@ impl<B: BlockT> BlockCommit<B> {
         self.view
     }
 
+    pub fn prepare_hash(&self) -> B::Hash {
+        let mut data = self.view.encode();
+        data.append(&mut self.parent_commit.encode());
+        data.append(&mut (ConsensusStage::Prepare, self.extrinsic_block.clone()).encode());
+        <<B::Header as HeaderT>::Hashing as HashT>::hash_of(&data)
+    }
+
+    pub fn precommit_hash(&self) -> B::Hash {
+        let mut data = self.view.encode();
+        data.append(&mut self.prepare_hash().encode());
+        data.append(&mut (ConsensusStage::PreCommit, self.extrinsic_block.clone()).encode());
+        <<B::Header as HeaderT>::Hashing as HashT>::hash_of(&data)
+    }
+
     pub fn commit_hash(&self) -> B::Hash {
         if self.extrinsic_block.number == 0u32.into() {
             return B::Hash::default();
         }
         // We should calculate final commit hash to ensure the extrinsics_root is correct.
         let mut data = self.view.encode();
-        data.append(&mut self.precommit.encode());
+        data.append(&mut self.precommit_hash().encode());
         data.append(&mut (ConsensusStage::Commit, self.extrinsic_block.clone()).encode());
         <<B::Header as HeaderT>::Hashing as HashT>::hash_of(&data)
     }
@@ -703,7 +709,6 @@ impl<B: BlockT> BlockCommit<B> {
             parent_commit: prepare.0.qc.proposal_hash,
             view: commit.1.view,
             extrinsic_block: commit.0.payload.block.clone(),
-            precommit: precommit.1.proposal_hash,
             signature: commit.1.signature,
             timestamp: commit.1.timestamp,
         };
@@ -717,10 +722,10 @@ impl<B: BlockT> BlockCommit<B> {
         extrinsics_root: B::Hash,
     ) -> Result<(), HotstuffError> {
         if block_number != self.block_number() {
-            return Err(HotstuffError::VerifyClaim(format!("Incorrect block number {block_number}/{}", self.block_number()).into()));
+            return Err(HotstuffError::VerifyClaim(format!("Incorrect block number #{block_number}/#{}", self.block_number()).into()));
         }
         if extrinsics_root != self.extrinsics_root() {
-            return Err(HotstuffError::VerifyClaim(format!("Incorrect block {block_number} extrinsics_root: {extrinsics_root}/{}", self.extrinsics_root()).into()));
+            return Err(HotstuffError::VerifyClaim(format!("Incorrect block #{block_number} extrinsics_root: {extrinsics_root}/{}", self.extrinsics_root()).into()));
         }
         let commit_qc: QC<B> = QC {
             view: self.view,
