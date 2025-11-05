@@ -11,7 +11,7 @@ use sp_runtime::traits::{Block as BlockT, Header as HeaderT};
 use crate::{AuthorityId, AuthorityList, AuthoritySignature, aggregator::Aggregator, message::{
     Proposal, Timeout, Vote, QC, TC, Payload,
     PeerAuthority, ProposalReq, ProposalRequest,
-}, primitives::{HotstuffError, ViewNumber}, CLIENT_LOG_TARGET, find_consensus_logs};
+}, error::{HotstuffError, ViewNumber}, CLIENT_LOG_TARGET, find_consensus_logs};
 use hotstuff_primitives::{AuthorityIndex, ConsensusLog, RuntimeAuthorityId, HOTSTUFF_KEY_TYPE};
 use sc_client_api::AuxStore;
 use sp_blockchain::HeaderBackend;

@@ -9,11 +9,11 @@ use log::trace;
 use tokio::time::{interval, Instant, Interval};
 
 use sc_client_api::AuxStore;
-use sp_blockchain::HeaderBackend;
+use sp_blockchain::{Error, HeaderBackend};
 use sp_core::{Decode, Encode};
 use sp_runtime::traits::Block as BlockT;
 
-use crate::{message::Proposal, primitives::HotstuffError, store::Store, CLIENT_LOG_TARGET};
+use crate::{message::Proposal, error::HotstuffError, CLIENT_LOG_TARGET};
 use crate::message::{CommitQC, ProposalKey, Round};
 
 pub const HIGH_ROUND_KEY: &str = "hots_high_round";
@@ -50,13 +50,13 @@ pub fn round_key(round: Round) -> Vec<u8> {
 	format!("{ROUND_PREFIX}_{round}").as_bytes().to_vec()
 }
 
-pub struct Synchronizer<B: BlockT, C: AuxStore + HeaderBackend<B>> {
+pub struct AuxDataStore<B: BlockT, C: AuxStore + HeaderBackend<B>> {
 	store: Store<C>,
 	high_round: Round,
 	high_digest: B::Hash,
 }
 
-impl<B, C> Synchronizer<B, C>
+impl<B, C> AuxDataStore<B, C>
 where
 	B: BlockT,
 	C: AuxStore + HeaderBackend<B>,
@@ -291,5 +291,44 @@ where
 		self.store.revert(&insert, &delete)
 			.map_err(|e| HotstuffError::Other(format!("revert delete failed for {e:?}")))?;
 		Ok((round, final_high_digest))
+	}
+}
+
+pub struct Store<C: AuxStore> {
+	backend: Arc<C>,
+}
+
+impl<C: AuxStore> Store<C> {
+	pub fn new(backend: Arc<C>) -> Self {
+		Self { backend }
+	}
+
+	pub fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, Error> {
+		self.backend.get_aux(key)
+	}
+
+	pub fn set(&mut self, key: &[u8], value: &[u8]) -> Result<(), Error> {
+		self.backend.insert_aux(&[(key, value)], &[])
+	}
+
+	pub fn revert(&mut self, insert: &[(Vec<u8>, Vec<u8>)], delete: &[Vec<u8>]) -> Result<(), Error> {
+		let insert: Vec<_> = insert.iter().map(|(k, v)| (k.as_slice(), v.as_slice())).collect();
+		let delete: Vec<_> = delete.iter().map(|k| k.as_slice()).collect();
+		self.backend.insert_aux(insert.as_slice(), delete.as_slice())
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn test_create_store_with_substrate_client_should_work() {
+		let client = substrate_test_runtime_client::new();
+		let mut store = Store::new(Arc::new(client));
+
+		store.set(b"key0", b"value0").unwrap();
+
+		assert_eq!(store.get(b"key0").unwrap().unwrap(), b"value0");
 	}
 }

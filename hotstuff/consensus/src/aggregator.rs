@@ -11,7 +11,7 @@ use sp_timestamp::Timestamp;
 use crate::{
 	AuthorityList, AuthoritySignature,
 	message::{Timeout, Vote, QC, TC},
-	primitives::{HotstuffError, HotstuffError::*, ViewNumber},
+	error::{HotstuffError, HotstuffError::*, ViewNumber},
 };
 use crate::message::extend_message;
 

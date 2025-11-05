@@ -26,7 +26,7 @@ use sp_api::TransactionFor;
 use sp_blockchain::BlockStatus;
 use sp_consensus::{BlockOrigin, Error as ConsensusError};
 use sp_runtime::{generic::BlockId, traits::{Block as BlockT, Header as HeaderT, NumberFor, One}, Digest, Justification, Saturating};
-use crate::{client::ClientForHotstuff, find_block_commit, find_consensus_logs, primitives::{HotstuffError, HotstuffError::*}};
+use crate::{client::ClientForHotstuff, find_block_commit, find_consensus_logs, error::{HotstuffError, HotstuffError::*}};
 use crate::aux_schema::PersistentData;
 use crate::message::BlockCommit;
 

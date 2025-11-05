@@ -204,7 +204,7 @@ where
 	let LinkHalf { client, .. } = link;
 
 	let network = HotstuffNetworkBridge::new(network.clone(), sync.clone(), hotstuff_protocol_name);
-	let synchronizer = Synchronizer::<B, BE, C>::new(client.clone());
+	let aux_data = AuxDataStore::<B, BE, C>::new(client.clone());
 	let consensus_state = ConsensusState::<B>::new(keystore, authorities);
 
 	let (consensus_msg_tx, consensus_msg_rx) = channel::<ConsensusMessage<B>>(1000);
@@ -216,7 +216,7 @@ where
 		client,
 		sync,
 		network.clone(),
-		synchronizer,
+		aux_data,
 		2000,
 		consensus_msg_tx.clone(),
 		consensus_msg_rx,

@@ -20,9 +20,9 @@ use sp_core::Decode;
 use sp_runtime::traits::{Block as BlockT, Hash as HashT, Header as HeaderT, NumberFor};
 
 use crate::{AuthorityId, AuthorityList};
-use crate::{import::PeerReport, message::ConsensusMessage, primitives::ViewNumber};
+use crate::{import::PeerReport, message::ConsensusMessage, error::ViewNumber};
 use crate::message::PeerAuthority;
-use crate::primitives::HotstuffError;
+use crate::error::HotstuffError;
 
 /// A handle to the network.
 ///

@@ -31,7 +31,7 @@ use sp_consensus::SelectChain;
 use crate::{AuthorityList, client::{ClientForHotstuff, LinkHalf}, find_consensus_logs, find_block_commit, executor::{BlockExecutor, ExecutorMission}, import::{PendingFinalizeBlockQueue, ImportLock}, message::{
     ConsensusMessage, Proposal, Timeout, Vote, QC, TC, BlockCommit, ConsensusStage, Payload,
     PeerAuthority, ProposalKey, ProposalReq, ProposalRequest,
-}, network::{HotstuffNetworkBridge, Network as NetworkT, Syncing as SyncingT}, primitives::{HotstuffError, PayloadError, ViewNumber}, synchronizer::{Synchronizer, Timer}, CLIENT_LOG_TARGET, AuthorityId};
+}, network::{HotstuffNetworkBridge, Network as NetworkT, Syncing as SyncingT}, error::{HotstuffError, PayloadError, ViewNumber}, aux_data::{AuxDataStore, Timer}, CLIENT_LOG_TARGET, AuthorityId};
 use hotstuff_primitives::{ConsensusLog, HotstuffApi, RuntimeAuthorityId};
 use sc_network::PeerId;
 use sp_api::TransactionFor;
@@ -67,7 +67,7 @@ pub struct ConsensusWorker<
     _sync: S,
     local_timer: Timer,
     slot_duration: SlotDuration,
-    synchronizer: Synchronizer<B, C>,
+    aux_data: AuxDataStore<B, C>,
     consensus_msg_tx: Sender<(bool, ConsensusMessage<B>)>,
     consensus_msg_rx: Receiver<(bool, ConsensusMessage<B>)>,
     executor_tx: UnboundedSender<ExecutorMission<B>>,
@@ -103,7 +103,7 @@ where
         client: Arc<C>,
         sync: S,
         network: HotstuffNetworkBridge<B, N, S>,
-        synchronizer: Synchronizer<B, C>,
+        aux_data: AuxDataStore<B, C>,
         proposer_factory: Arc<RwLock<PF>>,
         local_timer_duration: u64,
         slot_duration: SlotDuration,
@@ -126,7 +126,7 @@ where
         } else {
             BlockCommit::empty()
         };
-        let processed = synchronizer.get_high_proposal().unwrap().unwrap_or(Proposal::empty());
+        let processed = aux_data.get_high_proposal().unwrap().unwrap_or(Proposal::empty());
         info!(target: CLIENT_LOG_TARGET, "Start consensus worker with local_timer_duration: {local_timer_duration} millis, slot_duration: {} millis", slot_duration.as_millis());
         Self {
             state: consensus_state,
@@ -138,7 +138,7 @@ where
             executor_tx,
             client,
             _sync: sync,
-            synchronizer,
+            aux_data,
             proposer_factory,
             oracle,
             pending_proposal: None,
@@ -153,8 +153,8 @@ where
     // Try recover all unapplied commit.
     pub fn recover(&mut self) {
         let latest = self.client.info().best_number;
-        let mut round = self.synchronizer.high_round();
-        let mut proposal_key = ProposalKey::digest(self.synchronizer.high_digest());
+        let mut round = self.aux_data.high_round();
+        let mut proposal_key = ProposalKey::digest(self.aux_data.high_digest());
         if round == Round::default() {
             debug!(target: CLIENT_LOG_TARGET, "[Recover] Skip for default high_round {round}");
             return;
@@ -165,7 +165,7 @@ where
         let mut commit_qc_list = vec![];
         // load commit_qc
         loop {
-            match self.synchronizer.get_proposal(proposal_key.clone()).unwrap() {
+            match self.aux_data.get_proposal(proposal_key.clone()).unwrap() {
                 Some(proposal) => {
                     trace!(target: CLIENT_LOG_TARGET, "[Recover] ~~ load proposal {} qc {}", proposal.round(), proposal.qc.round());
                     if proposal.qc.stage.finish() {
@@ -179,14 +179,14 @@ where
                     proposal_key = ProposalKey::digest(proposal.qc.proposal_hash);
                 },
                 None => {
-                    debug!(target: CLIENT_LOG_TARGET, "[Recover] No proposal for round {}", self.synchronizer.high_round());
+                    debug!(target: CLIENT_LOG_TARGET, "[Recover] No proposal for round {}", self.aux_data.high_round());
                     round = round.sub_one();
                     proposal_key = ProposalKey::round(round);
                 }
             };
         }
         commit_qc_list.sort_by(|a, b| a.round().cmp(&b.round()));
-        if let Some(commit_qc) = self.synchronizer.get_commit_qc().unwrap() {
+        if let Some(commit_qc) = self.aux_data.get_commit_qc().unwrap() {
             self.update_by_qc(&commit_qc.qc);
             if commit_qc.qc.round() > commit_qc_list.last().map(|qc| qc.round()).unwrap_or_default() {
                 commit_qc_list.push(commit_qc.qc);
@@ -339,14 +339,14 @@ where
             ProposalReq::Keys(keys) => {
                 let mut proposals = vec![];
                 for key in keys.clone() {
-                    if let Some(proposal) = self.synchronizer.get_proposal(key)? {
+                    if let Some(proposal) = self.aux_data.get_proposal(key)? {
                         proposals.push(proposal);
                     }
                 }
                 proposals
             },
             ProposalReq::Range(from, to) => {
-                self.synchronizer.get_proposals(from.clone(), to.clone())?
+                self.aux_data.get_proposals(from.clone(), to.clone())?
             }
         };
         if proposals.is_empty() { return Ok(()); }
@@ -363,11 +363,11 @@ where
 
     pub fn handle_proposal_response(&mut self, proposals: &Vec<Proposal<B>>) -> Result<(), HotstuffError> {
         for proposal in proposals {
-            if self.synchronizer.get_proposal(ProposalKey::digest(proposal.digest()))?.is_some() {
+            if self.aux_data.get_proposal(ProposalKey::digest(proposal.digest()))?.is_some() {
                 continue;
             }
             self.state.verify_proposal(&proposal)?;
-            self.synchronizer.save_proposal(&proposal)?;
+            self.aux_data.save_proposal(&proposal)?;
             self.update_by_qc(&proposal.qc);
             self.trigger_qc_mission(&proposal.qc, false)?;
         }
@@ -397,7 +397,7 @@ where
                     ConsensusLog::OnDisabled(index) => self.state.disable_authority(*header.number(), index),
                 }
             }
-            let (deleted, deleted_invalid) = self.synchronizer.clear_all_before(ProposalKey::digest(commit.parent_commit_hash()))?;
+            let (deleted, deleted_invalid) = self.aux_data.clear_all_before(ProposalKey::digest(commit.parent_commit_hash()))?;
             if !deleted.is_empty() || !deleted_invalid.is_empty() {
                 trace!(target: CLIENT_LOG_TARGET, "~~ handle_block_import. Block {} imported, delete proposals {deleted:?}, invalid proposals: {deleted_invalid:?}", header.number());
             }
@@ -426,7 +426,7 @@ where
 
     #[async_recursion]
     pub async fn handle_proposal(&mut self, proposal: &Proposal<B>, local: bool) -> Result<(), HotstuffError> {
-        if self.synchronizer.get_proposal(ProposalKey::round(proposal.round()))?.is_some() { return Ok(()); }
+        if self.aux_data.get_proposal(ProposalKey::round(proposal.round()))?.is_some() { return Ok(()); }
         let from = if local { "local" } else { "network" };
         debug!(target: CLIENT_LOG_TARGET, "~~ handle_proposal({from} self.round {}). proposal[ round {}({}), tc {:?}, digest {},  payload {}, author {}]",
             self.state.round,
@@ -463,7 +463,7 @@ where
         if !local {
             self.state.verify_proposal(&proposal)?;
         }
-        self.synchronizer.save_proposal(&proposal)?;
+        self.aux_data.save_proposal(&proposal)?;
         if !local {
             if proposal.round() > self.processed.round() {
                 self.processed = proposal.clone();
@@ -567,7 +567,7 @@ where
             commit_qc.author,
         );
         commit_qc.verify(self.state.authority_list(commit_qc.qc.view)?)?;
-        if let Err(e) = self.synchronizer.save_commit_qc(commit_qc) {
+        if let Err(e) = self.aux_data.save_commit_qc(commit_qc) {
             warn!(target: CLIENT_LOG_TARGET, "Save CommitQC failed for {e:?}");
         }
         self.trigger_qc_mission(&commit_qc.qc, local)?;
@@ -591,7 +591,7 @@ where
 
     async fn handle_qc_timestamp(&mut self, qc: &mut QC<B>) -> Result<(), HotstuffError> {
         if !qc.stage.finish() { return Ok(()); }
-        let qc_proposal = match self.synchronizer.get_proposal(ProposalKey::digest(qc.proposal_hash))? {
+        let qc_proposal = match self.aux_data.get_proposal(ProposalKey::digest(qc.proposal_hash))? {
             Some(p) => p,
             None => {
                 self.request_proposals(
@@ -603,7 +603,7 @@ where
                 return Err(HotstuffError::GetProposal(format!("No proposal for commit qc of proposal {}, skip for can't check timestamp", qc.proposal_hash)));
             }
         };
-        let parent_commit_hash = match self.synchronizer.get_proposal_ancestors(&qc_proposal)? {
+        let parent_commit_hash = match self.aux_data.get_proposal_ancestors(&qc_proposal)? {
             Some((_, grandpa)) => grandpa.qc.proposal_hash,
             None => {
                 return Err(HotstuffError::GetProposal(format!("No ancestor proposals for commit qc of proposal {}, skip for can't check timestamp", qc.proposal_hash)));
@@ -656,7 +656,7 @@ where
         let from = if local { "local" } else { "network" };
         if qc.proposal_hash == B::Hash::default() { return Ok(()) }
         // Try to get proposal ancestors to handle consensus finish.
-        let qc_proposal = match self.synchronizer.get_proposal(ProposalKey::digest(qc.proposal_hash))? {
+        let qc_proposal = match self.aux_data.get_proposal(ProposalKey::digest(qc.proposal_hash))? {
             Some(p) => p,
             None => {
                 self.request_proposals(
@@ -671,7 +671,7 @@ where
         };
         if !qc_proposal.payload.stage.finish() { return Ok(()); }
         // grandpa -> parent(grandpa_qc) -> qc_proposal(parent_qc) -> qc
-        match self.synchronizer.get_proposal_ancestors(&qc_proposal) {
+        match self.aux_data.get_proposal_ancestors(&qc_proposal) {
             Ok(Some((parent, grandpa))) => {
                 if grandpa.payload.extrinsics.is_none() {
                     return Ok(())
@@ -723,7 +723,7 @@ where
                 }
             },
             Err(e) => {
-                debug!(target: CLIENT_LOG_TARGET, "~~ trigger_qc_mission({from}). synchronizer: get proposal {} ancestors failed: {e:#?}", qc.view);
+                debug!(target: CLIENT_LOG_TARGET, "~~ trigger_qc_mission({from}). aux_data: get proposal {} ancestors failed: {e:#?}", qc.view);
             }
             _ => (),
         }
@@ -820,7 +820,7 @@ where
         let high_proposal = if self.state.high_qc.round() == Round::default() {
             Proposal::empty()
         } else {
-            match self.synchronizer.get_proposal(ProposalKey::digest(self.state.high_qc.proposal_hash)) {
+            match self.aux_data.get_proposal(ProposalKey::digest(self.state.high_qc.proposal_hash)) {
                 Ok(Some(proposal)) => proposal,
                 Ok(None) => {
                     trace!(target: CLIENT_LOG_TARGET, "~~ get_proposal_payload. {info} get no high_proposal");
@@ -954,8 +954,8 @@ where
     fn ensure_parents(&self, proposal: &Proposal<B>) -> Result<bool, HotstuffError> {
         let enough = match proposal.payload.stage {
             ConsensusStage::Prepare => true,
-            ConsensusStage::PreCommit => self.synchronizer.get_proposal_parent(proposal).map(|r| r.is_some())?,
-            ConsensusStage::Commit => self.synchronizer.get_proposal_parent(proposal).map(|r| r.is_some())?,
+            ConsensusStage::PreCommit => self.aux_data.get_proposal_parent(proposal).map(|r| r.is_some())?,
+            ConsensusStage::Commit => self.aux_data.get_proposal_parent(proposal).map(|r| r.is_some())?,
         };
         if !enough {
             let mut need = vec![];
@@ -1212,9 +1212,9 @@ where
     let LinkHalf { client, select_chain: _, persistent_data } = link;
     let authorities = get_authorities_from_client::<B, BE, C>(client.clone());
 
-    let synchronizer = Synchronizer::<B, C>::new(client.clone());
-    let commit_qc = synchronizer.get_commit_qc().unwrap();
-    let high_proposal = synchronizer.get_high_proposal().unwrap();
+    let aux_data = AuxDataStore::<B, C>::new(client.clone());
+    let commit_qc = aux_data.get_commit_qc().unwrap();
+    let high_proposal = aux_data.get_high_proposal().unwrap();
     let consensus_state = ConsensusState::<B, C>::new(client.clone(), keystore, commit_qc, high_proposal, persistent_data);
     let peer_authority = consensus_state.make_peer_authority(network.local_peer_id().to_base58());
     let network = HotstuffNetworkBridge::new(network.clone(), sync.clone(), hotstuff_protocol_name, authorities, peer_authority);
@@ -1236,7 +1236,7 @@ where
         client.clone(),
         sync,
         network.clone(),
-        synchronizer,
+        aux_data,
         proposer_factory.clone(),
         local_timer_duration,
         slot_duration,

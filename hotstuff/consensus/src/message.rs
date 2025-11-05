@@ -9,7 +9,7 @@ use sp_runtime::traits::{Block as BlockT, Hash as HashT, Header as HeaderT};
 use sp_timestamp::Timestamp;
 
 use crate::{AuthorityId, AuthorityList, AuthorityPair, AuthoritySignature};
-use crate::{primitives::{HotstuffError, ViewNumber}};
+use crate::{error::{HotstuffError, ViewNumber}};
 use crate::aggregator::AggregateSignature;
 
 #[cfg(test)]

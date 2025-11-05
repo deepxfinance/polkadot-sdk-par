@@ -4,19 +4,19 @@ use sp_api::{BlockT, HeaderT};
 use sp_blockchain::HeaderBackend;
 use crate::find_block_commit;
 use crate::message::BlockCommit;
-use crate::primitives::HotstuffError;
-use crate::synchronizer::Synchronizer;
+use crate::error::HotstuffError;
+use crate::aux_data::AuxDataStore;
 
 pub fn revert<B, C>(client: &Arc<C>) -> Result<(), HotstuffError>
 where
     B: BlockT,
     C: AuxStore + HeaderBackend<B>,
 {
-    let mut synchronizer = Synchronizer::<B, C>::new(client.clone());
+    let mut aux_data = AuxDataStore::<B, C>::new(client.clone());
     let best_block_number = client.info().best_number;
     let best_block_hash = client.info().best_hash;
     let best_block_commit = get_block_commit(client, best_block_hash)?;
-    let (high_round, high_digest) = synchronizer.revert(best_block_commit.round(), best_block_commit.commit_hash())?;
+    let (high_round, high_digest) = aux_data.revert(best_block_commit.round(), best_block_commit.commit_hash())?;
     println!("HotstuffRevert to block #{best_block_number} ({best_block_hash:?}), high_round {high_round}, high_proposal_digest {high_digest:?}");
     Ok(())
 }
