@@ -205,6 +205,7 @@ members = [
 	"primitives/io",
 	"primitives/keyring",
 	"primitives/keystore",
+	"primitives/kv-db",
 	"primitives/maybe-compressed-blob",
 	"primitives/merkle-mountain-range",
 	"primitives/metadata-ir",

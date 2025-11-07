@@ -4138,6 +4138,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "kv-db"
+version = "0.1.0"
+dependencies = [
+ "hash-db",
+ "hashbrown 0.13.2",
+ "log",
+ "rustc-hex",
+ "smallvec",
+]
+
+[[package]]
 name = "kvdb"
 version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -11474,6 +11485,7 @@ dependencies = [
  "array-bytes 4.2.0",
  "assert_matches",
  "hash-db",
+ "kv-db",
  "log",
  "parity-scale-codec",
  "parking_lot 0.12.1",
@@ -11595,6 +11607,7 @@ dependencies = [
  "criterion",
  "hash-db",
  "hashbrown 0.13.2",
+ "kv-db",
  "lazy_static",
  "memory-db",
  "nohash-hasher",

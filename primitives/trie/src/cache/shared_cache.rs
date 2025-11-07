@@ -666,6 +666,7 @@ impl<H: Hasher> SharedTrieCache<H> {
 		super::LocalTrieCache {
 			shared: self.clone(),
 			node_cache: Default::default(),
+			kv_cache: Default::default(),
 			value_cache: Default::default(),
 			shared_value_cache_access: Mutex::new(super::ValueAccessSet::with_hasher(
 				schnellru::ByLength::new(super::SHARED_VALUE_CACHE_MAX_PROMOTED_KEYS),
