@@ -88,14 +88,14 @@ where
 	pub fn update_backend(&self, root: H::Out, changes: GenericMemoryDB<H, KF>) -> Self {
 		let mut clone = self.backend_storage().clone();
 		clone.consolidate(changes);
-		TrieBackendBuilder::new(clone, root).build()
+		TrieBackendBuilder::new(clone, root).set_kv_mode(self.kv_mode).build()
 	}
 
 	/// Apply the given transaction to this backend and set the root to the given value.
 	pub fn apply_transaction(&mut self, root: H::Out, transaction: GenericMemoryDB<H, KF>) {
 		let mut storage = sp_std::mem::take(self).into_storage();
 		storage.consolidate(transaction);
-		*self = TrieBackendBuilder::new(storage, root).build();
+		*self = TrieBackendBuilder::new(storage, root).set_kv_mode(self.kv_mode).build();
 	}
 
 	/// Compare with another in-memory backend.
@@ -110,7 +110,7 @@ where
 	KF: KeyFunction<H> + Send + Sync,
 {
 	fn clone(&self) -> Self {
-		TrieBackendBuilder::new(self.backend_storage().clone(), *self.root()).build()
+		TrieBackendBuilder::new(self.backend_storage().clone(), *self.root()).set_kv_mode(self.kv_mode).build()
 	}
 }
 

@@ -79,6 +79,7 @@ mod sealed {
 
 /// Builder for creating a [`TrieBackend`].
 pub struct TrieBackendBuilder<S: TrieBackendStorage<H>, H: Hasher, C = LocalTrieCache<H>> {
+	kv_mode: bool,
 	storage: S,
 	root: H::Out,
 	#[cfg(feature = "std")]
@@ -94,6 +95,7 @@ where
 	/// Create a new builder instance.
 	pub fn new(storage: S, root: H::Out) -> Self {
 		Self {
+			kv_mode: false,
 			storage,
 			root,
 			#[cfg(feature = "std")]
@@ -117,6 +119,7 @@ where
 	/// The backend storage and the cache will be taken from `other`.
 	pub fn wrap(other: &TrieBackend<S, H, C>) -> TrieBackendBuilder<&S, H, &C> {
 		TrieBackendBuilder {
+			kv_mode: other.kv_mode,
 			storage: other.essence.backend_storage(),
 			root: *other.essence.root(),
 			#[cfg(feature = "std")]
@@ -126,6 +129,10 @@ where
 			#[cfg(not(feature = "std"))]
 			cache: None,
 		}
+	}
+
+	pub fn set_kv_mode(self, kv_mode: bool) -> Self {
+		Self { kv_mode, ..self }
 	}
 
 	/// Use the given optional `recorder` for the to be configured [`TrieBackend`].
@@ -144,6 +151,7 @@ where
 	#[cfg(feature = "std")]
 	pub fn with_optional_cache<LC>(self, cache: Option<LC>) -> TrieBackendBuilder<S, H, LC> {
 		TrieBackendBuilder {
+			kv_mode: self.kv_mode,
 			cache,
 			root: self.root,
 			storage: self.storage,
@@ -155,6 +163,7 @@ where
 	#[cfg(feature = "std")]
 	pub fn with_cache<LC>(self, cache: LC) -> TrieBackendBuilder<S, H, LC> {
 		TrieBackendBuilder {
+			kv_mode: self.kv_mode,
 			cache: Some(cache),
 			root: self.root,
 			storage: self.storage,
@@ -165,9 +174,8 @@ where
 	/// Build the configured [`TrieBackend`].
 	#[cfg(feature = "std")]
 	pub fn build(self) -> TrieBackend<S, H, C> {
-		let kv_mode = std::env::var("DB_KV_MODE").map(|s| s.parse().unwrap_or(false)).unwrap_or(false);
 		TrieBackend {
-			kv_mode,
+			kv_mode: self.kv_mode,
 			essence: TrieBackendEssence::new_with_cache_and_recorder(
 				self.storage,
 				self.root,
@@ -184,7 +192,7 @@ where
 		let _ = self.cache;
 
 		TrieBackend {
-			kv_mode: true,
+			kv_mode: self.kv_mode,
 			essence: TrieBackendEssence::new(self.storage, self.root),
 			next_storage_key_cache: Default::default(),
 		}
@@ -387,7 +395,10 @@ where
 
 	fn raw_iter(&self, args: IterArgs) -> Result<Self::RawIter, Self::Error> {
 		if self.kv_mode {
+			#[cfg(feature = "std")]
 			return Err("kv_mode doesn't support `raw_iter`".into());
+			#[cfg(not(feature = "std"))]
+			return Err(crate::DefaultError);
 		}
 		self.essence.raw_iter(args)
 	}
