@@ -21,9 +21,9 @@ mod rstd {
 }
 
 use hash_db::Hasher;
+use crate::rstd::vec::Vec;
 pub use kvdb::KVDB;
 pub use kvdbmut::KVDBMut;
-
 pub mod kvdb;
 pub mod kvdbmut;
 

@@ -1,5 +1,7 @@
 use hash_db::{HashDBRef, Hasher, Prefix};
-use crate::{DBValue, KVCache, KV};
+use crate::{DBValue, KVCache, KV, rstd::vec::Vec};
+#[cfg(not(feature = "std"))]
+use alloc::string::String;
 
 pub struct KVDB<'db, 'cache, H: Hasher> {
     hash: &'db H::Out,
@@ -60,7 +62,7 @@ impl <'db, 'cache, H: Hasher> KVDB<'db, 'cache, H> {
 impl<'db, 'cache, H: Hasher> KV<H> for KVDB<'db, 'cache, H> {
     fn get(&self, key: &[u8]) -> Option<DBValue> {
         match self.fetch_value(H::hash(key), (key, None)).ok() {
-            Some(v) => if v == vec![0u8] {
+            Some(v) => if v == [0u8].to_vec() {
                 None
             } else {
                 Some(v)

@@ -405,7 +405,6 @@ impl<S: TrieBackendStorage<H>, H: Hasher, C: AsLocalTrieCache<H>> TrieBackendEss
 	#[inline]
 	fn with_kv_cache<R>(
 		&self,
-		_: Option<H::Out>,
 		callback: impl FnOnce(
 			Option<&mut dyn KVCache<H>>,
 		) -> R,

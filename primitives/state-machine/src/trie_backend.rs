@@ -184,6 +184,7 @@ where
 		let _ = self.cache;
 
 		TrieBackend {
+			kv_mode: true,
 			essence: TrieBackendEssence::new(self.storage, self.root),
 			next_storage_key_cache: Default::default(),
 		}

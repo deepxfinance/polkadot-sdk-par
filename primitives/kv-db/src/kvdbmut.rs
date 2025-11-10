@@ -1,7 +1,10 @@
+#[cfg(not(feature = "std"))]
+use alloc::collections::{BTreeMap, BTreeSet};
+#[cfg(feature = "std")]
 use std::collections::{BTreeMap, BTreeSet};
 use hash_db::{HashDB, HashDBRef, Hasher};
 use log::trace;
-use crate::{DBValue, KVCache, KVMut};
+use crate::{DBValue, KVCache, KVMut, rstd::vec::Vec};
 
 pub struct KVDBMut<'a, 'cache, H: Hasher> {
     db: &'a mut dyn HashDB<H, DBValue>,
@@ -81,7 +84,7 @@ impl <'db, 'cache, H: Hasher> KVDBMut<'db, 'cache, H> {
         // always kill all the nodes on death row.
         #[cfg(feature = "std")]
         trace!(target: "kvdb", "{:?} to remove from db", self.death_row.len());
-        let mut changes = vec![];
+        let mut changes = Vec::new();
         for prefix in self.death_row.iter() {
             let key_hash = H::hash(prefix.0.as_slice());
             self.db.remove(&key_hash, (prefix.0.as_slice(), prefix.1));
@@ -96,7 +99,7 @@ impl <'db, 'cache, H: Hasher> KVDBMut<'db, 'cache, H> {
             self.cache.as_mut().map(|c| (*c.borrow_mut()).cache_value_for_key(key_hash, &prefix.0, db_value.to_vec()));
             // TODO remove for decrease rc.
             self.db.remove(&key_hash, (prefix.0.as_slice(), prefix.1));
-            self.db.emplace(key_hash, (prefix.0.as_slice(), prefix.1), vec![]);
+            self.db.emplace(key_hash, (prefix.0.as_slice(), prefix.1), Vec::new());
             self.db.emplace(key_hash, (prefix.0.as_slice(), prefix.1), db_value.clone());
             changes.push([prefix.0.as_slice(), db_value.as_slice()].concat());
         }
@@ -112,7 +115,7 @@ impl<'db, 'cache, H: Hasher> KVMut<'db, H> for KVDBMut<'db, 'cache, H> {
         'a: 'key
     {
         match self.get_data(key).map(|v| v.clone()) {
-            Some(v) => if v == vec![0u8] {
+            Some(v) => if v == [0u8].to_vec() {
                 None
             } else {
                 Some(v)
