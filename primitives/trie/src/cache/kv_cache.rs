@@ -25,7 +25,7 @@ pub type KValueCacheMap = LruMap<
 pub struct LocalValueCacheLimiter {
     // TODO better cache size check
     /// The current size (in bytes) of data allocated by this cache on the heap.
-    current_heap_size: usize,
+    pub current_heap_size: usize,
 }
 
 #[cfg(feature = "std")]
@@ -94,9 +94,9 @@ pub struct LocalKVCache<'a, H> {
 
 #[cfg(feature = "std")]
 impl<'a, H: Hasher> KVCache<H> for LocalKVCache<'a, H> {
-    fn lookup_value_for_key(&mut self, hash: H::Out, key: &[u8]) -> Option<&DBValue> {
+    fn lookup_value_for_key(&mut self, hash: H::Out, key: &[u8]) -> Option<DBValue> {
         let key = [hash.as_ref(), key].concat();
-        self.cache.peek(&key)
+        self.cache.peek(&key).cloned()
     }
 
     fn cache_value_for_key(&mut self, hash: H::Out, key: &[u8], value: DBValue) {
@@ -105,14 +105,14 @@ impl<'a, H: Hasher> KVCache<H> for LocalKVCache<'a, H> {
     }
 
     fn remove_value_for_key(&mut self, hash: H::Out, key: &[u8]) {
-        let key = [hash.as_ref(), key].concat();
-        self.cache.remove(&key);
+        let full_key = [hash.as_ref(), key].concat();
+        self.cache.insert(full_key, vec![0u8]);
     }
 }
 
 #[cfg(not(feature = "std"))]
 impl<H: Hasher> KVCache<H> for LocalKVCache {
-    fn lookup_value_for_key(&mut self, _hash: H::Out, _key: &[u8]) -> Option<&DBValue> {
+    fn lookup_value_for_key(&mut self, _hash: H::Out, _key: &[u8]) -> Option<DBValue> {
         None
     }
 

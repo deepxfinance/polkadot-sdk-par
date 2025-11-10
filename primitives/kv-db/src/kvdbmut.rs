@@ -1,9 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
-use std::ops::Deref;
-use hash_db::{HashDB, HashDBRef, Hasher, EMPTY_PREFIX};
+use hash_db::{HashDB, HashDBRef, Hasher};
 use log::trace;
-use crate::{Bytes, DBValue, KVCache, KVMut};
-use crate::kvdb::KVDB;
+use crate::{DBValue, KVCache, KVMut};
 
 pub struct KVDBMut<'a, 'cache, H: Hasher> {
     db: &'a mut dyn HashDB<H, DBValue>,
@@ -85,18 +83,20 @@ impl <'db, 'cache, H: Hasher> KVDBMut<'db, 'cache, H> {
         trace!(target: "kvdb", "{:?} to remove from db", self.death_row.len());
         let mut changes = vec![];
         for prefix in self.death_row.iter() {
-            self.db.remove(&H::hash(prefix.0.as_slice()), (prefix.0.as_slice(), prefix.1));
-            self.cache.as_mut().map(|c| (*c.borrow_mut()).remove_value_for_key(H::hash(prefix.0.as_slice()), &prefix.0));
+            let key_hash = H::hash(prefix.0.as_slice());
+            self.db.remove(&key_hash, (prefix.0.as_slice(), prefix.1));
+            self.cache.as_mut().map(|c| (*c.borrow_mut()).remove_value_for_key(key_hash, &prefix.0));
             changes.push([prefix.0.as_slice(), &[0u8]].concat());
         }
         // always kill all the nodes on death row.
         #[cfg(feature = "std")]
         trace!(target: "kvdb", "{:?} to insert db", self.storage.len());
         for (prefix, db_value) in self.storage.iter() {
-            self.cache.as_mut().map(|c| (*c.borrow_mut()).cache_value_for_key(H::hash(prefix.0.as_slice()), &prefix.0, db_value.to_vec()));
             let key_hash = H::hash(prefix.0.as_slice());
-           //  // TODO remove for decrease rc.
-           // self.db.remove(&key_hash, (prefix.0.as_slice(), prefix.1));
+            self.cache.as_mut().map(|c| (*c.borrow_mut()).cache_value_for_key(key_hash, &prefix.0, db_value.to_vec()));
+            // TODO remove for decrease rc.
+            self.db.remove(&key_hash, (prefix.0.as_slice(), prefix.1));
+            self.db.emplace(key_hash, (prefix.0.as_slice(), prefix.1), vec![]);
             self.db.emplace(key_hash, (prefix.0.as_slice(), prefix.1), db_value.clone());
             changes.push([prefix.0.as_slice(), db_value.as_slice()].concat());
         }
@@ -111,7 +111,14 @@ impl<'db, 'cache, H: Hasher> KVMut<'db, H> for KVDBMut<'db, 'cache, H> {
     where
         'a: 'key
     {
-        self.get_data(key).map(|v| v.clone())
+        match self.get_data(key).map(|v| v.clone()) {
+            Some(v) => if v == vec![0u8] {
+                None
+            } else {
+                Some(v)
+            },
+            None => None
+        }
     }
 
     fn insert(&mut self, key: &[u8], value: DBValue) {

@@ -24,7 +24,7 @@ use crate::{
 	trie_backend_essence::{RawIter, TrieBackendEssence, TrieBackendStorage},
 	Backend, StorageKey, StorageValue,
 };
-use codec::{Codec, Encode};
+use codec::Codec;
 #[cfg(feature = "std")]
 use hash_db::HashDB;
 use hash_db::Hasher;
@@ -33,7 +33,6 @@ use sp_core::storage::{ChildInfo, StateVersion};
 use sp_trie::{cache::LocalTrieCache, recorder::Recorder};
 #[cfg(feature = "std")]
 use sp_trie::{MemoryDB, StorageProof};
-use crate::backend::Consolidate;
 
 /// Dummy type to be used in `no_std`.
 ///

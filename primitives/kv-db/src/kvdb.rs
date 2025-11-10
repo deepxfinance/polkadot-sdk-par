@@ -59,7 +59,14 @@ impl <'db, 'cache, H: Hasher> KVDB<'db, 'cache, H> {
 
 impl<'db, 'cache, H: Hasher> KV<H> for KVDB<'db, 'cache, H> {
     fn get(&self, key: &[u8]) -> Option<DBValue> {
-        self.db.get(&H::hash(key), (key, None))
+        match self.fetch_value(H::hash(key), (key, None)).ok() {
+            Some(v) => if v == vec![0u8] {
+                None
+            } else {
+                Some(v)
+            },
+            None => None
+        }
     }
 }
 

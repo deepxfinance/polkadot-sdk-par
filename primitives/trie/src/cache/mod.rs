@@ -372,7 +372,7 @@ impl<H: Hasher> LocalTrieCache<H> {
 		TrieCache {
 			shared_cache: self.shared.clone(),
 			local_cache: self.node_cache.lock(),
-			kv_cache: self.kv_cache.lock(),
+			local_kv_cache: self.kv_cache.lock(),
 			value_cache,
 			stats: &self.stats,
 		}
@@ -389,7 +389,7 @@ impl<H: Hasher> LocalTrieCache<H> {
 		TrieCache {
 			shared_cache: self.shared.clone(),
 			local_cache: self.node_cache.lock(),
-			kv_cache: self.kv_cache.lock(),
+			local_kv_cache: self.kv_cache.lock(),
 			value_cache: ValueCache::Fresh(Default::default()),
 			stats: &self.stats,
 		}
@@ -427,6 +427,8 @@ impl<H: Hasher> Drop for LocalTrieCache<H> {
 			self.value_cache.get_mut().drain(),
 			self.shared_value_cache_access.get_mut().drain().map(|(key, ())| key),
 		);
+
+		shared_inner.kv_cache_mut().update(self.kv_cache.get_mut().drain())
 	}
 }
 
@@ -524,7 +526,7 @@ impl<H: Hasher> ValueCache<'_, H> {
 pub struct TrieCache<'a, H: Hasher> {
 	shared_cache: SharedTrieCache<H>,
 	local_cache: MutexGuard<'a, NodeCacheMap<H::Out>>,
-	kv_cache: MutexGuard<'a, KValueCacheMap>,
+	local_kv_cache: MutexGuard<'a, KValueCacheMap>,
 	value_cache: ValueCache<'a, H>,
 	stats: &'a TrieHitStats,
 }
@@ -660,19 +662,22 @@ impl<'a, H: Hasher> trie_db::TrieCache<NodeCodec<H>> for TrieCache<'a, H> {
 }
 
 impl<'a, H: Hasher> KVCache<H> for TrieCache<'a, H> {
-	fn lookup_value_for_key(&mut self, hash: H::Out, key: &[u8]) -> Option<&DBValue> {
-		let key = [hash.as_ref(), key].concat();
-		self.kv_cache.peek(&key)
+	fn lookup_value_for_key(&mut self, hash: H::Out, key: &[u8]) -> Option<DBValue> {
+		let full_key = [hash.as_ref(), key].concat();
+		if let Some(value) = self.local_kv_cache.peek(&full_key) {
+			return Some(value.clone());
+		}
+		self.shared_cache.peek_kv_value(full_key.as_slice())
 	}
 
 	fn cache_value_for_key(&mut self, hash: H::Out, key: &[u8], value: DBValue) {
 		let full_key = [hash.as_ref(), key].concat();
-		self.kv_cache.insert(full_key, value);
+		self.local_kv_cache.insert(full_key, value);
 	}
 
 	fn remove_value_for_key(&mut self, hash: H::Out, key: &[u8]) {
 		let key = [hash.as_ref(), key].concat();
-		self.kv_cache.remove(&key);
+		self.local_kv_cache.remove(&key);
 	}
 }
 

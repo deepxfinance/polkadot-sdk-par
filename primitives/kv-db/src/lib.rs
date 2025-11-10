@@ -68,7 +68,8 @@ pub trait KVMut<'db, H: Hasher> {
 
 pub trait KVCache<H: Hasher> {
     /// Lookup value for the given `key`.
-    fn lookup_value_for_key(&mut self, hash: H::Out, key: &[u8]) -> Option<&DBValue>;
+    // TODO return reference for less copy.
+    fn lookup_value_for_key(&mut self, hash: H::Out, key: &[u8]) -> Option<DBValue>;
 
     /// Cache the given `value` for the given `key`.
     fn cache_value_for_key(&mut self, hash: H::Out, key: &[u8], value: DBValue);

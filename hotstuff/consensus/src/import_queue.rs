@@ -216,24 +216,24 @@ where
 
                     inherent_data.hotstuff_replace_inherent_data(slot);
 
-                    // skip the inherents verification if the runtime API is old or not expected to
-                    // exist.
-                    if self
-                        .client
-                        .runtime_api()
-                        .has_api_with::<dyn BlockBuilderApi<B>, _>(parent_hash, |v| v >= 2)
-                        .map_err(|e| e.to_string())?
-                    {
-                        self.check_inherents(
-                            new_block.clone(),
-                            parent_hash,
-                            inherent_data,
-                            create_inherent_data_providers,
-                            block.origin.into(),
-                        )
-                            .await
-                            .map_err(|e| e.to_string())?;
-                    }
+                    // // skip the inherents verification if the runtime API is old or not expected to
+                    // // exist.
+                    // if self
+                    //     .client
+                    //     .runtime_api()
+                    //     .has_api_with::<dyn BlockBuilderApi<B>, _>(parent_hash, |v| v >= 2)
+                    //     .map_err(|e| e.to_string())?
+                    // {
+                    //     self.check_inherents(
+                    //         new_block.clone(),
+                    //         parent_hash,
+                    //         inherent_data,
+                    //         create_inherent_data_providers,
+                    //         block.origin.into(),
+                    //     )
+                    //         .await
+                    //         .map_err(|e| e.to_string())?;
+                    // }
 
                     let (_, inner_body) = new_block.deconstruct();
                     block.body = Some(inner_body);

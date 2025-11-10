@@ -28,6 +28,7 @@ use std::{
 	sync::Arc,
 };
 use trie_db::{node::NodeOwned, CachedValue};
+use crate::cache::kv_cache::{KValueCacheMap, LocalValueCacheLimiter};
 
 lazy_static::lazy_static! {
 	static ref RANDOM_STATE: ahash::RandomState = ahash::RandomState::default();
@@ -563,10 +564,61 @@ impl<H: Eq + std::hash::Hash + Clone + Copy + AsRef<[u8]>> SharedValueCache<H> {
 	}
 }
 
+/// The shared kv cache
+pub (super) struct SharedKVCache {
+	/// The cached kv values, ordered by least recently used.
+	pub(super) lru: KValueCacheMap,
+}
+
+impl SharedKVCache {
+	/// Create a new instance.
+	fn new(max_heap_size: usize) -> Self {
+		Self {
+			lru: schnellru::LruMap::with_hasher(
+				LocalValueCacheLimiter {
+					current_heap_size: max_heap_size,
+				},
+				Default::default(),
+			),
+		}
+	}
+
+	/// Update the cache with the `added` values.
+	pub fn update(
+		&mut self,
+		added: impl IntoIterator<Item = (super::kv_cache::ValueCacheKey, kv_db::DBValue)>,
+	) {
+		let mut add = 0usize;
+		let mut removes = 0usize;
+		for (key, value) in added {
+			if value == vec![0u8] {
+				removes += 1;
+				self.lru.remove(&key);
+			} else {
+				add += 1;
+				self.lru.insert(key, value);
+			}
+		}
+
+		tracing::debug!(
+			target: super::LOG_TARGET,
+			"Updated the shared kv value cache: {add} new values, {removes} removed, (length = {}, inline size={})",
+			self.lru.len(),
+			self.lru.memory_usage(),
+		);
+	}
+
+	/// Reset the cache.
+	fn reset(&mut self) {
+		self.lru.clear();
+	}
+}
+
 /// The inner of [`SharedTrieCache`].
 pub(super) struct SharedTrieCacheInner<H: Hasher> {
 	node_cache: SharedNodeCache<H::Out>,
 	value_cache: SharedValueCache<H::Out>,
+	kv_cache: SharedKVCache,
 }
 
 impl<H: Hasher> SharedTrieCacheInner<H> {
@@ -579,6 +631,11 @@ impl<H: Hasher> SharedTrieCacheInner<H> {
 	/// Returns a mutable reference to the [`SharedValueCache`].
 	pub(super) fn value_cache_mut(&mut self) -> &mut SharedValueCache<H::Out> {
 		&mut self.value_cache
+	}
+
+	/// Returns a mutable reference to the [`KVValueCache`].
+	pub(super) fn kv_cache_mut(&mut self) -> &mut SharedKVCache {
+		&mut self.kv_cache
 	}
 
 	/// Returns a reference to the [`SharedNodeCache`].
@@ -657,6 +714,7 @@ impl<H: Hasher> SharedTrieCache<H> {
 					value_cache_max_inline_size,
 					value_cache_max_heap_size,
 				),
+				kv_cache: SharedKVCache::new(2 * 1024 * 1024 * 1024),
 			})),
 		}
 	}
@@ -684,6 +742,12 @@ impl<H: Hasher> SharedTrieCache<H> {
 	#[inline]
 	pub fn peek_node(&self, key: &H::Out) -> Option<NodeOwned<H::Out>> {
 		self.inner.read().node_cache.lru.peek(key).cloned()
+	}
+
+	/// Get a copy of the kv value for `key`.
+	#[inline]
+	pub fn peek_kv_value(&self, key: &[u8]) -> Option<kv_db::DBValue> {
+		self.inner.read().kv_cache.lru.peek(key).cloned()
 	}
 
 	/// Get a copy of the [`CachedValue`] for `key`.
