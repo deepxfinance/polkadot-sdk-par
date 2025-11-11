@@ -181,6 +181,10 @@ where
                 None => {
                     debug!(target: CLIENT_LOG_TARGET, "[Recover] No proposal for round {}", self.aux_data.high_round());
                     round = round.sub_one();
+                    if round == Round::zero() {
+                        debug!(target: CLIENT_LOG_TARGET, "[Recover] load finish for reach round zero");
+                        break;
+                    }
                     proposal_key = ProposalKey::round(round);
                 }
             };

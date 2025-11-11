@@ -287,6 +287,9 @@ where
 				}
 			}
 			round = round.sub_one();
+			if round == Round::zero() {
+				break;
+			}
 		}
 		self.store.revert(&insert, &delete)
 			.map_err(|e| HotstuffError::Other(format!("revert delete failed for {e:?}")))?;

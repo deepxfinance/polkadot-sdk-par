@@ -67,8 +67,15 @@ pub struct Round {
 }
 
 impl Round {
+    pub fn zero() -> Self {
+        (0, ConsensusStage::Commit).into()
+    }
+
     pub fn sub_one(&self) -> Self {
         let mut view = self.view;
+        if *self == Self::zero() {
+            return Self::zero();
+        }
         let stage = match self.stage {
             ConsensusStage::Prepare => {
                 view = view.saturating_sub(1);
