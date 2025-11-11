@@ -64,9 +64,14 @@ impl <'db, 'cache, H: Hasher> KVDBMut<'db, 'cache, H> {
     fn insert(
         &mut self,
         key: &[u8],
-        value: DBValue,
+        mut value: DBValue,
     ) {
         self.death_row.remove(&(key.to_vec(), None));
+        if value == [0u8].to_vec() {
+            // to avoid null data `vec![0u8]`.
+            // for encoded value, this should not exist. we refactor it to empty vec encode.
+            value = [1u8].to_vec();
+        }
         self.storage.insert((key.to_vec(), None), value);
     }
 
@@ -117,6 +122,8 @@ impl<'db, 'cache, H: Hasher> KVMut<'db, H> for KVDBMut<'db, 'cache, H> {
         match self.get_data(key).map(|v| v.clone()) {
             Some(v) => if v == [0u8].to_vec() {
                 None
+            } else if v == [1u8].to_vec() {
+                Some([0u8].to_vec())
             } else {
                 Some(v)
             },

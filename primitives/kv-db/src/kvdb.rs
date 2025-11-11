@@ -64,6 +64,8 @@ impl<'db, 'cache, H: Hasher> KV<H> for KVDB<'db, 'cache, H> {
         match self.fetch_value(H::hash(key), (key, None)).ok() {
             Some(v) => if v == [0u8].to_vec() {
                 None
+            } else if v == [1u8].to_vec() {
+                Some([0u8].to_vec())
             } else {
                 Some(v)
             },
