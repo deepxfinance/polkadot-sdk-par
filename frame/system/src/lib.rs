@@ -589,6 +589,18 @@ pub mod pallet {
 	pub(super) type Events<T: Config> =
 		StorageValue<_, Vec<Box<EventRecord<T::RuntimeEvent, T::Hash>>>, ValueQuery>;
 
+	/// EventsMap deposited for the history block.
+	///
+	/// NOTE: The item is unbound and should therefore never be read on chain.
+	/// It could otherwise inflate the PoV size of a block.
+	///
+	/// Events have a large in-memory size. Box the events to not go out-of-memory
+	/// just in case someone still reads them from within the runtime.
+	#[pallet::storage]
+	#[pallet::unbounded]
+	pub(super) type EventsMap<T: Config> =
+	StorageMap<_, Blake2_128Concat, T::BlockNumber, Vec<Box<EventRecord<T::RuntimeEvent, T::Hash>>>, ValueQuery>;
+
 	/// The number of events in the `Events<T>` list.
 	#[pallet::storage]
 	#[pallet::whitelist_storage]
@@ -1385,6 +1397,8 @@ impl<T: Config> Pallet<T> {
 		let number = <Number<T>>::get();
 		let parent_hash = <ParentHash<T>>::get();
 		let digest = <Digest<T>>::get();
+		// We have to store events by block number since `Events` keep change.
+		<EventsMap<T>>::insert(number, <Events<T>>::get());
 
 		#[cfg(feature = "std")]
 		let extrinsics_root_start = std::time::Instant::now();
