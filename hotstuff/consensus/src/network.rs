@@ -11,7 +11,7 @@ use parking_lot::Mutex;
 use sc_network::{
 	NetworkBlock, NetworkStateInfo, NetworkSyncForkRequest, ObservedRole, PeerId, ProtocolName,
 };
-use sc_network_common::sync::SyncEventStream;
+use sc_network_common::sync::{SyncEventStream, SyncStatusProvider};
 use sc_network_gossip::{
 	GossipEngine, MessageIntent, Network as GossipNetwork, ValidationResult, ValidatorContext,
 };
@@ -45,6 +45,7 @@ where
 pub trait Syncing<Block: BlockT>:
 	NetworkSyncForkRequest<Block::Hash, NumberFor<Block>>
 	+ NetworkBlock<Block::Hash, NumberFor<Block>>
+	+ SyncStatusProvider<Block>
 	+ SyncEventStream
 	+ Clone
 	+ Send
@@ -57,6 +58,7 @@ where
 	Block: BlockT,
 	T: NetworkSyncForkRequest<Block::Hash, NumberFor<Block>>
 		+ NetworkBlock<Block::Hash, NumberFor<Block>>
+		+ SyncStatusProvider<Block>
 		+ SyncEventStream
 		+ Clone
 		+ Send

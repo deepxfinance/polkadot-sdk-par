@@ -34,6 +34,7 @@ use crate::{AuthorityList, client::{ClientForHotstuff, LinkHalf}, find_consensus
 }, network::{HotstuffNetworkBridge, Network as NetworkT, Syncing as SyncingT}, error::{HotstuffError, PayloadError, ViewNumber}, aux_data::{AuxDataStore, Timer}, CLIENT_LOG_TARGET, AuthorityId};
 use hotstuff_primitives::{ConsensusLog, HotstuffApi, RuntimeAuthorityId};
 use sc_network::PeerId;
+use sc_network_common::sync::SyncState;
 use sp_api::TransactionFor;
 use sp_consensus::{Environment, Error as ConsensusError, Proposer};
 use sp_consensus_slots::SlotDuration;
@@ -64,7 +65,7 @@ pub struct ConsensusWorker<
 
     network: HotstuffNetworkBridge<B, N, S>,
     client: Arc<C>,
-    _sync: S,
+    sync: S,
     local_timer: Timer,
     slot_duration: SlotDuration,
     aux_data: AuxDataStore<B, C>,
@@ -137,7 +138,7 @@ where
             consensus_msg_rx,
             executor_tx,
             client,
-            _sync: sync,
+            sync,
             aux_data,
             proposer_factory,
             oracle,
@@ -209,6 +210,32 @@ where
         self.commit = init_commit;
     }
 
+    pub async fn try_wait_sync(&mut self) {
+        let mut sync_state = self.sync.status().await.unwrap();
+        if sync_state.state != SyncState::Idle {
+            if let Some(best_seen_block) = sync_state.best_seen_block {
+                if self.client.info().best_number.saturating_add(30u32.into()) >= best_seen_block {
+                    return;
+                }
+                info!(target: CLIENT_LOG_TARGET, "Local best_block: {:?}, best_seen block: {best_seen_block}, waiting for sync", self.client.info().best_number);
+            }
+            let mut counter = 0usize;
+            loop {
+                if sync_state.state == SyncState::Idle {
+                    info!(target: CLIENT_LOG_TARGET, "Sync state: {:?}, best_seen block: {:?}, sync finished!!!", sync_state.state, sync_state.best_seen_block);
+                    self.local_timer.reset();
+                    break;
+                }
+                if counter / 30 == 0 {
+                    info!(target: CLIENT_LOG_TARGET, "Current sync state: {:?}, best_seen block: {:?}", sync_state.state, sync_state.best_seen_block);
+                }
+                tokio::time::sleep(Duration::from_millis(1)).await;
+                sync_state = self.sync.status().await.unwrap();
+                counter += 1;
+            }
+        }
+    }
+
     pub async fn run(mut self) {
         if self.state.local_authority_ids.is_empty() {
             info!(target: CLIENT_LOG_TARGET, "Local is not authority");
@@ -216,6 +243,7 @@ where
             info!(target: CLIENT_LOG_TARGET, "Local authority id is: {:?}", self.state.local_authority_ids);
         }
         self.recover();
+        self.try_wait_sync().await;
         self.local_timer.reset();
         info!(target: CLIENT_LOG_TARGET, "Start with round {} processed: {}, commit: {}, high_qc {}", self.state.round, self.processed.round(), self.commit.round(), self.state.high_qc.round());
         loop {
@@ -499,6 +527,7 @@ where
             match self.check_payload(proposal) {
                 Ok(true) => {
                     self.pending_proposal = Some(proposal.clone());
+                    self.try_wait_sync().await;
                     trace!(target: CLIENT_LOG_TARGET, "check_payload no state to check, skip vote for proposal to pending!!!");
                     return Ok(())
                 },
