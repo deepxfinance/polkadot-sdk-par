@@ -152,6 +152,24 @@ where
 		})
 	}
 
+	fn check_if_verify(self, lookup: &Lookup, _verify: bool) -> Result<Self::Checked, TransactionValidityError> {
+		Ok(match self.signature {
+			Some((signed, signature, extra)) => {
+				let signed = lookup.lookup(signed)?;
+				let raw_payload = SignedPayload::new(self.function, extra)?;
+				if _verify {
+					if !raw_payload.using_encoded(|payload| signature.verify(payload, &signed)) {
+						return Err(InvalidTransaction::BadProof.into())
+					}
+				}
+
+				let (function, extra, _) = raw_payload.deconstruct();
+				CheckedExtrinsic { signed: Some((signed, extra)), function }
+			},
+			None => CheckedExtrinsic { signed: None, function: self.function },
+		})
+	}
+
 	#[cfg(feature = "try-runtime")]
 	fn unchecked_into_checked_i_know_what_i_am_doing(
 		self,

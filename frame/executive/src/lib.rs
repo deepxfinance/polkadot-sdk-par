@@ -564,7 +564,7 @@ where
 		let encoded_len = encoded.len();
 		sp_tracing::enter_span!(sp_tracing::info_span!("apply_extrinsic",
 				ext=?sp_core::hexdisplay::HexDisplay::from(&encoded)));
-		let result = uxt.check(&Default::default()).map(|xt| {
+		let result = uxt.check_if_verify(&Default::default(), false).map(|xt| {
 			let dispatch_info = xt.get_dispatch_info();
 			let r = Applyable::apply::<UnsignedValidator>(xt, &dispatch_info, encoded_len);
 			(dispatch_info, r)
