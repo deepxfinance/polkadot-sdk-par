@@ -83,7 +83,8 @@ const SHARED_VALUE_CACHE_MAX_PROMOTED_KEYS: u32 = 1792;
 const SHARED_NODE_CACHE_MAX_REPLACE_PERCENT: usize = 33;
 /// Same as [`SHARED_NODE_CACHE_MAX_REPLACE_PERCENT`].
 const SHARED_VALUE_CACHE_MAX_REPLACE_PERCENT: usize = 33;
-
+/// Same as [`SHARED_NODE_CACHE_MAX_REPLACE_PERCENT`].
+const SHARED_KV_CACHE_MAX_REPLACE_PERCENT: usize = 33;
 /// The maximum inline capacity of the local cache, in bytes.
 ///
 /// This is just an upper limit; since the maps are resized in powers of two
