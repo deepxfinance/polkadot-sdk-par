@@ -1,5 +1,5 @@
 use hash_db::{HashDBRef, Hasher, Prefix};
-use crate::{DBValue, KVCache, KV, rstd::vec::Vec};
+use crate::{DBValue, KVCache, KV, rstd::vec::Vec, STORAGE_HASH};
 #[cfg(not(feature = "std"))]
 use alloc::string::String;
 
@@ -27,6 +27,13 @@ impl <'db, 'cache, H: Hasher> KVDB<'db, 'cache, H> {
         self.db
     }
 
+    pub fn extend_storage_hash(&self, key: &[u8]) -> bool {
+        if key == b":code" {
+            return true
+        }
+        false
+    }
+
     /// Fetch a value under the given `hash`.
     pub(crate) fn fetch_value(
         &self,
@@ -35,7 +42,7 @@ impl <'db, 'cache, H: Hasher> KVDB<'db, 'cache, H> {
     ) -> Result<DBValue, String> {
         let cache = self.cache.as_ref().map(|c| c.borrow_mut());
         if let Some(mut c) = cache {
-            if let Some(value) = (*c).lookup_value_for_key(hash, &prefix.0) {
+            if let Some(value) = (*c).lookup_value_for_key(hash, &prefix.0, prefix.1) {
                 return Ok(value.to_vec());
             }
         };
@@ -43,7 +50,7 @@ impl <'db, 'cache, H: Hasher> KVDB<'db, 'cache, H> {
             Some(value) => {
                 let cache = self.cache.as_ref().map(|c| c.borrow_mut());
                 cache.map(|mut c| {
-                    (*c).cache_value_for_key(hash, &prefix.0, value.clone())
+                    (*c).cache_value_for_key(hash, &prefix.0, prefix.1, value.clone())
                 });
                 Ok(value.to_vec())
             },
@@ -52,6 +59,12 @@ impl <'db, 'cache, H: Hasher> KVDB<'db, 'cache, H> {
     }
 
     pub fn get_hash(&self, key: &[u8]) -> Result<Option<H::Out>, String> {
+        if self.extend_storage_hash(key) {
+            return match self.fetch_value(H::hash(key), (key, Some(STORAGE_HASH))) {
+                Ok(base) => Ok(Some(H::hash([base.as_slice(), key].concat().as_slice()))),
+                Err(_) => Ok(None),
+            }
+        }
         match self.fetch_value(H::hash(key), (key, None)) {
             Ok(_) => Ok(Some(H::hash(key))),
             Err(_) => Ok(None),

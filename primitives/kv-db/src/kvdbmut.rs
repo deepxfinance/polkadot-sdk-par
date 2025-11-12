@@ -4,7 +4,7 @@ use alloc::collections::{BTreeMap, BTreeSet};
 use std::collections::{BTreeMap, BTreeSet};
 use hash_db::{HashDB, HashDBRef, Hasher};
 use log::trace;
-use crate::{DBValue, KVCache, KVMut, rstd::vec::Vec};
+use crate::{DBValue, KVCache, KVMut, rstd::vec::Vec, STORAGE_HASH};
 
 pub struct KVDBMut<'a, 'cache, H: Hasher> {
     db: &'a mut dyn HashDB<H, DBValue>,
@@ -43,13 +43,13 @@ impl <'db, 'cache, H: Hasher> KVDBMut<'db, 'cache, H> {
         match self.storage.get(&(key.to_vec(), None)) {
             Some(value) => Some(value.to_vec()),
             None => if let Some(mut cache) = self.cache.as_ref().map(|c| c.borrow_mut()) {
-                let cache_result = (*cache).lookup_value_for_key(H::hash(key), key);
+                let cache_result = (*cache).lookup_value_for_key(H::hash(key), key, None);
                 match cache_result {
                     Some(value) => Some(value.clone()),
                     None => match self.db.get(&H::hash(key), (key, None)) {
                         Some(value) => {
-                            (*cache).cache_value_for_key(H::hash(key), key, value);
-                            (*cache).lookup_value_for_key(H::hash(key), key).map(|v| v.to_vec())
+                            (*cache).cache_value_for_key(H::hash(key), key, None, value);
+                            (*cache).lookup_value_for_key(H::hash(key), key, None).map(|v| v.to_vec())
                         }
                         None => None
                     }
@@ -58,6 +58,15 @@ impl <'db, 'cache, H: Hasher> KVDBMut<'db, 'cache, H> {
                 self.db.get(&H::hash(key), (key, None))
             }
         }
+    }
+
+    /// Return special storage hash for some well_known_key(e.g. CODE)
+    /// This extended storage_hash should be stored at prefix `(key, Some(STORAGE_HASH))`.
+    pub fn extend_storage_hash(&self, key: &[u8]) -> bool {
+        if key == b":code" {
+            return true
+        }
+        false
     }
 
     /// Insert a key-value pair.
@@ -73,11 +82,18 @@ impl <'db, 'cache, H: Hasher> KVDBMut<'db, 'cache, H> {
             value = [1u8].to_vec();
         }
         self.storage.insert((key.to_vec(), None), value);
+        if self.extend_storage_hash(key) {
+            self.death_row.remove(&(key.to_vec(), Some(STORAGE_HASH)));
+            self.storage.insert((key.to_vec(), Some(STORAGE_HASH)), self.hash.as_ref().to_vec());
+        }
     }
 
     fn remove(&mut self, key: &[u8]) -> Option<DBValue> {
         let removed = self.storage.remove(&(key.to_vec(), None));
         self.death_row.insert((key.to_vec(), None));
+        if self.extend_storage_hash(key) {
+            self.death_row.insert((key.to_vec(), Some(STORAGE_HASH)));
+        }
         removed
     }
 
@@ -93,7 +109,7 @@ impl <'db, 'cache, H: Hasher> KVDBMut<'db, 'cache, H> {
         for prefix in self.death_row.iter() {
             let key_hash = H::hash(prefix.0.as_slice());
             self.db.remove(&key_hash, (prefix.0.as_slice(), prefix.1));
-            self.cache.as_mut().map(|c| (*c.borrow_mut()).remove_value_for_key(key_hash, &prefix.0));
+            self.cache.as_mut().map(|c| (*c.borrow_mut()).remove_value_for_key(key_hash, &prefix.0, prefix.1));
             changes.push([prefix.0.as_slice(), &[0u8]].concat());
         }
         // always kill all the nodes on death row.
@@ -101,7 +117,7 @@ impl <'db, 'cache, H: Hasher> KVDBMut<'db, 'cache, H> {
         trace!(target: "kvdb", "{:?} to insert db", self.storage.len());
         for (prefix, db_value) in self.storage.iter() {
             let key_hash = H::hash(prefix.0.as_slice());
-            self.cache.as_mut().map(|c| (*c.borrow_mut()).cache_value_for_key(key_hash, &prefix.0, db_value.to_vec()));
+            self.cache.as_mut().map(|c| (*c.borrow_mut()).cache_value_for_key(key_hash, &prefix.0, prefix.1, db_value.to_vec()));
             // TODO remove for decrease rc.
             self.db.remove(&key_hash, (prefix.0.as_slice(), prefix.1));
             self.db.emplace(key_hash, (prefix.0.as_slice(), prefix.1), Vec::new());

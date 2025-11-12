@@ -30,6 +30,9 @@ pub mod kvdbmut;
 /// Database value
 pub type DBValue = Vec<u8>;
 
+/// storage Prefix following pad for special key storage_hash(e.g. CODE).
+pub const STORAGE_HASH: u8 = 1;
+
 /// A key-value datastore implemented as a database-backed.
 pub trait KV<H: Hasher> {
     /// Does the db contain a given key?
@@ -69,13 +72,13 @@ pub trait KVMut<'db, H: Hasher> {
 pub trait KVCache<H: Hasher> {
     /// Lookup value for the given `key`.
     // TODO return reference for less copy.
-    fn lookup_value_for_key(&mut self, hash: H::Out, key: &[u8]) -> Option<DBValue>;
+    fn lookup_value_for_key(&mut self, hash: H::Out, key: &[u8], pad: Option<u8>) -> Option<DBValue>;
 
     /// Cache the given `value` for the given `key`.
-    fn cache_value_for_key(&mut self, hash: H::Out, key: &[u8], value: DBValue);
+    fn cache_value_for_key(&mut self, hash: H::Out, key: &[u8], pad: Option<u8>, value: DBValue);
 
     /// remove the given `value` for the given `key`.
-    fn remove_value_for_key(&mut self, hash: H::Out, key: &[u8]);
+    fn remove_value_for_key(&mut self, hash: H::Out, key: &[u8], pad: Option<u8>);
 }
 
 

@@ -663,21 +663,21 @@ impl<'a, H: Hasher> trie_db::TrieCache<NodeCodec<H>> for TrieCache<'a, H> {
 }
 
 impl<'a, H: Hasher> KVCache<H> for TrieCache<'a, H> {
-	fn lookup_value_for_key(&mut self, hash: H::Out, key: &[u8]) -> Option<DBValue> {
-		let full_key = [hash.as_ref(), key].concat();
+	fn lookup_value_for_key(&mut self, hash: H::Out, key: &[u8], pad: Option<u8>) -> Option<DBValue> {
+		let full_key = [hash.as_ref(), key, [pad.unwrap_or_default()].as_slice()].concat();
 		if let Some(value) = self.local_kv_cache.peek(&full_key) {
 			return Some(value.clone());
 		}
 		self.shared_cache.peek_kv_value(full_key.as_slice())
 	}
 
-	fn cache_value_for_key(&mut self, hash: H::Out, key: &[u8], value: DBValue) {
-		let full_key = [hash.as_ref(), key].concat();
+	fn cache_value_for_key(&mut self, hash: H::Out, key: &[u8], pad: Option<u8>, value: DBValue) {
+		let full_key = [hash.as_ref(), key, [pad.unwrap_or_default()].as_slice()].concat();
 		self.local_kv_cache.insert(full_key, value);
 	}
 
-	fn remove_value_for_key(&mut self, hash: H::Out, key: &[u8]) {
-		let key = [hash.as_ref(), key].concat();
+	fn remove_value_for_key(&mut self, hash: H::Out, key: &[u8], pad: Option<u8>) {
+		let key = [hash.as_ref(), key, [pad.unwrap_or_default()].as_slice()].concat();
 		self.local_kv_cache.remove(&key);
 	}
 }
