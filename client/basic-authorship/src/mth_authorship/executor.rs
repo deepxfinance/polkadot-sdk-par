@@ -174,21 +174,35 @@ where
             let main_storage_changes = storage_changes.main_storage_changes.clone();
             let child_storage_changes = storage_changes.child_storage_changes.clone();
             let proof = proof.clone();
-            self.spawn_handle.spawn(
-                "mth-authorship-proposer",
-                None,
-                Box::pin(async move {
-                    Self::one_thread_build_check(
-                        client,
-                        inherent_digests,
-                        block,
-                        main_storage_changes,
-                        child_storage_changes,
-                        proof,
-                    )
-                        .await
-                })
-            );
+            let kv_mode = std::env::var("DB_KV_MODE").map(|s| s.parse().unwrap_or(false)).unwrap_or(false);
+            if kv_mode {
+                // kv mode should check before block imported(since we have no history data).
+                Self::one_thread_build_check(
+                    client,
+                    inherent_digests,
+                    block,
+                    main_storage_changes,
+                    child_storage_changes,
+                    proof,
+                )
+                    .await
+            } else {
+                self.spawn_handle.spawn(
+                    "mth-authorship-proposer",
+                    None,
+                    Box::pin(async move {
+                        Self::one_thread_build_check(
+                            client,
+                            inherent_digests,
+                            block,
+                            main_storage_changes,
+                            child_storage_changes,
+                            proof,
+                        )
+                            .await
+                    })
+                );
+            }
         }
 
         self.metrics.report(|metrics| {
