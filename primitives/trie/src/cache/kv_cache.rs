@@ -12,7 +12,6 @@ pub type KValueCacheMap =
 
 #[cfg(feature = "std")]
 /// A limiter for the local value cache. This makes sure the local cache doesn't grow too big.
-#[derive(Default)]
 pub struct LocalValueCacheLimiter {
 	/// The maximum size (in bytes) the cache can hold inline.
 	///
@@ -36,6 +35,18 @@ pub struct LocalValueCacheLimiter {
 	///
 	/// Reset on every update.
 	pub(crate) max_items_evicted: usize,
+}
+
+impl Default for LocalValueCacheLimiter {
+	fn default() -> Self {
+		Self {
+			max_inline_size: 1 * 1024 * 1024 * 1024,
+			max_heap_size: 1 * 1024 * 1024 * 1024,
+			heap_size: 0,
+			items_evicted: 0,
+			max_items_evicted: 0,
+		}
+	}
 }
 
 #[cfg(feature = "std")]

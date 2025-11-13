@@ -59,6 +59,7 @@ use crate::cache::kv_cache::KValueCacheMap;
 use self::shared_cache::ValueCacheKeyHash;
 
 const LOG_TARGET: &str = "trie-cache";
+const KV_LOG_TARGET: &str = "kv-cache";
 
 /// The maximum amount of time we'll wait trying to acquire the shared cache lock
 /// when the local cache is dropped and synchronized with the share cache.
