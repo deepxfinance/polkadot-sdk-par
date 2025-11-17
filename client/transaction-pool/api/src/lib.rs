@@ -221,7 +221,7 @@ pub trait TransactionPool: Send + Sync {
 		at: &BlockId<Self::Block>,
 		source: TransactionSource,
 		xts: Vec<TransactionFor<Self>>,
-	) -> PoolFuture<Vec<TxHash<Self>>, Self::Error>;
+	) -> PoolFuture<Vec<Result<TxHash<Self>, Self::Error>>, Self::Error>;
 
 	/// Returns a future that import a single transaction and starts to watch their progress in the
 	/// pool.
@@ -261,7 +261,7 @@ pub trait TransactionPool: Send + Sync {
 
 	// *** logging / RPC / networking
 	/// Return an event stream of transactions imported to the pool.
-	fn import_notification_stream(&self) -> ImportNotificationStream<TxHash<Self>>;
+	fn import_notification_stream(&self) -> ImportNotificationStream<Vec<TxHash<Self>>>;
 
 	// *** networking
 	/// Notify the pool about transactions broadcast.

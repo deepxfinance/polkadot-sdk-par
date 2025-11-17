@@ -288,7 +288,7 @@ where
 		at: &BlockId<Self::Block>,
 		source: TransactionSource,
 		xts: Vec<TransactionFor<Self>>,
-	) -> PoolFuture<Vec<TxHash<Self>>, Self::Error> {
+	) -> PoolFuture<Vec<Result<TxHash<Self>, Self::Error>>, Self::Error> {
 		let pool = self.pool.clone();
 		let at = *at;
 
@@ -327,7 +327,7 @@ where
 		self.pool.validated_pool().status()
 	}
 
-	fn import_notification_stream(&self) -> ImportNotificationStream<TxHash<Self>> {
+	fn import_notification_stream(&self) -> ImportNotificationStream<Vec<TxHash<Self>>> {
 		self.pool.validated_pool().import_notification_stream()
 	}
 

@@ -34,7 +34,7 @@ pub trait AuthorApi<Hash, BlockHash> {
 
 	/// Submit hex-encoded extrinsics for inclusion in block.
 	#[method(name = "author_submitExtrinsics")]
-	async fn submit_extrinsics(&self, extrinsics: Bytes) -> RpcResult<Vec<Hash>>;
+	async fn submit_extrinsics(&self, extrinsics: Bytes) -> RpcResult<Vec<std::result::Result<Hash, String>>>;
 
 	/// Insert a key into the keystore.
 	#[method(name = "author_insertKey")]

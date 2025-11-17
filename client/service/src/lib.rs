@@ -90,6 +90,7 @@ pub use sc_transaction_pool::Options as TransactionPoolOptions;
 pub use sc_transaction_pool_api::{error::IntoPoolError, InPoolTransaction, TransactionPool};
 #[doc(hidden)]
 pub use std::{ops::Deref, result::Result, sync::Arc};
+use sc_network_transactions::config::BatchTransactionImportFuture;
 pub use task_manager::{SpawnTaskHandle, Task, TaskManager, TaskRegistry, DEFAULT_GROUP_NAME};
 
 const DEFAULT_PROTOCOL_ID: &str = "sup";
@@ -499,6 +500,49 @@ where
 					},
 				},
 			}
+		})
+	}
+
+
+	fn import_batch(&self, transactions: Vec<B::Extrinsic>) -> BatchTransactionImportFuture {
+		let mut bad = vec![];
+		let best_block_id = BlockId::hash(self.client.info().best_hash);
+		let xts: Vec<_> = transactions.into_iter().enumerate().filter_map(|(i, t)| {
+			match Decode::decode(&mut &t.encode()[..]) {
+				Ok(uxt) => Some(uxt),
+				Err(_) => {
+					bad.push(i);
+					None
+				},
+			}
+		})
+			.collect();
+		let length = xts.len();
+		let import_future = self.pool.submit_multi(
+			&best_block_id,
+			sc_transaction_pool_api::TransactionSource::External,
+			xts,
+		);
+		Box::pin(async move {
+			let mut results: Vec<_> = match import_future.await {
+				Ok(results) => results
+					.into_iter()
+					.map(|r| match r {
+						Ok(_) => TransactionImport::NewGood,
+						Err(e) => match e.into_pool_error() {
+							Ok(sc_transaction_pool_api::error::Error::AlreadyImported(_)) => TransactionImport::KnownGood,
+							Ok(_) => TransactionImport::Bad,
+							Err(_) => TransactionImport::KnownGood,
+						},
+					})
+					.collect(),
+				// submit_multi not expected to be fail.
+				Err(_) => (0..length).map(|_| TransactionImport::Bad).collect()
+			};
+			for index in bad {
+				results.insert(index, TransactionImport::Bad);
+			}
+			results
 		})
 	}
 

@@ -268,7 +268,7 @@ impl sc_transaction_pool_api::TransactionPool for Transactions {
 		_at: &BlockId<Self::Block>,
 		_source: TransactionSource,
 		_xts: Vec<TransactionFor<Self>>,
-	) -> PoolFuture<Vec<TxHash<Self>>, Self::Error> {
+	) -> PoolFuture<Vec<Result<TxHash<Self>, Self::Error>>, Self::Error> {
 		unimplemented!()
 	}
 
@@ -308,7 +308,7 @@ impl sc_transaction_pool_api::TransactionPool for Transactions {
 		unimplemented!()
 	}
 
-	fn import_notification_stream(&self) -> ImportNotificationStream<TxHash<Self>> {
+	fn import_notification_stream(&self) -> ImportNotificationStream<Vec<TxHash<Self>>> {
 		unimplemented!()
 	}
 

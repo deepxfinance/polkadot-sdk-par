@@ -108,7 +108,7 @@ where
 			})
 	}
 
-	async fn submit_extrinsics(&self, exts: Bytes) -> RpcResult<Vec<TxHash<P>>> {
+	async fn submit_extrinsics(&self, exts: Bytes) -> RpcResult<Vec<std::result::Result<TxHash<P>, String>>> {
 		let xts = match Decode::decode(&mut &exts[..]) {
 			Ok(xts) => xts,
 			Err(err) => return Err(Error::Client(Box::new(err)).into()),
@@ -118,6 +118,11 @@ where
 			.pool
 			.submit_multi(&generic::BlockId::hash(best_block_hash), TX_SOURCE, xts)
 			.await
+			.map(|r| r
+				.into_iter()
+				.map(|r| r.map_err(|e| format!("{e:?}")))
+				.collect()
+			)
 			.map_err(|e| {
 				e.into_pool_error()
 					.map(|e| Error::Pool(e))

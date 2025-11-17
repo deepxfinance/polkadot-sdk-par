@@ -227,13 +227,8 @@ impl<B: ChainApi, RCG: RCGroup<<B::Block as traits::Block>::Extrinsic, Error=B::
 		at: &BlockId<B::Block>,
 		source: TransactionSource,
 		xts: Vec<ExtrinsicFor<B>>,
-	) -> Result<Vec<ExtrinsicHash<B>>, B::Error> {
-		let results = self.submit_at(at, source, xts, true).await?;
-		let mut hashes = Vec::with_capacity(results.len());
-		for result in results {
-			hashes.push(result?);
-		}
-		Ok(hashes)
+	) -> Result<Vec<Result<ExtrinsicHash<B>, B::Error>>, B::Error> {
+		self.submit_at(at, source, xts, true).await
 	}
 
 	/// Import a single extrinsic and starts to watch its progress in the pool.

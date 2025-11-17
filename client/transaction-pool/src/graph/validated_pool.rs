@@ -108,7 +108,7 @@ pub struct ValidatedPool<B: ChainApi> {
 	options: Options,
 	listener: RwLock<Listener<ExtrinsicHash<B>, B>>,
 	pool: RwLock<base::BasePool<ExtrinsicHash<B>, ExtrinsicFor<B>>>,
-	import_notification_sinks: Mutex<Vec<Sender<ExtrinsicHash<B>>>>,
+	import_notification_sinks: Mutex<Vec<Sender<Vec<ExtrinsicHash<B>>>>>,
 	rotator: PoolRotator<ExtrinsicHash<B>>,
 }
 
@@ -162,10 +162,7 @@ impl<B: ChainApi> ValidatedPool<B> {
 		&self,
 		txs: impl IntoIterator<Item = ValidatedTransactionFor<B>>,
 	) -> Vec<Result<ExtrinsicHash<B>, B::Error>> {
-		let results = txs
-			.into_iter()
-			.map(|validated_tx| self.submit_one(validated_tx))
-			.collect::<Vec<_>>();
+		let results = self.submit_batch(txs);
 
 		// only enforce limits if there is at least one imported transaction
 		let removed = if results.iter().any(|res| res.is_ok()) {
@@ -196,7 +193,7 @@ impl<B: ChainApi> ValidatedPool<B> {
 
 				if let base::Imported::Ready { ref hash, .. } = imported {
 					let sinks = &mut self.import_notification_sinks.lock();
-					sinks.retain_mut(|sink| match sink.try_send(*hash) {
+					sinks.retain_mut(|sink| match sink.try_send([*hash].to_vec()) {
 						Ok(()) => true,
 						Err(e) =>
 							if e.is_full() {
@@ -225,6 +222,58 @@ impl<B: ChainApi> ValidatedPool<B> {
 				Err(err)
 			},
 		}
+	}
+
+	/// Submit single pre-validated transaction to the pool.
+	fn submit_batch(&self, txs: impl IntoIterator<Item = ValidatedTransactionFor<B>>) -> Vec<Result<ExtrinsicHash<B>, B::Error>> {
+		let mut results = vec![];
+		let mut imported_hashes = vec![];
+		for tx in txs {
+			let result = match tx {
+				ValidatedTransaction::Valid(tx) => {
+					if !tx.propagate && !(self.is_validator.0)() {
+						results.push(Err(error::Error::Unactionable.into()));
+						continue;
+					}
+					let imported = match self.pool.write().import(tx) {
+						Ok(imported) => imported,
+						Err(e) => {
+							results.push(Err(e.into()));
+							continue;
+						}
+					};
+					if let base::Imported::Ready { ref hash, .. } = imported {
+						imported_hashes.push(*hash);
+					}
+
+					let mut listener = self.listener.write();
+					fire_events(&mut *listener, &imported);
+					Ok(*imported.hash())
+				},
+				ValidatedTransaction::Invalid(hash, err) => {
+					self.rotator.ban(&Instant::now(), std::iter::once(hash));
+					Err(err)
+				},
+				ValidatedTransaction::Unknown(hash, err) => {
+					self.listener.write().invalid(&hash);
+					Err(err)
+				},
+			};
+			results.push(result);
+		}
+		if imported_hashes.is_empty() { return results; }
+		let sinks = &mut self.import_notification_sinks.lock();
+		sinks.retain_mut(|sink| match sink.try_send(imported_hashes.clone()) {
+			Ok(()) => true,
+			Err(e) =>
+				if e.is_full() {
+					log::warn!(target: LOG_TARGET, "[{imported_hashes:?}] Trying to notify an import but the channel is full");
+					true
+				} else {
+					false
+				},
+		});
+		results
 	}
 
 	fn enforce_limits(&self) -> HashSet<ExtrinsicHash<B>> {
@@ -571,7 +620,7 @@ impl<B: ChainApi> ValidatedPool<B> {
 	///
 	/// Consumers of this stream should use the `ready` method to actually get the
 	/// pending transactions in the right order.
-	pub fn import_notification_stream(&self) -> EventStream<ExtrinsicHash<B>> {
+	pub fn import_notification_stream(&self) -> EventStream<Vec<ExtrinsicHash<B>>> {
 		const CHANNEL_BUFFER_SIZE: usize = 1024;
 
 		let (sink, stream) = channel(CHANNEL_BUFFER_SIZE);
