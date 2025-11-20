@@ -291,7 +291,24 @@ where
 		V: StorageAppend<Item>,
 	{
 		let final_key = Self::storage_n_map_final_key::<K, _>(key);
-		sp_io::storage::append(&final_key, item.encode());
+		#[cfg(feature = "std")]
+		let start = std::time::Instant::now();
+		let encoded = item.encode();
+		#[cfg(feature = "std")]
+		{
+			let time = start.elapsed();
+			let mut key = final_key.clone();
+			if key.len() > 32 {
+				key.resize(32, 0);
+			}
+			let mut lock = crate::storage::unhashed::GLOBAL_ENCODE.lock().unwrap();
+			if let Some(v) = lock.get_mut(&key) {
+				v.push((time, encoded.len()));
+			} else {
+				lock.insert(key.to_vec(), vec![(time, encoded.len())]);
+			}
+		}
+		sp_io::storage::append(&final_key, encoded);
 	}
 
 	fn migrate_keys<KArg>(key: KArg, hash_fns: K::HArg) -> Option<V>

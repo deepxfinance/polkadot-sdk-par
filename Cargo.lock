@@ -2151,7 +2151,7 @@ checksum = "7c24f403d068ad0b359e577a77f92392118be3f3c927538f2bb544a5ecd828c6"
 dependencies = [
  "curve25519-dalek 3.2.0",
  "hashbrown 0.12.3",
- "hex",
+ "hex 0.4.3",
  "rand_core 0.6.4",
  "sha2 0.9.9",
  "zeroize",
@@ -2729,6 +2729,7 @@ dependencies = [
  "frame-system",
  "impl-trait-for-tuples",
  "k256",
+ "lazy_static",
  "log",
  "once_cell",
  "parity-scale-codec",
@@ -3319,6 +3320,12 @@ checksum = "fed44880c466736ef9a5c5b5facefb5ed0785676d0c02d612db14e54f0d84286"
 
 [[package]]
 name = "hex"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "805026a5d0141ffc30abb3be3173848ad46a1b1664fe632428479619a3644d77"
+
+[[package]]
+name = "hex"
 version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
@@ -3410,7 +3417,7 @@ dependencies = [
  "async-trait",
  "frame-system",
  "futures",
- "hex",
+ "hex 0.4.3",
  "hotstuff-primitives",
  "log",
  "num_cpus",
@@ -4614,7 +4621,7 @@ dependencies = [
  "bytes",
  "futures",
  "futures-timer",
- "hex",
+ "hex 0.4.3",
  "if-watch",
  "libp2p-core",
  "libp2p-identity",
@@ -5593,7 +5600,7 @@ dependencies = [
  "frame-benchmarking-cli",
  "frame-system",
  "futures",
- "hex",
+ "hex 0.4.3",
  "hotstuff-consensus",
  "hotstuff-primitives",
  "jsonrpsee",
@@ -7638,7 +7645,7 @@ dependencies = [
  "blake2",
  "crc32fast",
  "fs2",
- "hex",
+ "hex 0.4.3",
  "libc",
  "log",
  "lz4",
@@ -8954,8 +8961,10 @@ version = "0.10.0-dev"
 dependencies = [
  "async-trait",
  "env_logger 0.11.8",
+ "frame-support",
  "futures",
  "futures-timer",
+ "hex 0.3.2",
  "log",
  "num_cpus",
  "parity-scale-codec",
@@ -10005,7 +10014,7 @@ dependencies = [
  "assert_matches",
  "futures",
  "futures-util",
- "hex",
+ "hex 0.4.3",
  "jsonrpsee",
  "log",
  "parity-scale-codec",
@@ -12786,7 +12795,7 @@ dependencies = [
  "clap 4.2.7",
  "frame-remote-externalities",
  "frame-try-runtime",
- "hex",
+ "hex 0.4.3",
  "log",
  "parity-scale-codec",
  "regex",
@@ -12890,7 +12899,7 @@ checksum = "76f64bba2c53b04fcab63c01a7d7427eadc821e3bc48c34dc9ba29c501164b52"
 dependencies = [
  "byteorder",
  "crunchy",
- "hex",
+ "hex 0.4.3",
  "static_assertions",
 ]
 
@@ -13595,7 +13604,7 @@ dependencies = [
  "arc-swap",
  "async-trait",
  "bytes",
- "hex",
+ "hex 0.4.3",
  "interceptor",
  "lazy_static",
  "log",

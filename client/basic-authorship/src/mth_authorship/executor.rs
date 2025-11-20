@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::marker::PhantomData;
 use std::sync::Arc;
 use std::{cmp, time};
+use std::ops::AddAssign;
 use std::time::Duration;
 use codec::Encode;
 use futures::StreamExt;
@@ -28,6 +29,9 @@ use sp_spot_api::SpotRuntimeApi;
 use sp_state_machine::{MergeErr, OverlayedChanges, StorageKey, StorageValue};
 use crate::{BlockPropose, ExtendExtrinsic, MultiThreadBlockBuilder};
 use crate::mth_authorship::execute_info::{BlockExecuteInfo, InfoRecorder, MergeInfo, ThreadExecutionInfo};
+use frame_support::storage::unhashed;
+use frame_support::traits::Len;
+use sp_core::hexdisplay::HexDisplay;
 
 const LOG_TARGET: &str = "authorship";
 
@@ -143,6 +147,8 @@ where
         inherent_info.time = inherent_start.elapsed();
         recorder.inherent_finish(inherent_info);
 
+        unhashed::GLOBAL_ENCODE.lock().unwrap().clear();
+        unhashed::GLOBAL_DECODE.lock().unwrap().clear();
         // 2. execute main process for multi thread and single thread.
         let (mth_invalid, single_invalid, final_end_reason) = self.multi_single_process(
             parent_number,
@@ -157,6 +163,9 @@ where
             limit_execution_time,
             &mut recorder,
         ).await?;
+        if block_builder.extrinsics.len() > 1 {
+            Self::collect_encode_decode(format!("Block {}", recorder.number).as_str());
+        }
         self.transaction_pool.remove_invalid(&mth_invalid);
         self.transaction_pool.remove_invalid(&single_invalid);
 
@@ -858,6 +867,37 @@ where
                 error!(target: LOG_TARGET, "[OTC Block {number}({block_time} ({init_time} {execute_time} {build_time}) ms)] Build block error: {e:?}");
             }
         }
+    }
+
+    fn collect_encode_decode(info: &str) {
+        let mut encode = unhashed::GLOBAL_ENCODE.lock().unwrap();
+        let mut decode = unhashed::GLOBAL_DECODE.lock().unwrap();
+        let mut encode = encode
+            .drain()
+            .into_iter()
+            .map(|(k, v)| (hex::encode(&k), v.len(), v.into_iter().map(|(t, _)| t).sum::<Duration>()))
+            .collect::<Vec<_>>();
+        let mut decode = decode
+            .drain()
+            .into_iter()
+            .map(|(k, v)| (hex::encode(&k), v.len(), v.into_iter().map(|(t, _)| t).sum::<Duration>()))
+            .collect::<Vec<_>>();
+        encode.sort_by(|a, b| b.2.cmp(&a.2));
+        decode.sort_by(|a, b| b.2.cmp(&a.2));
+        let mut total_read_times = 0usize;
+        let mut total_read_time = Duration::default();
+        encode.iter().for_each(|(_, n, t)| {
+            total_read_times += *n;
+            total_read_time += *t;
+        });
+        let mut total_write_times = 0usize;
+        let mut total_write_time = Duration::default();
+        decode.iter().for_each(|(_, n, t)| {
+            total_write_times += *n;
+            total_write_time += *t;
+        });
+        log::info!(target: "codec", "{info} put: {total_read_time:?}({total_read_times}) {:?}", encode);
+        log::info!(target: "codec", "{info} get: {total_write_time:?}({total_write_times}) {:?}", decode);
     }
 }
 

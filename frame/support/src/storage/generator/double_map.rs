@@ -338,6 +338,23 @@ where
 			String::from_utf8(Self::storage_prefix().to_vec()).unwrap(),
 		);
 		let final_key = Self::storage_double_map_final_key(k1, k2);
+		#[cfg(feature = "std")]
+		let start = std::time::Instant::now();
+		let encoded = item.encode();
+		#[cfg(feature = "std")]
+		{
+			let time = start.elapsed();
+			let mut key = final_key.clone();
+			if key.len() > 32 {
+				key.resize(32, 0);
+			}
+			let mut lock = crate::storage::unhashed::GLOBAL_ENCODE.lock().unwrap();
+			if let Some(v) = lock.get_mut(&key) {
+				v.push((time, encoded.len()));
+			} else {
+				lock.insert(key.to_vec(), vec![(time, encoded.len())]);
+			}
+		}
 		sp_io::storage::append(&final_key, item.encode());
 	}
 
