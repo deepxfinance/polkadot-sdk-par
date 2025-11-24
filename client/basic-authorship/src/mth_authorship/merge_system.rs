@@ -200,16 +200,19 @@ impl<RE: Encode + Decode + Debug + Clone> MergeChange<StorageKey, Option<Storage
                     .unwrap_or_default();
                 let append_events: Vec<_> = other_events
                     .into_iter()
-                    .filter_map(|mut event| if let Phase::ApplyExtrinsic(e) = &mut event.phase {
-                        if *e < init_index {
-                            // duplicate initial events will not be pushed.
-                            None
-                        } else {
-                            *e = e.saturating_add(offset).saturating_sub(init_index);
-                            Some(event)
+                    .filter_map(|mut event| match &mut event.phase {
+                        // drop duplicate initialize events.
+                        Phase::Initialization => None,
+                        Phase::ApplyExtrinsic(e) => {
+                            if *e < init_index {
+                                // duplicate initial events will not be pushed.
+                                None
+                            } else {
+                                *e = e.saturating_add(offset).saturating_sub(init_index);
+                                Some(event)
+                            }
                         }
-                    } else {
-                        Some(event)
+                        Phase::Finalization => Some(event)
                     })
                     .collect();
                 let final_events_encoded = <Vec<EventRecord<RE>> as EncodeAppend>::append_or_new(local_event_data, append_events)
