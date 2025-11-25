@@ -227,6 +227,7 @@ members = [
 	"primitives/std",
 	"primitives/storage",
 	"primitives/spot-api",
+	"primitives/storage_cache",
 	"primitives/test-primitives",
 	"primitives/timestamp",
 	"primitives/tracing",

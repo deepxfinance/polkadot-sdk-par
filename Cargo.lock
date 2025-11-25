@@ -2063,6 +2063,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9ea835d29036a4087793836fa931b08837ad5e957da9e23886b29586fb9b6650"
 
 [[package]]
+name = "downcast-rs"
+version = "2.0.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "117240f60069e65410b3ae1bb213295bd828f707b5bec6596a1afc8793ce0cbc"
+
+[[package]]
 name = "dtoa"
 version = "1.0.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -11788,6 +11794,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "storage_cache"
+version = "0.1.0"
+dependencies = [
+ "downcast-rs 2.0.2",
+ "log",
+ "parity-scale-codec",
+ "smallvec",
+ "sp-std",
+]
+
+[[package]]
 name = "strsim"
 version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -13302,7 +13319,7 @@ version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "57d20cb3c59b788653d99541c646c561c9dd26506f25c0cebfe810659c54c6d7"
 dependencies = [
- "downcast-rs",
+ "downcast-rs 1.2.0",
  "libm 0.2.6",
  "memory_units",
  "num-rational",
@@ -13315,7 +13332,7 @@ version = "0.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "624e6333e861ef49095d2d678b76ebf30b06bf37effca845be7e5b87c90071b7"
 dependencies = [
- "downcast-rs",
+ "downcast-rs 1.2.0",
  "libm 0.2.6",
  "num-traits",
  "paste",

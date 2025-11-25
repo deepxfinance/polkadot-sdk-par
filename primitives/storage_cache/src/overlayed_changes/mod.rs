@@ -1,0 +1,29 @@
+pub mod changeset;
+pub mod storage;
+
+use std::collections::BTreeSet;
+
+pub type StorageKey = Vec<u8>;
+
+/// Keep trace of extrinsics index for a modified value.
+#[derive(Debug, Default, Eq, PartialEq, Clone)]
+pub struct Extrinsics(Vec<u32>);
+
+impl Extrinsics {
+    /// Extracts extrinsics into a `BTreeSets`.
+    fn copy_extrinsics_into(&self, dest: &mut BTreeSet<u32>) {
+        dest.extend(self.0.iter())
+    }
+
+    /// Add an extrinsics.
+    fn insert(&mut self, ext: u32) {
+        if Some(&ext) != self.0.last() {
+            self.0.push(ext);
+        }
+    }
+
+    /// Extend `self` with `other`.
+    fn extend(&mut self, other: Self) {
+        self.0.extend(other.0.into_iter());
+    }
+}
