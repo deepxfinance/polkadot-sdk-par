@@ -40,6 +40,7 @@ use sp_std::{
 	cmp::Ordering,
 	vec,
 	vec::Vec,
+	sync::Arc,
 };
 #[cfg(feature = "std")]
 use std::error;
@@ -101,7 +102,7 @@ where
 	B: 'a + Backend<H>,
 {
 	/// The overlayed typed changes and cache.
-	cache: Option<&'a OverlayCache>,
+	cache: Option<&'a mut OverlayCache>,
 	/// The overlayed changes to write to.
 	overlay: &'a mut OverlayedChanges,
 	/// The storage backend to read from.
@@ -129,7 +130,7 @@ where
 	/// Create a new `Ext`.
 	#[cfg(not(feature = "std"))]
 	pub fn new(
-		cache: Option<&'a OverlayCache>,
+		cache: Option<&'a mut OverlayCache>,
 		overlay: &'a mut OverlayedChanges,
 		storage_transaction_cache: &'a mut StorageTransactionCache<B::Transaction, H>,
 		backend: &'a B,
@@ -140,7 +141,7 @@ where
 	/// Create a new `Ext` from overlayed changes and read-only backend
 	#[cfg(feature = "std")]
 	pub fn new(
-		cache: Option<&'a OverlayCache>,
+		cache: Option<&'a mut OverlayCache>,
 		overlay: &'a mut OverlayedChanges,
 		storage_transaction_cache: &'a mut StorageTransactionCache<B::Transaction, H>,
 		backend: &'a B,
@@ -222,8 +223,8 @@ where
 		self.overlay.set_offchain_storage(key, value)
 	}
 
-	fn overlay_cache(&self) -> Option<OverlayCache> {
-		self.cache.map(|cache| cache.clone())
+	fn overlay_cache(&self) -> &Option<&mut OverlayCache> {
+		&self.cache
 	}
 
 	fn storage(&self, key: &[u8]) -> Option<StorageValue> {

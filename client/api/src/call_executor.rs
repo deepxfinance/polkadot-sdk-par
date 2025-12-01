@@ -72,7 +72,7 @@ pub trait CallExecutor<B: BlockT>: RuntimeVersionOf {
 		at_hash: B::Hash,
 		method: &str,
 		call_data: &[u8],
-		cache: &OverlayCache,
+		cache: &RefCell<OverlayCache>,
 		changes: &RefCell<OverlayedChanges>,
 		storage_transaction_cache: Option<
 			&RefCell<

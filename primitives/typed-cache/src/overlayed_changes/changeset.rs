@@ -322,6 +322,7 @@ impl<K: Ord + Hash + Clone, V> OverlayedMap<K, V> {
 	/// Calling this while already inside the runtime will return an error.
 	pub fn enter_runtime(&mut self) {
 		self.execution_mode = ExecutionMode::Runtime;
+		self.num_client_transactions = self.transaction_depth();
 	}
 
 	/// Call this when control returns from the runtime.

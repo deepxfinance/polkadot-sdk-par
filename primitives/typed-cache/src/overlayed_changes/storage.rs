@@ -1,16 +1,14 @@
 use sp_std::boxed::Box;
 use sp_std::collections::btree_map::BTreeMap;
-use sp_std::sync::{Arc, RwLock};
+use sp_std::sync::Arc;
 use sp_std::hash::Hash;
 use sp_std::vec::Vec;
 use codec::Encode;
+use once_cell::sync::OnceCell;
 use crate::changeset::OverlayedMap;
 use crate::{StorageIO, StorageApi, StorageKey};
 
-#[derive(Clone, Default)]
-pub struct Cache<T> {
-    pub inner: Arc<RwLock<T>>,
-}
+pub type Cache<T> = Arc<OnceCell<T>>;
 
 // TODO support just simple `value` which doesn't need `Map` to cache many values.
 #[derive(Clone)]
@@ -18,15 +16,14 @@ pub struct StorageOverlay<K: Ord + Hash + Clone, V: Clone> {
     pub space: Vec<u8>,
     /// Cached best value.
     /// For cache, any value will only insert once(data should not change).
-    cache: Cache<BTreeMap<K, V>>,
-    changes: Arc<RwLock<OverlayedMap<K, Option<V>>>>,
+    cache: BTreeMap<K, Cache<Option<V>>>,
+    changes: OverlayedMap<K, Option<V>>,
 }
 
 impl<K: Ord + Hash + Clone, V: Clone> StorageOverlay<K, V> {
-    pub fn new(space: &[u8], cache: Option<Cache<BTreeMap<K, V>>>) -> Self {
+    pub fn new(space: &[u8]) -> Self {
         Self {
             space: space.to_vec(),
-            cache: cache.unwrap_or(Cache::default()),
             ..Default::default()
         }
     }
@@ -37,14 +34,12 @@ impl<K: Ord + Hash + Clone, V: Clone> StorageOverlay<K, V> {
             // cache are shared between copies
             cache: self.cache.clone(),
             // changes are different(if changed) between copies
-            changes: Arc::new(RwLock::new(self.changes.read().unwrap().clone())),
+            changes: self.changes.clone(),
         }
     }
 
-    pub fn drain_changes(&self) -> Vec<(K, Option<V>)> {
+    pub fn drain_changes(&mut self) -> Vec<(K, Option<V>)> {
         self.changes
-            .write()
-            .unwrap()
             .drain_changes()
             .into_iter()
             .map(|(k, v)| (k.clone(), v.into_value()))
@@ -56,7 +51,7 @@ impl<K: Ord + Hash + Clone, V: Clone> Default for StorageOverlay<K, V> {
     fn default() -> Self {
         Self {
             space: Vec::new(),
-            cache: Cache::default(),
+            cache: Default::default(),
             changes: Default::default(),
         }
     }
@@ -66,73 +61,72 @@ unsafe impl<K: Ord + Hash + Clone, V: Clone> Send for StorageOverlay<K, V> {}
 unsafe impl<K: Ord + Hash + Clone, V: Clone> Sync for StorageOverlay<K, V> {}
 
 impl<V: Clone + Encode + 'static> StorageApi for StorageOverlay<StorageKey, V> {
-    fn enter_runtime(&self) {
-        self.changes.write().unwrap().enter_runtime();
+    fn enter_runtime(&mut self) {
+        self.changes.enter_runtime();
     }
 
-    fn exit_runtime(&self) {
-        self.changes.write().unwrap().exit_runtime();
+    fn exit_runtime(&mut self) {
+        self.changes.exit_runtime();
     }
 
-    fn start_transaction(&self) {
-        self.changes.write().unwrap().start_transaction()
+    fn start_transaction(&mut self) {
+        self.changes.start_transaction()
     }
 
-    fn commit_transaction(&self) {
-        self.changes.write().unwrap().commit_transaction().unwrap();
+    fn commit_transaction(&mut self) {
+        // ignore here since we mey call any unchanged storages.
+        let _ = self.changes.commit_transaction();
     }
 
-    fn rollback_transaction(&self) {
-        self.changes.write().unwrap().rollback_transaction().unwrap();
+    fn rollback_transaction(&mut self) {
+        // ignore here since we mey call any unchanged storages.
+        let _ = self.changes.rollback_transaction();
     }
 
-    fn drain_commited(&self) -> BTreeMap<Vec<u8>, Option<Vec<u8>>> {
-        self.changes.write().unwrap().drain_changes()
+    fn drain_commited(&mut self) -> BTreeMap<Vec<u8>, Option<Vec<u8>>> {
+        self.changes.drain_changes()
             .into_iter()
             .map(|(k, mut v)| (k, v.pop_value()))
             .map(|(k ,v)| (k, v.map(|v| v.encode())))
             .collect()
     }
 
-    fn copy_data(&self) -> Arc<Box<dyn StorageApi>> {
-        Arc::new(Box::new(self.clone_with_changes()))
+    fn copy_data(&self) -> Box<dyn StorageApi> {
+        Box::new(self.clone_with_changes())
     }
 }
 
-impl<V: Clone + 'static> StorageIO<V> for StorageOverlay<StorageKey, V> {
-    fn put(&self, space: &[u8], key: &[u8], value: V) {
+impl<V: Clone> StorageIO<V> for StorageOverlay<StorageKey, V> {
+    fn put(&mut self, space: &[u8], key: &[u8], value: V) {
         if space != &self.space { return; }
-        self.changes.write().unwrap().set(key.to_vec(), Some(value), None);
+        self.changes.set(key.to_vec(), Some(value), None);
     }
 
-    fn get<F>(&self, space: &[u8], key: &[u8], extra: F) -> Option<V>
+    fn get<F>(&mut self, space: &[u8], key: &[u8], extra: F) -> Option<V>
     where
         F: Fn(&[u8]) -> Option<V>
     {
         if space != &self.space { return None; }
         self.changes
-            .write()
-            .unwrap()
             .get(key)
             .map(|x| x.value().cloned())
-            .or({
-                let cached = self.cache.inner.read().unwrap().get(key).cloned();
-                if let Some(v) = cached {
-                    Some(Some(v))
-                } else {
-                    match extra(key) {
-                        Some(v) => {
-                            // data from extra will be stored in shared cache between copies.
-                            self.cache.inner.write().unwrap().insert(key.to_vec(), v.clone());
-                            Some(Some(v))
-                        },
-                        None => None,
-                    }
-                }
-            })?
+            .or(
+                self.cache
+                    .get(key)
+                    .map(|c| c.get_or_init(|| extra(key)).clone())
+                    .or({
+                        self.cache.insert(key.to_owned(), Arc::new(OnceCell::<Option<V>>::new()));
+                        self.cache.get(key).map(|c| c.get_or_init(|| extra(key)).clone())
+                    })
+            )?
     }
 
-    fn take<F>(&self, space: &[u8], key: &[u8], extra: F) -> Option<V>
+    fn get_change(&self, space: &[u8], key: &[u8]) -> Option<Option<V>> {
+        if space != &self.space { return None; }
+        self.changes.get(key).map(|x| x.value().cloned())
+    }
+
+    fn take<F>(&mut self, space: &[u8], key: &[u8], extra: F) -> Option<V>
     where
         F: Fn(&[u8]) -> Option<V>
     {
@@ -142,18 +136,18 @@ impl<V: Clone + 'static> StorageIO<V> for StorageOverlay<StorageKey, V> {
         v
     }
 
-    fn kill(&self, space: &[u8], key: &[u8]) {
+    fn kill(&mut self, space: &[u8], key: &[u8]) {
         if space != &self.space { return; }
-        self.changes.write().unwrap().set(key.to_vec(), None, None);
+        self.changes.set(key.to_vec(), None, None);
     }
 
-    fn mutate<F, M>(&self, space: &[u8], key: &[u8], get: F, mutate: M) -> bool
+    fn mutate<F, M>(&mut self, space: &[u8], key: &[u8], get: F, mutate: M) -> bool
     where
         F: Fn(&[u8]) -> Option<V>,
         M: FnOnce(Option<&mut V>)
     {
         if space != &self.space { return false; }
-        if let Some(entry) = self.changes.write().unwrap().changes.get_mut(key) {
+        if let Some(entry) = self.changes.changes.get_mut(key) {
             if let Some(v) = entry.value_mut() {
                 mutate(Some(v));
                 return true;
@@ -161,7 +155,7 @@ impl<V: Clone + 'static> StorageIO<V> for StorageOverlay<StorageKey, V> {
         }
         if let Some(mut v) = self.get(space, key, get) {
             mutate(Some(&mut v));
-            self.changes.write().unwrap().set(key.to_vec(), Some(v), None);
+            self.changes.set(key.to_vec(), Some(v), None);
             return true;
         }
         false
@@ -170,8 +164,8 @@ impl<V: Clone + 'static> StorageIO<V> for StorageOverlay<StorageKey, V> {
 
 #[test]
 fn test_basic_types() {
-    let overlay1 = StorageOverlay::new(b"str", None);
-    let overlay2 = StorageOverlay::new(b"str", None);
+    let mut overlay1 = StorageOverlay::new(b"str");
+    let mut overlay2 = StorageOverlay::new(b"str");
 
     overlay1.put(b"str", b"key1", "value1");
     overlay1.put(b"str", b"key2", "value2");
@@ -183,7 +177,7 @@ fn test_basic_types() {
 
 #[test]
 fn test_commit() {
-    let overlay = StorageOverlay::new(b"str", None);
+    let mut overlay = StorageOverlay::new(b"str");
     overlay.start_transaction();
     overlay.put(b"str", b"key1", "value1");
     overlay.rollback_transaction();
@@ -194,10 +188,10 @@ fn test_commit() {
 
 #[test]
 fn test_clone_for_multi_threads() {
-    let overlay1 = StorageOverlay::new(b"str", None);
+    let mut overlay1 = StorageOverlay::new(b"str");
     overlay1.put(b"str", b"key1", "value1");
-    let overlay2 = overlay1.clone_with_changes();
-    let overlay2 = std::thread::spawn(move || {
+    let mut overlay2 = overlay1.clone_with_changes();
+    let mut overlay2 = std::thread::spawn(move || {
         overlay2.put(b"str", b"key2", "value2");
         overlay2
     }).join().unwrap();

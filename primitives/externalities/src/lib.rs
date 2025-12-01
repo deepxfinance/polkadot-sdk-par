@@ -109,7 +109,7 @@ pub trait Externalities: ExtensionStore {
 	fn child_storage(&self, child_info: &ChildInfo, key: &[u8]) -> Option<Vec<u8>>;
 
 	/// Get overlay typed cache for faster storage io.
-	fn overlay_cache(&self) -> Option<OverlayCache>;
+	fn overlay_cache(&self) -> &Option<&mut OverlayCache>;
 
 	/// Set storage entry `key` of current contract being called (effective immediately).
 	fn set_storage(&mut self, key: Vec<u8>, value: Vec<u8>) {

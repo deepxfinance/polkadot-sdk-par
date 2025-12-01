@@ -191,7 +191,7 @@ impl PalletCmd {
 		let extrinsics: Vec<_> = extrinsic_split.iter().map(|x| x.trim().as_bytes()).collect();
 
 		let genesis_storage = spec.build_storage()?;
-		let cache = OverlayCache::default();
+		let mut cache = OverlayCache::default();
 		let mut changes = Default::default();
 		let cache_size = Some(self.database_cache_size as usize);
 		let state_with_tracking = BenchmarkingState::<BB>::new(
@@ -239,7 +239,7 @@ impl PalletCmd {
 		let state = &state_without_tracking;
 		let result = StateMachine::new(
 			state,
-			&cache,
+			&mut cache,
 			&mut changes,
 			&executor,
 			"Benchmark_benchmark_metadata",
@@ -369,7 +369,7 @@ impl PalletCmd {
 					let state = &state_without_tracking;
 					let result = StateMachine::new(
 						state,
-						&cache,
+						&mut cache,
 						&mut changes,
 						&executor,
 						"Benchmark_dispatch_benchmark",
@@ -410,7 +410,7 @@ impl PalletCmd {
 					let state = &state_with_tracking;
 					let result = StateMachine::new(
 						state, // todo remove tracking
-						&cache,
+						&mut cache,
 						&mut changes,
 						&executor,
 						"Benchmark_dispatch_benchmark",
@@ -443,7 +443,7 @@ impl PalletCmd {
 					let state = &state_without_tracking;
 					let result = StateMachine::new(
 						state, // todo remove tracking
-						&cache,
+						&mut cache,
 						&mut changes,
 						&executor,
 						"Benchmark_dispatch_benchmark",

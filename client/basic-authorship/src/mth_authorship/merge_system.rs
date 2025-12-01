@@ -47,11 +47,21 @@ impl<RE: Encode + Decode + Debug + Clone> Default for MergeSystem<RE> {
 
 impl<RE: Encode + Decode + Debug + Clone, B, Block: BlockT, Api: ApiExt<Block>> super::MultiThreadBlockBuilder<B, Block, Api> for MergeSystem<RE> {
     fn prepare(&mut self, _backend: &Arc<B>, _parent: &Block::Hash, api: &Api) {
-        self.init_index = get_top_value(api, &EXTRINSIC_INDEX.to_vec()).unwrap_or_default();
-        self.init_event_count = get_top_value(api, &SYSTEM_EVENT_COUNT.to_vec()).unwrap_or_default();
-        self.init_block_weight = get_top_value(api, &SYSTEM_BLOCK_WEIGHT.to_vec());
-        self.init_extrinsic_count = get_top_value(api, &SYSTEM_EXTRINSIC_COUNT.to_vec()).unwrap_or_default();
-        self.init_all_extrinsics_len = get_top_value(api, &SYSTEM_ALL_EXTRINSICS_LEN.to_vec()).unwrap_or_default();
+        self.init_index = api.get_typed_change(EXTRINSIC_INDEX.as_slice(), &EXTRINSIC_INDEX.to_vec())
+            .unwrap_or_default()
+            .unwrap_or(get_top_value(api, &EXTRINSIC_INDEX.to_vec()).unwrap_or_default());
+        self.init_event_count = api.get_typed_change(SYSTEM_EVENT_COUNT.as_slice(), &SYSTEM_EVENT_COUNT.to_vec())
+            .unwrap_or_default()
+            .unwrap_or(get_top_value(api, &SYSTEM_EVENT_COUNT.to_vec()).unwrap_or_default());
+        self.init_block_weight = api.get_typed_change(SYSTEM_BLOCK_WEIGHT.as_slice(), &SYSTEM_BLOCK_WEIGHT.to_vec())
+            .unwrap_or_default()
+            .unwrap_or(get_top_value(api, &SYSTEM_BLOCK_WEIGHT.to_vec()));
+        self.init_extrinsic_count = api.get_typed_change(SYSTEM_EXTRINSIC_COUNT.as_slice(), &SYSTEM_EXTRINSIC_COUNT.to_vec())
+            .unwrap_or_default()
+            .unwrap_or(get_top_value(api, &SYSTEM_EXTRINSIC_COUNT.to_vec()).unwrap_or_default());
+        self.init_all_extrinsics_len = api.get_typed_change(SYSTEM_ALL_EXTRINSICS_LEN.as_slice(), &SYSTEM_ALL_EXTRINSICS_LEN.to_vec())
+            .unwrap_or_default()
+            .unwrap_or(get_top_value(api, &SYSTEM_ALL_EXTRINSICS_LEN.to_vec()).unwrap_or_default());
     }
 
     fn copy_state(&self) -> Self {

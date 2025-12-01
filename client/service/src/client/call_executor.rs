@@ -167,7 +167,7 @@ where
 		strategy: ExecutionStrategy,
 		context: CallContext,
 	) -> sp_blockchain::Result<Vec<u8>> {
-		let cache = OverlayCache::default();
+		let mut cache = OverlayCache::default();
 		let mut changes = OverlayedChanges::default();
 		let at_number =
 			self.backend.blockchain().expect_block_number_from_id(&BlockId::Hash(at_hash))?;
@@ -187,7 +187,7 @@ where
 
 		let mut sm = StateMachine::new(
 			&state,
-			&cache,
+			&mut cache,
 			&mut changes,
 			&self.executor,
 			method,
@@ -207,7 +207,7 @@ where
 		at_hash: Block::Hash,
 		method: &str,
 		call_data: &[u8],
-		cache: &OverlayCache,
+		cache: &RefCell<OverlayCache>,
 		changes: &RefCell<OverlayedChanges>,
 		storage_transaction_cache: Option<&RefCell<StorageTransactionCache<Block, B::State>>>,
 		recorder: &Option<ProofRecorder<Block>>,
@@ -227,6 +227,7 @@ where
 		let (execution_manager, extensions) =
 			self.execution_extensions.manager_and_extensions(at_hash, at_number, context);
 
+		let cache = &mut *cache.borrow_mut();
 		let changes = &mut *changes.borrow_mut();
 
 		// It is important to extract the runtime code here before we create the proof
@@ -309,7 +310,7 @@ where
 
 		sp_state_machine::prove_execution_on_trie_backend(
 			trie_backend,
-			&Default::default(),
+			&mut Default::default(),
 			&mut Default::default(),
 			&self.executor,
 			method,

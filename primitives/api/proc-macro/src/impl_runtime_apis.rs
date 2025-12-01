@@ -228,7 +228,7 @@ fn generate_runtime_api_base_structures() -> Result<TokenStream> {
 		pub struct RuntimeApiImpl<Block: #crate_::BlockT, C: #crate_::CallApiAt<Block> + 'static> {
 			call: &'static C,
 			commit_on_success: std::cell::RefCell<bool>,
-			typed_cache: #crate_::OverlayCache,
+			typed_cache: std::cell::RefCell<#crate_::OverlayCache>,
 			changes: std::cell::RefCell<#crate_::OverlayedChanges>,
 			storage_transaction_cache: std::cell::RefCell<
 				#crate_::StorageTransactionCache<Block, C::StateBackend>
@@ -310,7 +310,7 @@ fn generate_runtime_api_base_structures() -> Result<TokenStream> {
 				let state_version = #crate_::CallApiAt::<Block>::runtime_version_at(self.call, std::clone::Clone::clone(&parent_hash))
 					.map(|v| #crate_::RuntimeVersion::state_version(&v))
 					.map_err(|e| format!("Failed to get state version: {}", e))?;
-				for (k, v) in self.typed_cache.drain_commited() {
+				for (k, v) in std::cell::RefCell::take(&self.typed_cache).drain_commited() {
 					std::cell::RefCell::borrow_mut(&self.changes).top.changes.entry(k).or_default().set(v, true, None);
 				}
 				#crate_::OverlayedChanges::into_storage_changes(
@@ -348,7 +348,7 @@ fn generate_runtime_api_base_structures() -> Result<TokenStream> {
 			where 
 				Self: Sized
 			{
-				let typed_cache = std::mem::take(&mut self.typed_cache);
+				let typed_cache = std::cell::RefCell::take(&mut self.typed_cache);
 				let changes = std::cell::RefCell::take(&self.changes);
 				let recorder = self.recorder.take();
 				let storage_transaction_cache = core::cell::RefCell::take(&self.storage_transaction_cache);
@@ -356,7 +356,7 @@ fn generate_runtime_api_base_structures() -> Result<TokenStream> {
 			}
 
 			fn set_typed_cache(&mut self, cache: #crate_::OverlayCache) {
-				self.typed_cache = cache;
+				self.typed_cache = core::cell::RefCell::new(cache);
 			}
 
 			fn set_changes(&mut self, mut changes: #crate_::OverlayedChanges) {
@@ -376,6 +376,13 @@ fn generate_runtime_api_base_structures() -> Result<TokenStream> {
 				Self: Sized
 			{
 				std::cell::RefCell::borrow(&self.changes).top_keys_by_prefix(prefix)
+			}
+
+			fn get_typed_change<T: Clone + codec::Encode + 'static>(&self, space: &[u8], key: &#crate_::StorageKey) -> std::option::Option<std::option::Option<T>>
+			where
+				Self: Sized
+			{
+				std::cell::RefCell::borrow(&self.typed_cache).get_change::<T>(space, key)
 			}
 
 			fn get_top_change(&self, key: &#crate_::StorageKey) -> std::option::Option<std::option::Option<#crate_::StorageValue>>
@@ -445,7 +452,7 @@ fn generate_runtime_api_base_structures() -> Result<TokenStream> {
 						} else {
 							Ok(())
 						};
-						self.typed_cache.commit_transaction();
+						std::cell::RefCell::borrow_mut(&self.typed_cache).commit_transaction();
 						let res2 = #crate_::OverlayedChanges::commit_transaction(
 							&mut std::cell::RefCell::borrow_mut(&self.changes)
 						);
@@ -459,7 +466,7 @@ fn generate_runtime_api_base_structures() -> Result<TokenStream> {
 						} else {
 							Ok(())
 						};
-						self.typed_cache.rollback_transaction();
+						std::cell::RefCell::borrow_mut(&self.typed_cache).rollback_transaction();
 						let res2 = #crate_::OverlayedChanges::rollback_transaction(
 							&mut std::cell::RefCell::borrow_mut(&self.changes)
 						);
@@ -477,7 +484,7 @@ fn generate_runtime_api_base_structures() -> Result<TokenStream> {
 				if !*std::cell::RefCell::borrow(&self.commit_on_success) {
 					return
 				}
-				self.typed_cache.start_transaction();
+				std::cell::RefCell::borrow_mut(&self.typed_cache).start_transaction();
 				#crate_::OverlayedChanges::start_transaction(
 					&mut std::cell::RefCell::borrow_mut(&self.changes)
 				);

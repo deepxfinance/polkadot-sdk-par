@@ -12894,6 +12894,7 @@ version = "0.1.0"
 dependencies = [
  "downcast-rs 2.0.2",
  "log",
+ "once_cell",
  "parity-scale-codec",
  "smallvec",
  "sp-std",

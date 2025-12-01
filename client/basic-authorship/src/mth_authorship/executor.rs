@@ -393,7 +393,7 @@ where
                         limit_execution_time,
                     );
 
-                    let (cache, mut overlay, _, recorder) = thread_builder.api.take_all_changes();
+                    let (mut cache, mut overlay, _, recorder) = thread_builder.api.take_all_changes();
                     // TODO more check when merge cache to overlay.top?
                     for (k, v) in cache.drain_commited() {
                         overlay.top.changes.entry(k).or_default().set(v, true, None);

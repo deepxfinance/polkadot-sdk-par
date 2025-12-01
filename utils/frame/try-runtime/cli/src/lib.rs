@@ -864,11 +864,11 @@ pub(crate) fn state_machine_call<Block: BlockT, HostFns: HostFunctions>(
 	data: &[u8],
 	extensions: Extensions,
 ) -> sc_cli::Result<(OverlayedChanges, Vec<u8>)> {
-	let cache = OverlayCache::default();
+	let mut cache = OverlayCache::default();
 	let mut changes = Default::default();
 	let encoded_results = StateMachine::new(
 		&ext.backend,
-		&cache,
+		&mut cache,
 		&mut changes,
 		executor,
 		method,
