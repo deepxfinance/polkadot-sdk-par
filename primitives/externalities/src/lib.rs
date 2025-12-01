@@ -35,6 +35,7 @@ use sp_storage::{ChildInfo, StateVersion, TrackedStorageKey};
 
 pub use extensions::{Extension, ExtensionStore, Extensions};
 pub use scope_limited::{set_and_run_with_externalities, with_externalities};
+use typed_cache::OverlayCache;
 
 mod extensions;
 mod scope_limited;
@@ -106,6 +107,9 @@ pub trait Externalities: ExtensionStore {
 	///
 	/// Returns an `Option` that holds the SCALE encoded hash.
 	fn child_storage(&self, child_info: &ChildInfo, key: &[u8]) -> Option<Vec<u8>>;
+
+	/// Get overlay typed cache for faster storage io.
+	fn overlay_cache(&self) -> Option<OverlayCache>;
 
 	/// Set storage entry `key` of current contract being called (effective immediately).
 	fn set_storage(&mut self, key: Vec<u8>, value: Vec<u8>) {

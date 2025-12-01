@@ -32,6 +32,7 @@ use sp_core::storage::{
 use sp_externalities::{Extension, ExtensionStore, Externalities, MultiRemovalResults};
 use sp_trie::{empty_child_trie_root, LayoutV1};
 
+use typed_cache::OverlayCache;
 use crate::{log_error, trace, warn, debug, StorageTransactionCache};
 use sp_std::{
 	any::{Any, TypeId},
@@ -99,6 +100,8 @@ where
 	H: Hasher,
 	B: 'a + Backend<H>,
 {
+	/// The overlayed typed changes and cache.
+	cache: Option<&'a OverlayCache>,
 	/// The overlayed changes to write to.
 	overlay: &'a mut OverlayedChanges,
 	/// The storage backend to read from.
@@ -126,22 +129,25 @@ where
 	/// Create a new `Ext`.
 	#[cfg(not(feature = "std"))]
 	pub fn new(
+		cache: Option<&'a OverlayCache>,
 		overlay: &'a mut OverlayedChanges,
 		storage_transaction_cache: &'a mut StorageTransactionCache<B::Transaction, H>,
 		backend: &'a B,
 	) -> Self {
-		Ext { overlay, backend, id: 0, storage_transaction_cache }
+		Ext { cache, overlay, backend, id: 0, storage_transaction_cache }
 	}
 
 	/// Create a new `Ext` from overlayed changes and read-only backend
 	#[cfg(feature = "std")]
 	pub fn new(
+		cache: Option<&'a OverlayCache>,
 		overlay: &'a mut OverlayedChanges,
 		storage_transaction_cache: &'a mut StorageTransactionCache<B::Transaction, H>,
 		backend: &'a B,
 		extensions: Option<&'a mut sp_externalities::Extensions>,
 	) -> Self {
 		Self {
+			cache,
 			overlay,
 			backend,
 			storage_transaction_cache,
@@ -214,6 +220,10 @@ where
 
 	fn set_offchain_storage(&mut self, key: &[u8], value: Option<&[u8]>) {
 		self.overlay.set_offchain_storage(key, value)
+	}
+
+	fn overlay_cache(&self) -> Option<OverlayCache> {
+		self.cache.map(|cache| cache.clone())
 	}
 
 	fn storage(&self, key: &[u8]) -> Option<StorageValue> {
@@ -1009,7 +1019,7 @@ mod tests {
 		)
 			.into();
 
-		let ext = TestExt::new(&mut overlay, &mut cache, &backend, None);
+		let ext = TestExt::new(None, &mut overlay, &mut cache, &backend, None);
 
 		// next_backend < next_overlay
 		assert_eq!(ext.next_storage_key(&[5]), Some(vec![10]));
@@ -1025,7 +1035,7 @@ mod tests {
 
 		drop(ext);
 		overlay.set_storage(vec![50], Some(vec![50]));
-		let ext = TestExt::new(&mut overlay, &mut cache, &backend, None);
+		let ext = TestExt::new(None, &mut overlay, &mut cache, &backend, None);
 
 		// next_overlay exist but next_backend doesn't exist
 		assert_eq!(ext.next_storage_key(&[40]), Some(vec![50]));
@@ -1056,7 +1066,7 @@ mod tests {
 		)
 			.into();
 
-		let ext = TestExt::new(&mut overlay, &mut cache, &backend, None);
+		let ext = TestExt::new(None, &mut overlay, &mut cache, &backend, None);
 
 		assert_eq!(ext.next_storage_key(&[5]), Some(vec![30]));
 
@@ -1090,7 +1100,7 @@ mod tests {
 		)
 			.into();
 
-		let ext = TestExt::new(&mut overlay, &mut cache, &backend, None);
+		let ext = TestExt::new(None, &mut overlay, &mut cache, &backend, None);
 
 		// next_backend < next_overlay
 		assert_eq!(ext.next_child_storage_key(child_info, &[5]), Some(vec![10]));
@@ -1106,7 +1116,7 @@ mod tests {
 
 		drop(ext);
 		overlay.set_child_storage(child_info, vec![50], Some(vec![50]));
-		let ext = TestExt::new(&mut overlay, &mut cache, &backend, None);
+		let ext = TestExt::new(None, &mut overlay, &mut cache, &backend, None);
 
 		// next_overlay exist but next_backend doesn't exist
 		assert_eq!(ext.next_child_storage_key(child_info, &[40]), Some(vec![50]));
@@ -1138,7 +1148,7 @@ mod tests {
 		)
 			.into();
 
-		let ext = TestExt::new(&mut overlay, &mut cache, &backend, None);
+		let ext = TestExt::new(None, &mut overlay, &mut cache, &backend, None);
 
 		assert_eq!(ext.child_storage(child_info, &[10]), Some(vec![10]));
 		assert_eq!(
@@ -1178,7 +1188,7 @@ mod tests {
 		)
 			.into();
 
-		let ext = TestExt::new(&mut overlay, &mut cache, &backend, None);
+		let ext = TestExt::new(None, &mut overlay, &mut cache, &backend, None);
 
 		use sp_core::storage::well_known_keys;
 		let mut ext = ext;

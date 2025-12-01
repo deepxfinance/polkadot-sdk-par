@@ -27,9 +27,7 @@ use sp_core::{
 	ExecutionContext,
 };
 use sp_runtime::{generic::BlockId, traits::Block as BlockT};
-use sp_state_machine::{
-	backend::AsTrieBackend, ExecutionStrategy, Ext, OverlayedChanges, StateMachine, StorageProof,
-};
+use sp_state_machine::{backend::AsTrieBackend, ExecutionStrategy, Ext, OverlayCache, OverlayedChanges, StateMachine, StorageProof};
 use std::{cell::RefCell, sync::Arc};
 
 /// Call executor that executes methods locally, querying all required
@@ -124,7 +122,7 @@ where
 		let mut overlay = OverlayedChanges::default();
 
 		let mut cache = StorageTransactionCache::<Block, B::State>::default();
-		let mut ext = Ext::new(&mut overlay, &mut cache, state, None);
+		let mut ext = Ext::new(None, &mut overlay, &mut cache, state, None);
 
 		self.executor
 			.runtime_version(&mut ext, code)
@@ -169,6 +167,7 @@ where
 		strategy: ExecutionStrategy,
 		context: CallContext,
 	) -> sp_blockchain::Result<Vec<u8>> {
+		let cache = OverlayCache::default();
 		let mut changes = OverlayedChanges::default();
 		let at_number =
 			self.backend.blockchain().expect_block_number_from_id(&BlockId::Hash(at_hash))?;
@@ -188,6 +187,7 @@ where
 
 		let mut sm = StateMachine::new(
 			&state,
+			&cache,
 			&mut changes,
 			&self.executor,
 			method,
@@ -207,6 +207,7 @@ where
 		at_hash: Block::Hash,
 		method: &str,
 		call_data: &[u8],
+		cache: &OverlayCache,
 		changes: &RefCell<OverlayedChanges>,
 		storage_transaction_cache: Option<&RefCell<StorageTransactionCache<Block, B::State>>>,
 		recorder: &Option<ProofRecorder<Block>>,
@@ -247,6 +248,7 @@ where
 
 				let mut state_machine = StateMachine::new(
 					&backend,
+					cache,
 					changes,
 					&self.executor,
 					method,
@@ -262,6 +264,7 @@ where
 			None => {
 				let mut state_machine = StateMachine::new(
 					&state,
+					cache,
 					changes,
 					&self.executor,
 					method,
@@ -306,6 +309,7 @@ where
 
 		sp_state_machine::prove_execution_on_trie_backend(
 			trie_backend,
+			&Default::default(),
 			&mut Default::default(),
 			&self.executor,
 			method,

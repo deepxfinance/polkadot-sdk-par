@@ -103,7 +103,10 @@ pub use sp_runtime::{
 pub use sp_state_machine::{
 	backend::AsTrieBackend, Backend as StateBackend, InMemoryBackend, OverlayedChanges,
 	StorageProof, TrieBackend, TrieBackendBuilder, OverlayedEntry, MergeErr, MergeChange,
+	OverlayCache,
 };
+#[cfg(not(feature = "std"))]
+pub struct OverlayCache;
 #[doc(hidden)]
 pub use sp_std::{mem, slice, vec};
 #[doc(hidden)]
@@ -607,10 +610,15 @@ pub trait ApiExt<Block: BlockT> {
 		Self: Sized;
 
 	fn take_all_changes(&mut self) -> (
+		OverlayCache,
 		OverlayedChanges,
 		StorageTransactionCache<Block, Self::StateBackend>,
 		Option<ProofRecorder<Block>>,
 	)
+	where
+		Self: Sized;
+
+	fn set_typed_cache(&mut self, cache: OverlayCache)
 	where
 		Self: Sized;
 
@@ -646,6 +654,8 @@ pub struct CallApiAtParams<'a, Block: BlockT, Backend: StateBackend<HashFor<Bloc
 	pub function: &'static str,
 	/// The encoded arguments of the function.
 	pub arguments: Vec<u8>,
+	/// Typed cache changes that are on top of the state,
+	pub typed_cache: &'a OverlayCache,
 	/// The overlayed changes that are on top of the state.
 	pub overlayed_changes: &'a RefCell<OverlayedChanges>,
 	/// The cache for storage transactions.

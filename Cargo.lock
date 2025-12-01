@@ -10852,6 +10852,7 @@ dependencies = [
  "sp-trie",
  "sp-version",
  "thiserror",
+ "typed-cache",
 ]
 
 [[package]]
@@ -11191,6 +11192,7 @@ dependencies = [
  "parity-scale-codec",
  "sp-std",
  "sp-storage",
+ "typed-cache",
 ]
 
 [[package]]
@@ -11516,6 +11518,7 @@ dependencies = [
  "thiserror",
  "tracing",
  "trie-db",
+ "typed-cache",
 ]
 
 [[package]]
@@ -11791,17 +11794,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 1.0.109",
-]
-
-[[package]]
-name = "storage_cache"
-version = "0.1.0"
-dependencies = [
- "downcast-rs 2.0.2",
- "log",
- "parity-scale-codec",
- "smallvec",
- "sp-std",
 ]
 
 [[package]]
@@ -12894,6 +12886,17 @@ dependencies = [
  "digest 0.10.6",
  "rand 0.8.5",
  "static_assertions",
+]
+
+[[package]]
+name = "typed-cache"
+version = "0.1.0"
+dependencies = [
+ "downcast-rs 2.0.2",
+ "log",
+ "parity-scale-codec",
+ "smallvec",
+ "sp-std",
 ]
 
 [[package]]

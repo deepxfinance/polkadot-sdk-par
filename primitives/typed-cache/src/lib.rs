@@ -1,10 +1,12 @@
+#![cfg_attr(not(feature = "std"), no_std)]
 pub mod static_cache;
 pub mod overlayed_changes;
 pub mod traits;
 
 pub use static_cache::*;
-pub use overlayed_changes::storage::*;
 pub use overlayed_changes::*;
+#[cfg(feature = "std")]
+pub use overlayed_changes::storage::*;
 pub use traits::*;
 
 #[cfg(feature = "std")]

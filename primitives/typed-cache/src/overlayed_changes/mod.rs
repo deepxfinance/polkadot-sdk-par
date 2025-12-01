@@ -1,7 +1,8 @@
 pub mod changeset;
+#[cfg(feature = "std")]
 pub mod storage;
-
-use std::collections::BTreeSet;
+use sp_std::vec::Vec;
+use sp_std::collections::btree_set::BTreeSet;
 
 pub type StorageKey = Vec<u8>;
 

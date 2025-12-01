@@ -2,7 +2,6 @@ use std::collections::{HashMap, HashSet};
 use std::marker::PhantomData;
 use std::sync::Arc;
 use std::{cmp, time};
-use std::ops::AddAssign;
 use std::time::Duration;
 use codec::Encode;
 use futures::StreamExt;
@@ -30,8 +29,6 @@ use sp_state_machine::{MergeErr, OverlayedChanges, StorageKey, StorageValue};
 use crate::{BlockPropose, ExtendExtrinsic, MultiThreadBlockBuilder};
 use crate::mth_authorship::execute_info::{BlockExecuteInfo, InfoRecorder, MergeInfo, ThreadExecutionInfo};
 use frame_support::storage::unhashed;
-use frame_support::traits::Len;
-use sp_core::hexdisplay::HexDisplay;
 
 const LOG_TARGET: &str = "authorship";
 
@@ -355,13 +352,14 @@ where
         round_tx: usize,
         limit_execution_time: bool,
     ) {
-        let (init_changes, _, init_recorder) = block_builder.api.take_all_changes();
+        let (init_cache, init_changes, _, init_recorder) = block_builder.api.take_all_changes();
         for (i, pending_txs) in extrinsic_group.into_iter().enumerate() {
             let thread_inherents = inherents.clone();
             let parent_hash = block_builder.parent_hash.clone();
             let estimated_header_size = block_builder.estimated_header_size.clone();
             let extrinsics = block_builder.extrinsics.clone();
             let context = Some(block_builder.context.clone());
+            let init_cache = init_cache.copy_data();
             let init_changes = init_changes.clone();
             let init_recorder = init_recorder.clone();
             let thread_client = self.client.clone();
@@ -374,6 +372,7 @@ where
                     let mut thread_builder = match thread_client.new_with_other(parent_hash, estimated_header_size, context) {
                         Ok(mut builder) => {
                             builder.extrinsics = extrinsics;
+                            builder.api.set_typed_cache(init_cache);
                             builder.api.set_changes(init_changes);
                             builder.api.set_recorder(init_recorder);
                             builder
@@ -394,7 +393,12 @@ where
                         limit_execution_time,
                     );
 
-                    let (overlay, _, recorder) = thread_builder.api.take_all_changes();
+                    let (cache, mut overlay, _, recorder) = thread_builder.api.take_all_changes();
+                    // TODO more check when merge cache to overlay.top?
+                    for (k, v) in cache.drain_commited() {
+                        overlay.top.changes.entry(k).or_default().set(v, true, None);
+                    }
+
                     let changes = (vec![i + 1], overlay, recorder, thread_builder.extrinsics.clone(), unqueue_invalid, end_reason);
                     if res_tx.start_send((changes, Some(thread_info))).is_err() {
                         trace!("Could not send block production result to proposer!");

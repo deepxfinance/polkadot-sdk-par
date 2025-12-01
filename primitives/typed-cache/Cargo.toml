@@ -1,5 +1,5 @@
 [package]
-name = "storage_cache"
+name = "typed-cache"
 version = "0.1.0"
 edition = "2021"
 
@@ -10,11 +10,13 @@ codec = { package = "parity-scale-codec", version = "3.2.2", default-features = 
 smallvec = "1.8.0"
 log = { version = "0.4.17", default-features = false }
 sp-std = { version = "5.0.0", default-features = false, path = "../std" }
-downcast-rs = "2.0.2"
+downcast-rs = { version = "2.0.2", default-features = false }
 
 [features]
 default = ["std"]
 std = [
+    "downcast-rs/std",
+    "downcast-rs/sync",
     "codec/std",
     "log/std",
     "sp-std/std",

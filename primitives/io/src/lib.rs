@@ -73,6 +73,8 @@ use secp256k1::{
 	ecdsa::{RecoverableSignature, RecoveryId},
 	Message, SECP256K1,
 };
+#[cfg(feature = "std")]
+use sp_state_machine::OverlayCache;
 
 #[cfg(feature = "std")]
 use sp_externalities::{Externalities, ExternalitiesExt};
@@ -115,6 +117,17 @@ impl From<MultiRemovalResults> for KillStorageResult {
 			Some(..) => Self::SomeRemaining(r.loops),
 		}
 	}
+}
+
+#[cfg(feature = "std")]
+/// Returns the typed cache for only `std` feature.
+pub fn typed_cache() -> Option<OverlayCache> {
+	sp_runtime_interface::with_externalities(|mut __externalities__| {
+		__externalities__.overlay_cache()
+	})
+		.expect(
+		"`typed_cache` called outside of an Externalities-provided environment.",
+	)
 }
 
 /// Interface for accessing the storage from within the runtime.

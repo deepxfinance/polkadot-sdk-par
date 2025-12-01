@@ -228,6 +228,7 @@ fn generate_runtime_api_base_structures() -> Result<TokenStream> {
 		pub struct RuntimeApiImpl<Block: #crate_::BlockT, C: #crate_::CallApiAt<Block> + 'static> {
 			call: &'static C,
 			commit_on_success: std::cell::RefCell<bool>,
+			typed_cache: #crate_::OverlayCache,
 			changes: std::cell::RefCell<#crate_::OverlayedChanges>,
 			storage_transaction_cache: std::cell::RefCell<
 				#crate_::StorageTransactionCache<Block, C::StateBackend>
@@ -309,7 +310,9 @@ fn generate_runtime_api_base_structures() -> Result<TokenStream> {
 				let state_version = #crate_::CallApiAt::<Block>::runtime_version_at(self.call, std::clone::Clone::clone(&parent_hash))
 					.map(|v| #crate_::RuntimeVersion::state_version(&v))
 					.map_err(|e| format!("Failed to get state version: {}", e))?;
-
+				for (k, v) in self.typed_cache.drain_commited() {
+					std::cell::RefCell::borrow_mut(&self.changes).top.changes.entry(k).or_default().set(v, true, None);
+				}
 				#crate_::OverlayedChanges::into_storage_changes(
 					std::cell::RefCell::take(&self.changes),
 					backend,
@@ -337,6 +340,7 @@ fn generate_runtime_api_base_structures() -> Result<TokenStream> {
 			}
 
 			fn take_all_changes(&mut self) -> (
+				#crate_::OverlayCache,
 				#crate_::OverlayedChanges,
 				#crate_::StorageTransactionCache<Block, C::StateBackend>,
 				std::option::Option<#crate_::ProofRecorder<Block>>,
@@ -344,12 +348,17 @@ fn generate_runtime_api_base_structures() -> Result<TokenStream> {
 			where 
 				Self: Sized
 			{
+				let typed_cache = std::mem::take(&mut self.typed_cache);
 				let changes = std::cell::RefCell::take(&self.changes);
 				let recorder = self.recorder.take();
 				let storage_transaction_cache = core::cell::RefCell::take(&self.storage_transaction_cache);
-				(changes, storage_transaction_cache, recorder)
+				(typed_cache, changes, storage_transaction_cache, recorder)
 			}
-			
+
+			fn set_typed_cache(&mut self, cache: #crate_::OverlayCache) {
+				self.typed_cache = cache;
+			}
+
 			fn set_changes(&mut self, mut changes: #crate_::OverlayedChanges) {
 				self.changes = core::cell::RefCell::new(changes);
 			}
@@ -413,6 +422,7 @@ fn generate_runtime_api_base_structures() -> Result<TokenStream> {
 				RuntimeApiImpl {
 					call: unsafe { std::mem::transmute(call) },
 					commit_on_success: true.into(),
+					typed_cache: std::default::Default::default(),
 					changes: std::default::Default::default(),
 					recorder: std::default::Default::default(),
 					storage_transaction_cache: std::default::Default::default(),
@@ -435,7 +445,7 @@ fn generate_runtime_api_base_structures() -> Result<TokenStream> {
 						} else {
 							Ok(())
 						};
-
+						self.typed_cache.commit_transaction();
 						let res2 = #crate_::OverlayedChanges::commit_transaction(
 							&mut std::cell::RefCell::borrow_mut(&self.changes)
 						);
@@ -449,7 +459,7 @@ fn generate_runtime_api_base_structures() -> Result<TokenStream> {
 						} else {
 							Ok(())
 						};
-
+						self.typed_cache.rollback_transaction();
 						let res2 = #crate_::OverlayedChanges::rollback_transaction(
 							&mut std::cell::RefCell::borrow_mut(&self.changes)
 						);
@@ -467,7 +477,7 @@ fn generate_runtime_api_base_structures() -> Result<TokenStream> {
 				if !*std::cell::RefCell::borrow(&self.commit_on_success) {
 					return
 				}
-
+				self.typed_cache.start_transaction();
 				#crate_::OverlayedChanges::start_transaction(
 					&mut std::cell::RefCell::borrow_mut(&self.changes)
 				);
@@ -578,6 +588,7 @@ impl<'a> ApiRuntimeImplToApiRuntimeApiImpl<'a> {
 						at,
 						function: (*fn_name)(version),
 						arguments: params,
+						typed_cache: &self.typed_cache,
 						overlayed_changes: &self.changes,
 						storage_transaction_cache: &self.storage_transaction_cache,
 						context,

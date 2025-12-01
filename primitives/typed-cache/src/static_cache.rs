@@ -1,21 +1,36 @@
-use std::collections::btree_map::Entry::Vacant;
 use codec::Encode;
-use sp_std::collections::btree_map::BTreeMap;
-use sp_std::sync::{Arc, RwLock};
+use sp_std::boxed::Box;
+use sp_std::collections::btree_map::{BTreeMap, Entry::Vacant};
+use sp_std::sync::Arc;
+#[cfg(feature = "std")]
+use sp_std::sync::RwLock;
 use sp_std::any::Any;
-use crate::{Cache, StorageApi, StorageIO, StorageKey, StorageOverlay};
+use crate::{StorageIO, StorageKey};
+#[cfg(feature = "std")]
+use crate::StorageApi;
+#[cfg(feature = "std")]
+use crate::{Cache, StorageOverlay};
 
+#[cfg(feature = "std")]
 pub type AnyStorage = Arc<Box<dyn StorageApi>>;
+#[cfg(feature = "std")]
 pub type Overlay = Arc<RwLock<BTreeMap<Vec<u8>, AnyStorage>>>;
 pub type AnyCache = Arc<Box<dyn Any + Send + Sync>>;
+#[cfg(feature = "std")]
 pub type SharedCache = Arc<RwLock<BTreeMap<Vec<u8>, AnyCache>>>;
 
+#[cfg(not(feature = "std"))]
+#[derive(Clone, Default)]
+pub struct OverlayCache;
+
+#[cfg(feature = "std")]
 #[derive(Clone, Default)]
 pub struct OverlayCache {
     pub cache: SharedCache,
     pub inner: Overlay,
 }
 
+#[cfg(feature = "std")]
 impl OverlayCache {
     pub fn get_or_register<V: 'static + Send + Sync + Clone + Encode>(&self, space: &[u8]) -> AnyStorage {
         let try_get = self.inner.read().unwrap().get(space).cloned();
@@ -47,6 +62,7 @@ impl OverlayCache {
     }
 }
 
+#[cfg(feature = "std")]
 impl<V: 'static + Send + Sync + Clone + Encode> StorageIO<V> for OverlayCache {
     fn put(&self, space: &[u8], key: &[u8], value: V) {
         self.get_or_register::<V>(space)
@@ -79,8 +95,20 @@ impl<V: 'static + Send + Sync + Clone + Encode> StorageIO<V> for OverlayCache {
             .downcast_ref::<StorageOverlay<Vec<u8>, V>>()
             .map(|overlay| overlay.kill(space, key));
     }
+
+    fn mutate<F, M>(&self, space: &[u8], key: &[u8], get: F, mutate: M) -> bool
+    where
+        F: Fn(&[u8]) -> Option<V>,
+        M: FnOnce(Option<&mut V>)
+    {
+        self.get_or_register::<V>(space)
+            .downcast_ref::<StorageOverlay<Vec<u8>, V>>()
+            .map(|overlay| overlay.mutate(space, key, get, mutate))
+            .unwrap_or(false)
+    }
 }
 
+#[cfg(feature = "std")]
 impl OverlayCache {
     pub fn copy_data(&self) -> Self {
         Self {

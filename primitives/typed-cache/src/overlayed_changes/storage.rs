@@ -1,3 +1,4 @@
+use sp_std::boxed::Box;
 use sp_std::collections::btree_map::BTreeMap;
 use sp_std::sync::{Arc, RwLock};
 use sp_std::hash::Hash;
@@ -144,6 +145,26 @@ impl<V: Clone + 'static> StorageIO<V> for StorageOverlay<StorageKey, V> {
     fn kill(&self, space: &[u8], key: &[u8]) {
         if space != &self.space { return; }
         self.changes.write().unwrap().set(key.to_vec(), None, None);
+    }
+
+    fn mutate<F, M>(&self, space: &[u8], key: &[u8], get: F, mutate: M) -> bool
+    where
+        F: Fn(&[u8]) -> Option<V>,
+        M: FnOnce(Option<&mut V>)
+    {
+        if space != &self.space { return false; }
+        if let Some(entry) = self.changes.write().unwrap().changes.get_mut(key) {
+            if let Some(v) = entry.value_mut() {
+                mutate(Some(v));
+                return true;
+            }
+        }
+        if let Some(mut v) = self.get(space, key, get) {
+            mutate(Some(&mut v));
+            self.changes.write().unwrap().set(key.to_vec(), Some(v), None);
+            return true;
+        }
+        false
     }
 }
 
