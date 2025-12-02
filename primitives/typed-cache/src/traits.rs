@@ -4,6 +4,19 @@ use sp_std::collections::btree_map::BTreeMap;
 use sp_std::vec::Vec;
 use crate::StorageKey;
 
+#[cfg(not(feature = "std"))]
+/// Default no requirements for `no_std`
+pub trait TStorage {}
+
+#[cfg(not(feature = "std"))]
+impl<S> TStorage for S {}
+
+#[cfg(feature = "std")]
+pub trait TStorage: Clone + 'static {}
+
+#[cfg(feature = "std")]
+impl<S: Clone + 'static> TStorage for S {}
+
 #[cfg(feature = "std")]
 /// Manager for all storage types with overlay management.
 pub trait StorageApi: DowncastSync {
@@ -29,15 +42,16 @@ impl_downcast!(sync StorageApi);
 /// For all storage types including Value/Map/DoubleMap/NMap
 /// `key` should be calculated full key
 /// `space` define specific workspace for same `V`.
-/// `extra` is another data source if `get`/`take` get None
+/// `init` is another data source
 pub trait StorageIO<V> {
     fn put(&mut self, space: &[u8], key: &[u8], value: V);
-    fn get<F>(&mut self, space: &[u8], key: &[u8], extra: F) -> Option<V> where F: Fn(&[u8]) -> Option<V>;
+    fn get<F>(&mut self, space: &[u8], key: &[u8], init: Option<F>) -> Option<Option<V>> where F: Fn(&[u8]) -> Option<V>;
     fn get_change(&self, space: &[u8], key: &[u8]) -> Option<Option<V>>;
-    fn take<F>(&mut self, space: &[u8], key: &[u8], extra: F) -> Option<V> where F: Fn(&[u8]) -> Option<V>;
+    fn take<F>(&mut self, space: &[u8], key: &[u8], init: Option<F>) -> Option<Option<V>> where F: Fn(&[u8]) -> Option<V>;
     fn kill(&mut self, space: &[u8], key: &[u8]);
-    fn mutate<F, M>(&mut self, space: &[u8], key: &[u8], get: F, mutate: M) -> bool
+    fn mutate<F, M>(&mut self, space: &[u8], key: &[u8], init: Option<F>, mutate: M) -> bool
     where
         F: Fn(&[u8]) -> Option<V>,
         M: FnOnce(Option<&mut V>);
+    fn cache(&mut self, space: &[u8], key: &[u8], value: Option<V>);
 }

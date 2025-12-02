@@ -89,8 +89,8 @@ where
 		panic!("Should not be used in read-only externalities!")
 	}
 
-	fn overlay_cache(&self) -> &Option<&mut OverlayCache> {
-		&None
+	fn overlay_cache(&mut self) -> Option<&mut OverlayCache> {
+		None
 	}
 
 	fn storage(&self, key: &[u8]) -> Option<StorageValue> {

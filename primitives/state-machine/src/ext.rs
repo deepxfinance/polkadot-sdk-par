@@ -223,8 +223,11 @@ where
 		self.overlay.set_offchain_storage(key, value)
 	}
 
-	fn overlay_cache(&self) -> &Option<&mut OverlayCache> {
-		&self.cache
+	fn overlay_cache(&mut self) -> Option<&mut OverlayCache> {
+		match self.cache {
+			Some(ref mut x) => Some(x),
+			None => None,
+		}
 	}
 
 	fn storage(&self, key: &[u8]) -> Option<StorageValue> {

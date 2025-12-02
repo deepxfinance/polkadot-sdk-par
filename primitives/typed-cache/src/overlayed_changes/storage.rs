@@ -102,7 +102,7 @@ impl<V: Clone> StorageIO<V> for StorageOverlay<StorageKey, V> {
         self.changes.set(key.to_vec(), Some(value), None);
     }
 
-    fn get<F>(&mut self, space: &[u8], key: &[u8], extra: F) -> Option<V>
+    fn get<F>(&mut self, space: &[u8], key: &[u8], init: Option<F>) -> Option<Option<V>>
     where
         F: Fn(&[u8]) -> Option<V>
     {
@@ -113,12 +113,15 @@ impl<V: Clone> StorageIO<V> for StorageOverlay<StorageKey, V> {
             .or(
                 self.cache
                     .get(key)
-                    .map(|c| c.get_or_init(|| extra(key)).clone())
+                    .map(|c| init.as_ref().map(|f| c.get_or_init(|| f(key)).clone()))
                     .or({
                         self.cache.insert(key.to_owned(), Arc::new(OnceCell::<Option<V>>::new()));
-                        self.cache.get(key).map(|c| c.get_or_init(|| extra(key)).clone())
+                        self.cache
+                            .get(key)
+                            .map(|c| init.as_ref().map(|f| c.get_or_init(|| f(key)).clone()))
                     })
-            )?
+                    .unwrap_or(None)
+            )
     }
 
     fn get_change(&self, space: &[u8], key: &[u8]) -> Option<Option<V>> {
@@ -126,13 +129,13 @@ impl<V: Clone> StorageIO<V> for StorageOverlay<StorageKey, V> {
         self.changes.get(key).map(|x| x.value().cloned())
     }
 
-    fn take<F>(&mut self, space: &[u8], key: &[u8], extra: F) -> Option<V>
+    fn take<F>(&mut self, space: &[u8], key: &[u8], init: Option<F>) -> Option<Option<V>>
     where
         F: Fn(&[u8]) -> Option<V>
     {
         if space != &self.space { return None; }
-        let v = self.get(space, key, extra);
-        if v.is_some() { self.kill(space, key); }
+        let v = self.get(space, key, init);
+        if let Some(Some(_)) = &v { self.kill(space, key); }
         v
     }
 
@@ -141,7 +144,7 @@ impl<V: Clone> StorageIO<V> for StorageOverlay<StorageKey, V> {
         self.changes.set(key.to_vec(), None, None);
     }
 
-    fn mutate<F, M>(&mut self, space: &[u8], key: &[u8], get: F, mutate: M) -> bool
+    fn mutate<F, M>(&mut self, space: &[u8], key: &[u8], init: Option<F>, mutate: M) -> bool
     where
         F: Fn(&[u8]) -> Option<V>,
         M: FnOnce(Option<&mut V>)
@@ -153,12 +156,19 @@ impl<V: Clone> StorageIO<V> for StorageOverlay<StorageKey, V> {
                 return true;
             }
         }
-        if let Some(mut v) = self.get(space, key, get) {
+        if let Some(Some(mut v)) = self.get(space, key, init) {
             mutate(Some(&mut v));
             self.changes.set(key.to_vec(), Some(v), None);
             return true;
         }
         false
+    }
+
+    fn cache(&mut self, space: &[u8], key: &[u8], value: Option<V>) {
+        if space != &self.space { return; }
+        let new_cache = Arc::new(OnceCell::<Option<V>>::new());
+        let _ = new_cache.try_insert(value);
+        self.cache.insert(key.to_vec(), new_cache);
     }
 }
 
@@ -170,9 +180,9 @@ fn test_basic_types() {
     overlay1.put(b"str", b"key1", "value1");
     overlay1.put(b"str", b"key2", "value2");
     overlay2.put(b"str", b"key3", "value3");
-    assert_eq!(overlay1.get(b"str", b"key1", |_| { None }), Some("value1"));
-    assert_eq!(overlay1.get(b"str", b"key2", |_| { None }), Some("value2"));
-    assert_eq!(overlay2.get(b"str", b"key3", |_| { None }), Some("value3"));
+    assert_eq!(overlay1.get(b"str", b"key1", None), Some(Some("value1")));
+    assert_eq!(overlay1.get(b"str", b"key2", None), Some(Some("value2")));
+    assert_eq!(overlay2.get(b"str", b"key3", None), Some(Some("value3")));
 }
 
 #[test]
@@ -182,8 +192,8 @@ fn test_commit() {
     overlay.put(b"str", b"key1", "value1");
     overlay.rollback_transaction();
     overlay.put(b"str", b"key2", "value2");
-    assert_eq!(overlay.get(b"str", b"key1", |_| { None }), None);
-    assert_eq!(overlay.get(b"str", b"key2", |_| { None }), Some("value2"));
+    assert_eq!(overlay.get(b"str", b"key1", None), Option::<Option<&str>>::None);
+    assert_eq!(overlay.get(b"str", b"key2", None), Some(Some("value2")));
 }
 
 #[test]
@@ -196,8 +206,8 @@ fn test_clone_for_multi_threads() {
         overlay2
     }).join().unwrap();
 
-    assert_eq!(overlay1.get(b"str", b"key1", |_| { None }), Some("value1"));
-    assert_eq!(overlay1.get(b"str", b"key2", |_| { None }), None);
-    assert_eq!(overlay2.get(b"str", b"key1", |_| { None }), Some("value1"));
-    assert_eq!(overlay2.get(b"str", b"key2", |_| { None }), Some("value2"));
+    assert_eq!(overlay1.get(b"str", b"key1", None), Some(Some("value1")));
+    assert_eq!(overlay1.get(b"str", b"key2", None), Option::<Option<&str>>::None);
+    assert_eq!(overlay2.get(b"str", b"key1", None), Some(Some("value1")));
+    assert_eq!(overlay2.get(b"str", b"key2", None), Some(Some("value2")));
 }

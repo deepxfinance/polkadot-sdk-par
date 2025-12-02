@@ -161,8 +161,8 @@ impl From<BTreeMap<StorageKey, StorageValue>> for BasicExternalities {
 impl Externalities for BasicExternalities {
 	fn set_offchain_storage(&mut self, _key: &[u8], _value: Option<&[u8]>) {}
 
-	fn overlay_cache(&self) -> &Option<&mut OverlayCache> {
-		&None
+	fn overlay_cache(&mut self) -> Option<&mut OverlayCache> {
+		None
 	}
 
 	fn storage(&self, key: &[u8]) -> Option<StorageValue> {

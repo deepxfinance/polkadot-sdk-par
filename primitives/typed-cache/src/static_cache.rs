@@ -61,13 +61,13 @@ impl OverlayCache {
         self.handle_mut::<V, _, _>(space, f);
     }
 
-    pub fn get<V: Clone + Encode + 'static, F>(&mut self, space: &[u8], key: &[u8], extra: F) -> Option<V>
+    pub fn get<V: Clone + Encode + 'static, F>(&mut self, space: &[u8], key: &[u8], init: Option<F>) -> Option<Option<V>>
     where
         F: Fn(&[u8]) -> Option<V>
     {
         let f = |storage: &mut AnyStorage| {
             storage.downcast_mut::<StorageOverlay<Vec<u8>, V>>()
-                .map(|overlay| overlay.get(space, key, extra))
+                .map(|overlay| overlay.get(space, key, init))
         };
         self.handle_mut::<V, _, _>(space, f).unwrap_or(None)
     }
@@ -80,13 +80,13 @@ impl OverlayCache {
         self.handle_ref::<V, _, _>(space, f)?.unwrap_or(None)
     }
 
-    pub fn take<V: Clone + Encode + 'static, F>(&mut self, space: &[u8], key: &[u8], extra: F) -> Option<V>
+    pub fn take<V: Clone + Encode + 'static, F>(&mut self, space: &[u8], key: &[u8], init: Option<F>) -> Option<Option<V>>
     where
         F: Fn(&[u8]) -> Option<V>
     {
         let f = |storage: &mut AnyStorage| {
             storage.downcast_mut::<StorageOverlay<Vec<u8>, V>>()
-                .map(|overlay| overlay.take(space, key, extra))
+                .map(|overlay| overlay.take(space, key, init))
         };
         self.handle_mut::<V, _, _>(space, f).unwrap_or(None)
     }
@@ -99,16 +99,24 @@ impl OverlayCache {
         self.handle_mut::<V, _, _>(space, f);
     }
 
-    pub fn mutate<V: Clone + Encode + 'static, F, M>(&mut self, space: &[u8], key: &[u8], get: F, mutate: M) -> bool
+    pub fn mutate<V: Clone + Encode + 'static, F, M>(&mut self, space: &[u8], key: &[u8], init: Option<F>, mutate: M) -> bool
     where
         F: Fn(&[u8]) -> Option<V>,
         M: FnOnce(Option<&mut V>)
     {
         let f = |storage: &mut AnyStorage| {
             storage.downcast_mut::<StorageOverlay<Vec<u8>, V>>()
-                .map(|overlay| overlay.mutate(space, key, get, mutate))
+                .map(|overlay| overlay.mutate(space, key, init, mutate))
         };
         self.handle_mut::<V, _, _>(space, f).unwrap_or(false)
+    }
+
+    pub fn cache<V: Clone + Encode + 'static>(&mut self, space: &[u8], key: &[u8], value: Option<V>) {
+        let f = |storage: &mut AnyStorage| {
+            storage.downcast_mut::<StorageOverlay<Vec<u8>, V>>()
+                .map(|overlay| overlay.cache(space, key, value));
+        };
+        self.handle_mut::<V, _, _>(space, f);
     }
 }
 
@@ -191,10 +199,10 @@ pub mod test {
         let mut cache = OverlayCache::default();
         a::write_values(&mut cache);
         b::write_values(&mut cache);
-        assert_eq!(cache.get(b"Account", b"alice", |_| { None }), Some(a::Account::new(b"alice", 0, 1000)));
-        assert_eq!(cache.get(b"Account", b"bob", |_| { None }), Some(a::Account::new(b"bob", 0, 500)));
-        assert_eq!(cache.get(b"u32", b"alice_extend", |_| { None }), Some(100u32));
-        assert_eq!(cache.get(b"u32", b"bob_extend", |_| { None }), Some(50u32));
+        assert_eq!(cache.get(b"Account", b"alice", None), Some(Some(a::Account::new(b"alice", 0, 1000))));
+        assert_eq!(cache.get(b"Account", b"bob", None), Some(Some(a::Account::new(b"bob", 0, 500))));
+        assert_eq!(cache.get(b"u32", b"alice_extend", None), Some(Some(100u32)));
+        assert_eq!(cache.get(b"u32", b"bob_extend", None), Some(Some(50u32)));
     }
 
     #[test]
@@ -204,29 +212,39 @@ pub mod test {
 
         let mut cache1 = std::thread::spawn(move || {
             // this extra will insert `1u32` with key `thread1` at space `u32`. This is shared between threads.
-            assert_eq!(cache1.get(b"u32", b"thread1", |_| { Some(1u32) }), Some(1u32));
+            assert_eq!(cache1.get(b"u32", b"thread1", Some(|_| { Some(1u32) })), Some(Some(1u32)));
             cache1.put(b"u32", b"thread1", 132u32);
             cache1.put(b"u64", b"thread1", 100u64);
             cache1
         }).join().unwrap();
 
         let mut cache2 = std::thread::spawn(move || {
-            assert_eq!(cache2.get(b"u32", b"thread1", |_| { None }), Option::<u32>::None);
+            assert_eq!(cache2.get(b"u32", b"thread1", None), Option::<Option<u32>>::None);
             cache2.put(b"u64", b"thread2", 200u64);
             cache2
         }).join().unwrap();
 
         // get values
-        assert_eq!(cache1.get(b"u32", b"thread1", |_| { Some(1u32) }), Some(132u32));
-        assert_eq!(cache1.get(b"u64", b"thread1", |_| { None }), Some(100u64));
-        assert_eq!(cache2.get(b"u32", b"thread1", |_| { None }), Option::<u32>::None);
-        assert_eq!(cache2.get(b"u64", b"thread2", |_| { None }), Some(200u64));
+        assert_eq!(cache1.get(b"u32", b"thread1", Some(|_| { Some(1u32) })), Some(Some(132u32)));
+        assert_eq!(cache1.get(b"u64", b"thread1", None), Some(Some(100u64)));
+        assert_eq!(cache2.get(b"u32", b"thread1", Some(|_| { None })), Some(Option::<u32>::None));
+        assert_eq!(cache2.get(b"u64", b"thread2", None), Some(Some(200u64)));
         let _ = cache1.drain_commited();
         let _ = cache2.drain_commited();
         // get values from cached values
-        assert_eq!(cache1.get(b"u32", b"thread1", |_| { Some(1u32) }), Some(1u32));
-        assert_eq!(cache1.get(b"u64", b"thread1", |_| { None }), Option::<u64>::None);
-        assert_eq!(cache2.get(b"u32", b"thread2", |_| { None }), Option::<u32>::None);
-        assert_eq!(cache2.get(b"u64", b"thread2", |_| { None }), Option::<u64>::None);
+        assert_eq!(cache1.get(b"u32", b"thread1", Some(|_| { Some(1u32) })), Some(Some(1u32)));
+        assert_eq!(cache1.get(b"u64", b"thread1", None), Option::<Option<u64>>::None);
+        assert_eq!(cache2.get(b"u32", b"thread2", None), Option::<Option<u32>>::None);
+        assert_eq!(cache2.get(b"u64", b"thread2", None), Option::<Option<u64>>::None);
+    }
+
+    #[test]
+    fn test_storage_api() {
+        let mut cache = OverlayCache::default();
+        cache.enter_runtime();
+        cache.put(b"u32", b"11", 11u32);
+        cache.put(b"u32", b"12", 12u32);
+        cache.put(b"u64", b"22", 22u64);
+
     }
 }

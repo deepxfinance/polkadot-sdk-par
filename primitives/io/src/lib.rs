@@ -123,13 +123,13 @@ impl From<MultiRemovalResults> for KillStorageResult {
 /// Returns the typed cache for only `std` feature.
 pub fn mut_typed_cache<F, O>(f: F) -> Option<O>
 where
-	F: FnOnce(&&mut OverlayCache) -> O,
+	F: FnOnce(&mut OverlayCache) -> O,
 {
 	sp_runtime_interface::with_externalities(|mut __externalities__| {
-		__externalities__.overlay_cache().as_ref().map(|o| f(o))
+		__externalities__.overlay_cache().map(|overlay| f(overlay)).or(None)
 	})
 		.expect(
-		"`typed_cache` called outside of an Externalities-provided environment.",
+		"`mut_overlay_cache` called outside of an Externalities-provided environment.",
 	)
 }
 

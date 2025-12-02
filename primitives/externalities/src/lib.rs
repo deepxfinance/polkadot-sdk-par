@@ -88,6 +88,9 @@ pub trait Externalities: ExtensionStore {
 	/// Write a key value pair to the offchain storage database.
 	fn set_offchain_storage(&mut self, key: &[u8], value: Option<&[u8]>);
 
+	/// Get overlay typed cache for faster storage io.
+	fn overlay_cache(&mut self) -> Option<&mut OverlayCache>;
+
 	/// Read runtime storage.
 	fn storage(&self, key: &[u8]) -> Option<Vec<u8>>;
 
@@ -107,9 +110,6 @@ pub trait Externalities: ExtensionStore {
 	///
 	/// Returns an `Option` that holds the SCALE encoded hash.
 	fn child_storage(&self, child_info: &ChildInfo, key: &[u8]) -> Option<Vec<u8>>;
-
-	/// Get overlay typed cache for faster storage io.
-	fn overlay_cache(&self) -> &Option<&mut OverlayCache>;
 
 	/// Set storage entry `key` of current contract being called (effective immediately).
 	fn set_storage(&mut self, key: Vec<u8>, value: Vec<u8>) {
