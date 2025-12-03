@@ -30,6 +30,7 @@ use crate::{
 use codec::{Decode, Encode, EncodeLike, FullCodec, MaxEncodedLen};
 use sp_arithmetic::traits::SaturatedConversion;
 use sp_std::prelude::*;
+use crate::storage::TypedAppend;
 
 /// A type that allow to store values for `(key1, key2)` couple. Similar to `StorageMap` but allow
 /// to iterate and remove value associated to first key.
@@ -237,6 +238,16 @@ where
 		<Self as crate::storage::StorageDoubleMap<Key1, Key2, Value>>::swap(x_k1, x_k2, y_k1, y_k2)
 	}
 
+	#[cfg(feature = "std")]
+	fn insert<KArg1, KArg2>(k1: KArg1, k2: KArg2, val: Value)
+	where
+		KArg1: EncodeLike<Key1>,
+		KArg2: EncodeLike<Key2>
+	{
+		<Self as crate::storage::StorageDoubleMap<Key1, Key2, Value>>::insert(k1, k2, val)
+	}
+
+	#[cfg(not(feature = "std"))]
 	/// Store a value to be associated with the given keys from the double map.
 	pub fn insert<KArg1, KArg2, VArg>(k1: KArg1, k2: KArg2, val: VArg)
 	where
@@ -365,6 +376,17 @@ where
 		<Self as crate::storage::StorageDoubleMap<Key1, Key2, Value>>::try_mutate_exists(k1, k2, f)
 	}
 
+	#[cfg(feature = "std")]
+	fn append<Item: Encode + Clone, KArg1, KArg2>(k1: KArg1, k2: KArg2, item: Item)
+	where
+		KArg1: EncodeLike<Key1>,
+		KArg2: EncodeLike<Key2>,
+		Value: TypedAppend<Item> + TStorage
+	{
+		<Self as crate::storage::StorageDoubleMap<Key1, Key2, Value>>::append(k1, k2, item)
+	}
+
+	#[cfg(not(feature = "std"))]
 	/// Append the given item to the value in the storage.
 	///
 	/// `Value` is required to implement [`StorageAppend`].

@@ -532,6 +532,21 @@ pub trait StorageDoubleMap<K1: FullEncode, K2: FullEncode, V: FullCodec> {
 		KArg1: EncodeLike<K1>,
 		KArg2: EncodeLike<K2>;
 
+	#[cfg(feature = "std")]
+	/// Load the value from typed_cache
+	fn get_cache<F>(key: &[u8], f: F) -> Option<V> where F: Fn(&[u8]) -> Option<V>;
+
+	#[cfg(feature = "std")]
+	/// put the value to typed_cache
+	fn put_cache(key: &[u8], val: V);
+
+	#[cfg(feature = "std")]
+	/// put the value to typed_cache
+	fn kill_cache(key: &[u8]);
+
+	#[cfg(feature = "std")]
+	fn take_cache<F>(key: &[u8], f: F) -> Option<V> where F: Fn(&[u8]) -> Option<V>;
+
 	/// Load the value associated with the given key from the double map.
 	fn get<KArg1, KArg2>(k1: KArg1, k2: KArg2) -> Self::Query
 	where
@@ -563,6 +578,14 @@ pub trait StorageDoubleMap<K1: FullEncode, K2: FullEncode, V: FullCodec> {
 		YKArg1: EncodeLike<K1>,
 		YKArg2: EncodeLike<K2>;
 
+	#[cfg(feature = "std")]
+	/// Store a value to be associated with the given key from the map.
+	fn insert<KArg1, KArg2>(k1: KArg1, k2: KArg2, val: V)
+	where
+		KArg1: EncodeLike<K1>,
+		KArg2: EncodeLike<K2>;
+
+	#[cfg(not(feature = "std"))]
 	/// Store a value to be associated with the given keys from the double map.
 	fn insert<KArg1, KArg2, VArg>(k1: KArg1, k2: KArg2, val: VArg)
 	where
@@ -657,6 +680,15 @@ pub trait StorageDoubleMap<K1: FullEncode, K2: FullEncode, V: FullCodec> {
 		KArg2: EncodeLike<K2>,
 		F: FnOnce(&mut Option<V>) -> Result<R, E>;
 
+	#[cfg(feature = "std")]
+	/// Append the given item to the value in the `typed_cache`.
+	fn append<Item: Encode + Clone, KArg1, KArg2>(k1: KArg1, k2: KArg2, item: Item)
+	where
+		KArg1: EncodeLike<K1>,
+		KArg2: EncodeLike<K2>,
+		V: TypedAppend<Item> + TStorage;
+
+	#[cfg(not(feature = "std"))]
 	/// Append the given item to the value in the storage.
 	///
 	/// `V` is required to implement [`StorageAppend`].
