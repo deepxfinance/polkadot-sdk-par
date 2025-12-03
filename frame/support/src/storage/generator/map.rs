@@ -281,16 +281,12 @@ impl<K: FullEncode, V: FullCodec + TStorage, G: StorageMap<K, V>> storage::Stora
 	#[cfg(feature = "std")]
 	fn get_cache<F>(key: &[u8], _f: F) -> Option<V> where F: Fn(&[u8]) -> Option<V> {
 		match sp_io::mut_typed_cache(
-			|o| o.get::<V, F>(
-				&Self::storage_prefix(),
-				key,
-				None,
-			),
+			|o| o.get::<V, F>(&key[..32], key, None),
 		) {
 			Some(Some(value)) => value,
 			Some(None) => {
 				let res = unhashed::get(key);
-				sp_io::mut_typed_cache(|o| o.cache(&Self::storage_prefix(), key, res.clone()));
+				sp_io::mut_typed_cache(|o| o.cache(&key[..32], key, res.clone()));
 				res
 			}
 			None => unhashed::get(key),
@@ -302,11 +298,7 @@ impl<K: FullEncode, V: FullCodec + TStorage, G: StorageMap<K, V>> storage::Stora
 		if sp_io::mut_typed_cache(|_| ()).is_none() {
 			unhashed::put(key, &val);
 		} else {
-			sp_io::mut_typed_cache(|o| o.put(
-				&Self::storage_prefix(),
-				&key,
-				val,
-			));
+			sp_io::mut_typed_cache(|o| o.put(&key[..32], &key, val));
 		}
 	}
 
@@ -315,29 +307,22 @@ impl<K: FullEncode, V: FullCodec + TStorage, G: StorageMap<K, V>> storage::Stora
 		if sp_io::mut_typed_cache(|_| ()).is_none() {
 			unhashed::kill(key);
 		} else {
-			sp_io::mut_typed_cache(|o| o.kill::<V>(
-				&Self::storage_prefix(),
-				key
-			));
+			sp_io::mut_typed_cache(|o| o.kill::<V>(&key[..32], key));
 		}
 	}
 
 	#[cfg(feature = "std")]
 	fn take_cache<F>(key: &[u8], _f: F) -> Option<V> where F: Fn(&[u8]) -> Option<V> {
 		match sp_io::mut_typed_cache(
-			|o| o.take::<V, F>(
-				&Self::storage_prefix(),
-				key,
-				None,
-			),
+			|o| o.take::<V, F>(&key[..32], key, None),
 		) {
 			Some(Some(value)) => value,
 			Some(None) => {
 				let res = unhashed::get(key);
 				if res.is_some() {
-					sp_io::mut_typed_cache(|o| o.kill::<V>(&Self::storage_prefix(), key));
+					sp_io::mut_typed_cache(|o| o.kill::<V>(&key[..32], key));
 				} else {
-					sp_io::mut_typed_cache(|o| o.cache(&Self::storage_prefix(), key, res.clone()));
+					sp_io::mut_typed_cache(|o| o.cache(&key[..32], key, res.clone()));
 				}
 				res
 			}
@@ -514,17 +499,17 @@ impl<K: FullEncode, V: FullCodec + TStorage, G: StorageMap<K, V>> storage::Stora
 			let encoded = item.encode();
 			let time = start.elapsed();
 			let mut lock = crate::storage::unhashed::GLOBAL_ENCODE.lock().unwrap();
-			if let Some(v) = lock.get_mut(Self::storage_prefix()) {
+			if let Some(v) = lock.get_mut(&key[..32]) {
 				v.push((time, encoded.len()));
 			} else {
-				lock.insert(Self::storage_prefix().to_vec(), vec![(time, encoded.len())]);
+				lock.insert(key[..32].to_vec(), vec![(time, encoded.len())]);
 			}
 			sp_io::storage::append(&key, encoded);
 		} else {
 			let mut none_f = Some(|_k: &[u8]| { None });
 			none_f.take();
 			let updated = sp_io::mut_typed_cache(|o| o.mutate::<V, _, _>(
-				&Self::storage_prefix(),
+				&key[..32],
 				&key,
 				none_f,
 				|t| {
@@ -534,11 +519,7 @@ impl<K: FullEncode, V: FullCodec + TStorage, G: StorageMap<K, V>> storage::Stora
 			if !updated {
 				let mut new_value = V::default();
 				new_value.append(item);
-				sp_io::mut_typed_cache(|o| o.put(
-					&Self::storage_prefix(),
-					&key,
-					new_value,
-				));
+				sp_io::mut_typed_cache(|o| o.put(&key[..32], &key, new_value));
 			}
 		}
 	}

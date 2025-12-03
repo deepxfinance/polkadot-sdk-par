@@ -71,20 +71,15 @@ impl<T: FullCodec + TStorage, G: StorageValue<T>> storage::StorageValue<T> for G
 
 	#[cfg(feature = "std")]
 	fn get_cache<F>(_f: F) -> Option<T> where F: Fn(&[u8]) -> Option<T> {
-		match sp_io::mut_typed_cache(
-			|o| o.get::<T, F>(
-				&Self::storage_prefix(),
-				&Self::storage_value_final_key(),
-				None,
-			),
-		) {
+		let key = Self::storage_value_final_key();
+		match sp_io::mut_typed_cache(|o| o.get::<T, F>(&key, &key, None)) {
 			Some(Some(value)) => value,
 			Some(None) => {
-				let res = unhashed::get(&Self::storage_value_final_key());
-				sp_io::mut_typed_cache(|o| o.cache(&Self::storage_prefix(), &Self::storage_value_final_key(), res.clone()));
+				let res = unhashed::get(&key);
+				sp_io::mut_typed_cache(|o| o.cache(&key, &key, res.clone()));
 				res
 			}
-			None => unhashed::get(&Self::storage_value_final_key()),
+			None => unhashed::get(&key),
 		}
 	}
 
@@ -132,14 +127,11 @@ impl<T: FullCodec + TStorage, G: StorageValue<T>> storage::StorageValue<T> for G
 			String::from_utf8(Self::storage_prefix().to_vec()).unwrap(),
 		);
 		// detect if typed_cache exists.
+		let key = Self::storage_value_final_key();
 		if sp_io::mut_typed_cache(|_| ()).is_none() {
-			unhashed::put(&Self::storage_value_final_key(), &val);
+			unhashed::put(&key, &val);
 		} else {
-			sp_io::mut_typed_cache(|o| o.put(
-				&Self::storage_prefix(),
-				&Self::storage_value_final_key(),
-				val,
-			));
+			sp_io::mut_typed_cache(|o| o.put(&key, &key, val));
 		}
 	}
 
@@ -157,46 +149,38 @@ impl<T: FullCodec + TStorage, G: StorageValue<T>> storage::StorageValue<T> for G
 			String::from_utf8(Self::module_prefix().to_vec()).unwrap(), 
 			String::from_utf8(Self::storage_prefix().to_vec()).unwrap(),
 		);
+		let key = Self::storage_value_final_key();
 		if let Some(val) = G::from_query_to_optional_value(maybe_val) {
 			#[cfg(feature = "std")]
 			if sp_io::mut_typed_cache(|_| ()).is_none() {
 				unhashed::put(&Self::storage_value_final_key(), &val);
 			} else {
-				sp_io::mut_typed_cache(|o| o.put(
-					&Self::storage_prefix(),
-					&Self::storage_value_final_key(),
-					val,
-				));
+				sp_io::mut_typed_cache(|o| o.put(&key, &key, val));
 			}
 			#[cfg(not(feature = "std"))]
-			unhashed::put(&Self::storage_value_final_key(), &val)
+			unhashed::put(&key, &val)
 		} else {
 			#[cfg(feature = "std")]
 			if sp_io::mut_typed_cache(|_| ()).is_none() {
-				unhashed::kill(&Self::storage_value_final_key());
+				unhashed::kill(&key);
 			} else {
-				sp_io::mut_typed_cache(|o| o.kill::<T>(
-					&Self::storage_prefix(),
-					&Self::storage_value_final_key(),
-				));
+				sp_io::mut_typed_cache(|o| o.kill::<T>(&key, &key));
 			}
 			#[cfg(not(feature = "std"))]
-			unhashed::kill(&Self::storage_value_final_key())
+			unhashed::kill(&key)
 		}
 	}
 
 	fn kill() {
+		let key = Self::storage_value_final_key();
 		#[cfg(feature = "std")]
 		if sp_io::mut_typed_cache(|_| ()).is_none() {
-			unhashed::kill(&Self::storage_value_final_key());
+			unhashed::kill(&key);
 		} else {
-			sp_io::mut_typed_cache(|o| o.kill::<T>(
-				&Self::storage_prefix(),
-				&Self::storage_value_final_key(),
-			));
+			sp_io::mut_typed_cache(|o| o.kill::<T>(&key, &key));
 		}
 		#[cfg(not(feature = "std"))]
-		unhashed::kill(&Self::storage_value_final_key())
+		unhashed::kill(&key)
 	}
 
 	fn mutate<R, F: FnOnce(&mut G::Query) -> R>(f: F) -> R {
@@ -274,8 +258,8 @@ impl<T: FullCodec + TStorage, G: StorageValue<T>> storage::StorageValue<T> for G
 			String::from_utf8(Self::module_prefix().to_vec()).unwrap(),
 			String::from_utf8(Self::storage_prefix().to_vec()).unwrap(),
 		);
+		let key = Self::storage_value_final_key();
 		if sp_io::mut_typed_cache(|_| ()).is_none() {
-			let key = Self::storage_value_final_key();
 			let start = std::time::Instant::now();
 			let encoded = item.encode();
 			let time = start.elapsed();
@@ -291,7 +275,7 @@ impl<T: FullCodec + TStorage, G: StorageValue<T>> storage::StorageValue<T> for G
 			let mut none_f = Some(|_k: &[u8]| { None });
 			none_f.take();
 			let updated = sp_io::mut_typed_cache(|o| o.mutate::<T, _, _>(
-				&Self::storage_prefix(),
+				&key,
 				&key,
 				none_f,
 				|t| {
@@ -301,11 +285,7 @@ impl<T: FullCodec + TStorage, G: StorageValue<T>> storage::StorageValue<T> for G
 			if !updated {
 				let mut new_value = T::default();
 				new_value.append(item);
-				sp_io::mut_typed_cache(|o| o.put(
-					&Self::storage_prefix(),
-					&key,
-					new_value,
-				));
+				sp_io::mut_typed_cache(|o| o.put(&key, &key, new_value));
 			}
 		}
 	}
