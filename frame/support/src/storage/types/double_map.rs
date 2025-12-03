@@ -239,7 +239,7 @@ where
 	}
 
 	#[cfg(feature = "std")]
-	fn insert<KArg1, KArg2>(k1: KArg1, k2: KArg2, val: Value)
+	pub fn insert<KArg1, KArg2>(k1: KArg1, k2: KArg2, val: Value)
 	where
 		KArg1: EncodeLike<Key1>,
 		KArg2: EncodeLike<Key2>

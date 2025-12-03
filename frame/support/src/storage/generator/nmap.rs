@@ -43,6 +43,7 @@ use crate::{
 use codec::{Decode, Encode, EncodeLike, FullCodec};
 #[cfg(not(feature = "std"))]
 use sp_std::prelude::*;
+use crate::storage::TypedAppend;
 
 /// Generator for `StorageNMap` used by `decl_storage` and storage types.
 ///
@@ -127,14 +128,106 @@ where
 	}
 
 	fn contains_key<KArg: EncodeLikeTuple<K::KArg> + TupleToEncodedIter>(key: KArg) -> bool {
-		unhashed::exists(&Self::storage_n_map_final_key::<K, _>(key))
+		let final_key = Self::storage_n_map_final_key::<K, _>(key);
+		#[cfg(feature = "std")]
+		if sp_io::mut_typed_cache(|_| ()).is_none() {
+			unhashed::exists(&final_key)
+		} else {
+			Self::get_cache(&final_key, |_| { Option::<V>::None }).is_some()
+		}
+		#[cfg(not(feature = "std"))]
+		unhashed::exists(&final_key)
+	}
+
+	#[cfg(feature = "std")]
+	fn get_cache<F>(key: &[u8], _f: F) -> Option<V> where F: Fn(&[u8]) -> Option<V> {
+		match sp_io::mut_typed_cache(
+			|o| o.get::<V, F>(
+				&Self::storage_prefix(),
+				key,
+				None,
+			),
+		) {
+			Some(Some(value)) => value,
+			Some(None) => {
+				let res = unhashed::get(key);
+				sp_io::mut_typed_cache(|o| o.cache(&Self::storage_prefix(), key, res.clone()));
+				res
+			}
+			None => unhashed::get(key),
+		}
+	}
+
+	#[cfg(feature = "std")]
+	fn put_cache(key: &[u8], val: V) {
+		if sp_io::mut_typed_cache(|_| ()).is_none() {
+			unhashed::put(key, &val);
+		} else {
+			sp_io::mut_typed_cache(|o| o.put(
+				&Self::storage_prefix(),
+				&key,
+				val,
+			));
+		}
+	}
+
+	#[cfg(feature = "std")]
+	fn kill_cache(key: &[u8]) {
+		if sp_io::mut_typed_cache(|_| ()).is_none() {
+			unhashed::kill(key);
+		} else {
+			sp_io::mut_typed_cache(|o| o.kill::<V>(
+				&Self::storage_prefix(),
+				key
+			));
+		}
+	}
+
+	#[cfg(feature = "std")]
+	fn take_cache<F>(key: &[u8], _f: F) -> Option<V> where F: Fn(&[u8]) -> Option<V> {
+		match sp_io::mut_typed_cache(
+			|o| o.take::<V, F>(
+				&Self::storage_prefix(),
+				key,
+				None,
+			),
+		) {
+			Some(Some(value)) => value,
+			Some(None) => {
+				let res = unhashed::get(key);
+				if res.is_some() {
+					sp_io::mut_typed_cache(|o| o.kill::<V>(&Self::storage_prefix(), key));
+				} else {
+					sp_io::mut_typed_cache(|o| o.cache(&Self::storage_prefix(), key, res.clone()));
+				}
+				res
+			}
+			None => unhashed::take(key),
+		}
 	}
 
 	fn get<KArg: EncodeLikeTuple<K::KArg> + TupleToEncodedIter>(key: KArg) -> Self::Query {
+		#[cfg(feature = "std")]
+		{
+			G::from_optional_value_to_query(Self::get_cache(
+				&Self::storage_n_map_final_key::<K, _>(key),
+				|_| { Option::<V>::None }
+			))
+		}
+		#[cfg(not(feature = "std"))]
 		G::from_optional_value_to_query(unhashed::get(&Self::storage_n_map_final_key::<K, _>(key)))
 	}
 
 	fn try_get<KArg: EncodeLikeTuple<K::KArg> + TupleToEncodedIter>(key: KArg) -> Result<V, ()> {
+		#[cfg(feature = "std")]
+		{
+			Self::get_cache(
+				&Self::storage_n_map_final_key::<K, _>(key),
+				|_| { Option::<V>::None }
+			)
+				.ok_or(())
+		}
+		#[cfg(not(feature = "std"))]
 		unhashed::get(&Self::storage_n_map_final_key::<K, _>(key)).ok_or(())
 	}
 
@@ -147,7 +240,9 @@ where
 
 	fn take<KArg: EncodeLikeTuple<K::KArg> + TupleToEncodedIter>(key: KArg) -> Self::Query {
 		let final_key = Self::storage_n_map_final_key::<K, _>(key);
-
+		#[cfg(feature = "std")]
+		let value = Self::take_cache(&final_key, |_| { Option::<V>::None });
+		#[cfg(not(feature = "std"))]
 		let value = unhashed::take(&final_key);
 		G::from_optional_value_to_query(value)
 	}
@@ -161,19 +256,49 @@ where
 		let final_x_key = Self::storage_n_map_final_key::<K, _>(key1);
 		let final_y_key = Self::storage_n_map_final_key::<KOther, _>(key2);
 
-		let v1 = unhashed::get_raw(&final_x_key);
-		if let Some(val) = unhashed::get_raw(&final_y_key) {
-			unhashed::put_raw(&final_x_key, &val);
-		} else {
-			unhashed::kill(&final_x_key);
+		#[cfg(feature = "std")]
+		{
+			let v1 = Self::get_cache(&final_x_key, |_| { Option::<V>::None });
+			if let Some(val) = Self::get_cache(&final_y_key, |_| { Option::<V>::None }) {
+				Self::put_cache(&final_x_key, val);
+			} else {
+				Self::kill_cache(&final_x_key);
+			}
+			if let Some(val) = v1 {
+				Self::put_cache(&final_y_key, val);
+			} else {
+				Self::kill_cache(&final_y_key);
+			}
 		}
-		if let Some(val) = v1 {
-			unhashed::put_raw(&final_y_key, &val);
-		} else {
-			unhashed::kill(&final_y_key);
+		#[cfg(not(feature = "std"))]
+		{
+			let v1 = unhashed::get_raw(&final_x_key);
+			if let Some(val) = unhashed::get_raw(&final_y_key) {
+				unhashed::put_raw(&final_x_key, &val);
+			} else {
+				unhashed::kill(&final_x_key);
+			}
+			if let Some(val) = v1 {
+				unhashed::put_raw(&final_y_key, &val);
+			} else {
+				unhashed::kill(&final_y_key);
+			}
 		}
 	}
 
+	#[cfg(feature = "std")]
+	/// Store a value to be associated with the given key from the map.
+	fn insert<KArg>(key: KArg, val: V)
+	where
+		KArg: EncodeLikeTuple<K::KArg> + TupleToEncodedIter
+	{
+		#[cfg(feature = "std")]
+		Self::put_cache(&Self::storage_n_map_final_key::<K, _>(key), val);
+		#[cfg(not(feature = "std"))]
+		unhashed::put(&Self::storage_n_map_final_key::<K, _>(key), &val);
+	}
+
+	#[cfg(not(feature = "std"))]
 	fn insert<KArg, VArg>(key: KArg, val: VArg)
 	where
 		KArg: EncodeLikeTuple<K::KArg> + TupleToEncodedIter,
@@ -183,6 +308,9 @@ where
 	}
 
 	fn remove<KArg: EncodeLikeTuple<K::KArg> + TupleToEncodedIter>(key: KArg) {
+		#[cfg(feature = "std")]
+		Self::kill_cache(&Self::storage_n_map_final_key::<K, _>(key));
+		#[cfg(not(feature = "std"))]
 		unhashed::kill(&Self::storage_n_map_final_key::<K, _>(key));
 	}
 
@@ -190,6 +318,8 @@ where
 	where
 		K: HasKeyPrefix<KP>,
 	{
+		#[cfg(feature = "std")]
+		if sp_io::mut_typed_cache(|_| ()).is_some() { panic!("`StorageNMap::remove_prefix` not supported") };
 		unhashed::clear_prefix(&Self::storage_n_map_partial_key(partial_key), limit, None).into()
 	}
 
@@ -201,6 +331,8 @@ where
 	where
 		K: HasKeyPrefix<KP>,
 	{
+		#[cfg(feature = "std")]
+		if sp_io::mut_typed_cache(|_| ()).is_some() { panic!("`StorageNMap::clear_prefix` not supported") };
 		unhashed::clear_prefix(
 			&Self::storage_n_map_partial_key(partial_key),
 			Some(limit),
@@ -212,6 +344,8 @@ where
 	where
 		K: HasKeyPrefix<KP>,
 	{
+		#[cfg(feature = "std")]
+		if sp_io::mut_typed_cache(|_| ()).is_some() { panic!("`StorageNMap::contains_prefix` not supported") };
 		unhashed::contains_prefixed_key(&Self::storage_n_map_partial_key(partial_key))
 	}
 
@@ -219,6 +353,8 @@ where
 	where
 		K: HasKeyPrefix<KP>,
 	{
+		#[cfg(feature = "std")]
+		if sp_io::mut_typed_cache(|_| ()).is_some() { panic!("`StorageNMap::iter_prefix_values` not supported") };
 		let prefix = Self::storage_n_map_partial_key(partial_key);
 		PrefixIterator {
 			prefix: prefix.clone(),
@@ -244,13 +380,29 @@ where
 		F: FnOnce(&mut Self::Query) -> Result<R, E>,
 	{
 		let final_key = Self::storage_n_map_final_key::<K, _>(key);
+		#[cfg(feature = "std")]
+		let mut val = G::from_optional_value_to_query(Self::get_cache(
+			final_key.as_ref(),
+			|_| { Option::<V>::None }
+		));
+		#[cfg(not(feature = "std"))]
 		let mut val = G::from_optional_value_to_query(unhashed::get(final_key.as_ref()));
 
 		let ret = f(&mut val);
 		if ret.is_ok() {
 			match G::from_query_to_optional_value(val) {
-				Some(ref val) => unhashed::put(final_key.as_ref(), val),
-				None => unhashed::kill(final_key.as_ref()),
+				Some(ref val) => {
+					#[cfg(feature = "std")]
+					Self::put_cache(final_key.as_ref(), val.clone());
+					#[cfg(not(feature = "std"))]
+					unhashed::put(final_key.as_ref(), val)
+				},
+				None => {
+					#[cfg(feature = "std")]
+					Self::kill_cache(final_key.as_ref());
+					#[cfg(not(feature = "std"))]
+					unhashed::kill(final_key.as_ref())
+				},
 			}
 		}
 		ret
@@ -271,18 +423,74 @@ where
 		F: FnOnce(&mut Option<V>) -> Result<R, E>,
 	{
 		let final_key = Self::storage_n_map_final_key::<K, _>(key);
+		#[cfg(feature = "std")]
+		let mut val = Self::get_cache(final_key.as_ref(), |_| { Option::<V>::None });
+		#[cfg(not(feature = "std"))]
 		let mut val = unhashed::get(final_key.as_ref());
 
 		let ret = f(&mut val);
 		if ret.is_ok() {
 			match val {
-				Some(ref val) => unhashed::put(final_key.as_ref(), val),
-				None => unhashed::kill(final_key.as_ref()),
+				Some(ref val) => {
+					#[cfg(feature = "std")]
+					Self::put_cache(final_key.as_ref(), val.clone());
+					#[cfg(not(feature = "std"))]
+					unhashed::put(final_key.as_ref(), val)
+				},
+				None => {
+					#[cfg(feature = "std")]
+					Self::kill_cache(final_key.as_ref());
+					#[cfg(not(feature = "std"))]
+					unhashed::kill(final_key.as_ref())
+				},
 			}
 		}
 		ret
 	}
 
+	#[cfg(feature = "std")]
+	/// Append the given item to the value in the `typed_cache`.
+	fn append<Item: Encode + Clone, KArg>(key: KArg, item: Item)
+	where
+		KArg: EncodeLikeTuple<K::KArg> + TupleToEncodedIter,
+		V: TypedAppend<Item> + TStorage
+	{
+		let final_key = Self::storage_n_map_final_key::<K, _>(key);
+		if sp_io::mut_typed_cache(|_| ()).is_none() {
+			let start = std::time::Instant::now();
+			let encoded = item.encode();
+			let time = start.elapsed();
+			let mut lock = crate::storage::unhashed::GLOBAL_ENCODE.lock().unwrap();
+			if let Some(v) = lock.get_mut(Self::storage_prefix()) {
+				v.push((time, encoded.len()));
+			} else {
+				lock.insert(Self::storage_prefix().to_vec(), vec![(time, encoded.len())]);
+			}
+			sp_io::storage::append(&final_key, encoded);
+		} else {
+			let mut none_f = Some(|_k: &[u8]| { None });
+			none_f.take();
+			let updated = sp_io::mut_typed_cache(|o| o.mutate::<V, _, _>(
+				&Self::storage_prefix(),
+				&final_key,
+				none_f,
+				|t| {
+					t.map(|t| t.append(item.clone()));
+				}
+			)).unwrap();
+			if !updated {
+				let mut new_value = V::default();
+				new_value.append(item);
+				sp_io::mut_typed_cache(|o| o.put(
+					&Self::storage_prefix(),
+					&final_key,
+					new_value,
+				));
+			}
+		}
+	}
+
+	#[cfg(not(feature = "std"))]
 	fn append<Item, EncodeLikeItem, KArg>(key: KArg, item: EncodeLikeItem)
 	where
 		KArg: EncodeLikeTuple<K::KArg> + TupleToEncodedIter,
@@ -326,6 +534,14 @@ where
 
 			final_key
 		};
+		#[cfg(feature = "std")]
+		{
+			Self::take_cache(&old_key, |_| { Option::<V>::None }).map(|value| {
+				Self::put_cache(Self::storage_n_map_final_key::<K, _>(key).as_ref(), value.clone());
+				value
+			})
+		}
+		#[cfg(not(feature = "std"))]
 		unhashed::take(old_key.as_ref()).map(|value| {
 			unhashed::put(Self::storage_n_map_final_key::<K, _>(key).as_ref(), &value);
 			value
@@ -343,6 +559,8 @@ impl<K: ReversibleKeyGenerator, V: FullCodec + TStorage, G: StorageNMap<K, V>>
 	where
 		K: HasReversibleKeyPrefix<KP>,
 	{
+		#[cfg(feature = "std")]
+		if sp_io::mut_typed_cache(|_| ()).is_some() { panic!("`StorageNMap::iter_prefix` not supported") };
 		let prefix = G::storage_n_map_partial_key(kp);
 		PrefixIterator {
 			prefix: prefix.clone(),
@@ -363,6 +581,8 @@ impl<K: ReversibleKeyGenerator, V: FullCodec + TStorage, G: StorageNMap<K, V>>
 	where
 		K: HasReversibleKeyPrefix<KP>,
 	{
+		#[cfg(feature = "std")]
+		if sp_io::mut_typed_cache(|_| ()).is_some() { panic!("`StorageNMap::iter_prefix_from` not supported") };
 		let mut iter = Self::iter_prefix(kp);
 		iter.set_last_raw_key(starting_raw_key);
 		iter
@@ -372,6 +592,8 @@ impl<K: ReversibleKeyGenerator, V: FullCodec + TStorage, G: StorageNMap<K, V>>
 	where
 		K: HasReversibleKeyPrefix<KP>,
 	{
+		#[cfg(feature = "std")]
+		if sp_io::mut_typed_cache(|_| ()).is_some() { panic!("`StorageNMap::iter_key_prefix` not supported") };
 		let prefix = G::storage_n_map_partial_key(kp);
 		KeyPrefixIterator {
 			prefix: prefix.clone(),
@@ -388,6 +610,8 @@ impl<K: ReversibleKeyGenerator, V: FullCodec + TStorage, G: StorageNMap<K, V>>
 	where
 		K: HasReversibleKeyPrefix<KP>,
 	{
+		#[cfg(feature = "std")]
+		if sp_io::mut_typed_cache(|_| ()).is_some() { panic!("`StorageNMap::iter_key_prefix_from` not supported") };
 		let mut iter = Self::iter_key_prefix(kp);
 		iter.set_last_raw_key(starting_raw_key);
 		iter
@@ -397,16 +621,22 @@ impl<K: ReversibleKeyGenerator, V: FullCodec + TStorage, G: StorageNMap<K, V>>
 	where
 		K: HasReversibleKeyPrefix<KP>,
 	{
+		#[cfg(feature = "std")]
+		if sp_io::mut_typed_cache(|_| ()).is_some() { panic!("`StorageNMap::drain_prefix` not supported") };
 		let mut iter = Self::iter_prefix(kp);
 		iter.drain = true;
 		iter
 	}
 
 	fn iter() -> Self::Iterator {
+		#[cfg(feature = "std")]
+		if sp_io::mut_typed_cache(|_| ()).is_some() { panic!("`StorageNMap::iter` not supported") };
 		Self::iter_from(G::prefix_hash())
 	}
 
 	fn iter_from(starting_raw_key: Vec<u8>) -> Self::Iterator {
+		#[cfg(feature = "std")]
+		if sp_io::mut_typed_cache(|_| ()).is_some() { panic!("`StorageNMap::iter_from` not supported") };
 		let prefix = G::prefix_hash();
 		Self::Iterator {
 			prefix,
@@ -421,10 +651,14 @@ impl<K: ReversibleKeyGenerator, V: FullCodec + TStorage, G: StorageNMap<K, V>>
 	}
 
 	fn iter_keys() -> Self::KeyIterator {
+		#[cfg(feature = "std")]
+		if sp_io::mut_typed_cache(|_| ()).is_some() { panic!("`StorageNMap::iter_keys` not supported") };
 		Self::iter_keys_from(G::prefix_hash())
 	}
 
 	fn iter_keys_from(starting_raw_key: Vec<u8>) -> Self::KeyIterator {
+		#[cfg(feature = "std")]
+		if sp_io::mut_typed_cache(|_| ()).is_some() { panic!("`StorageNMap::iter_keys_from` not supported") };
 		let prefix = G::prefix_hash();
 		Self::KeyIterator {
 			prefix,
@@ -438,12 +672,16 @@ impl<K: ReversibleKeyGenerator, V: FullCodec + TStorage, G: StorageNMap<K, V>>
 	}
 
 	fn drain() -> Self::Iterator {
+		#[cfg(feature = "std")]
+		if sp_io::mut_typed_cache(|_| ()).is_some() { panic!("`StorageNMap::drain` not supported") };
 		let mut iterator = Self::iter();
 		iterator.drain = true;
 		iterator
 	}
 
 	fn translate<O: Decode, F: FnMut(K::Key, O) -> Option<V>>(mut f: F) {
+		#[cfg(feature = "std")]
+		if sp_io::mut_typed_cache(|_| ()).is_some() { panic!("`StorageNMap::translate` not supported") };
 		let prefix = G::prefix_hash();
 		let mut previous_key = prefix.clone();
 		while let Some(next) =

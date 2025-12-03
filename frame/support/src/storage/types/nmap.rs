@@ -32,6 +32,7 @@ use crate::{
 use codec::{Decode, Encode, EncodeLike, FullCodec, MaxEncodedLen};
 use sp_runtime::SaturatedConversion;
 use sp_std::prelude::*;
+use crate::storage::TypedAppend;
 
 /// A type that allow to store values for an arbitrary number of keys in the form of
 /// `(Key<Hasher1, key1>, Key<Hasher2, key2>, ..., Key<HasherN, keyN>)`.
@@ -167,6 +168,16 @@ where
 		<Self as crate::storage::StorageNMap<Key, Value>>::swap::<KOther, _, _>(key1, key2)
 	}
 
+	#[cfg(feature = "std")]
+	/// Store a value to be associated with the given key from the map.
+	pub fn insert<KArg>(key: KArg, val: Value)
+	where
+		KArg: EncodeLikeTuple<Key::KArg> + TupleToEncodedIter
+	{
+		<Self as crate::storage::StorageNMap<Key, Value>>::insert(key, val)
+	}
+
+	#[cfg(not(feature = "std"))]
 	/// Store a value to be associated with the given keys from the map.
 	pub fn insert<KArg, VArg>(key: KArg, val: VArg)
 	where
@@ -286,6 +297,17 @@ where
 		<Self as crate::storage::StorageNMap<Key, Value>>::try_mutate_exists(key, f)
 	}
 
+	#[cfg(feature = "std")]
+	/// Append the given item to the value in the `typed_cache`.
+	fn append<Item: Encode + Clone, KArg>(key: KArg, item: Item)
+	where
+		KArg: EncodeLikeTuple<Key::KArg> + TupleToEncodedIter,
+		Value: TypedAppend<Item> + TStorage
+	{
+		<Self as crate::storage::StorageNMap<Key, Value>>::append(key, item)
+	}
+
+	#[cfg(not(feature = "std"))]
 	/// Append the given item to the value in the storage.
 	///
 	/// `Value` is required to implement [`StorageAppend`].

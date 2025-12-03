@@ -755,6 +755,21 @@ pub trait StorageNMap<K: KeyGenerator, V: FullCodec> {
 	/// Does the value (explicitly) exist in storage?
 	fn contains_key<KArg: EncodeLikeTuple<K::KArg> + TupleToEncodedIter>(key: KArg) -> bool;
 
+	#[cfg(feature = "std")]
+	/// Load the value from typed_cache
+	fn get_cache<F>(key: &[u8], f: F) -> Option<V> where F: Fn(&[u8]) -> Option<V>;
+
+	#[cfg(feature = "std")]
+	/// put the value to typed_cache
+	fn put_cache(key: &[u8], val: V);
+
+	#[cfg(feature = "std")]
+	/// put the value to typed_cache
+	fn kill_cache(key: &[u8]);
+
+	#[cfg(feature = "std")]
+	fn take_cache<F>(key: &[u8], f: F) -> Option<V> where F: Fn(&[u8]) -> Option<V>;
+
 	/// Load the value associated with the given key from the map.
 	fn get<KArg: EncodeLikeTuple<K::KArg> + TupleToEncodedIter>(key: KArg) -> Self::Query;
 
@@ -773,6 +788,13 @@ pub trait StorageNMap<K: KeyGenerator, V: FullCodec> {
 		KArg1: EncodeLikeTuple<K::KArg> + TupleToEncodedIter,
 		KArg2: EncodeLikeTuple<KOther::KArg> + TupleToEncodedIter;
 
+	#[cfg(feature = "std")]
+	/// Store a value to be associated with the given key from the map.
+	fn insert<KArg>(key: KArg, val: V)
+	where
+		KArg: EncodeLikeTuple<K::KArg> + TupleToEncodedIter;
+
+	#[cfg(not(feature = "std"))]
 	/// Store a value to be associated with the given key from the map.
 	fn insert<KArg, VArg>(key: KArg, val: VArg)
 	where
@@ -872,6 +894,14 @@ pub trait StorageNMap<K: KeyGenerator, V: FullCodec> {
 	/// Take the value under a key.
 	fn take<KArg: EncodeLikeTuple<K::KArg> + TupleToEncodedIter>(key: KArg) -> Self::Query;
 
+	#[cfg(feature = "std")]
+	/// Append the given item to the value in the `typed_cache`.
+	fn append<Item: Encode + Clone, KArg>(key: KArg, item: Item)
+	where
+		KArg: EncodeLikeTuple<K::KArg> + TupleToEncodedIter,
+		V: TypedAppend<Item> + TStorage;
+
+	#[cfg(not(feature = "std"))]
 	/// Append the given items to the value in the storage.
 	///
 	/// `V` is required to implement `codec::EncodeAppend`.
