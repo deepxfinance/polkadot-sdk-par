@@ -121,7 +121,7 @@ impl<V: Clone> StorageIO<V> for StorageOverlay<StorageKey, V> {
             .or(
                 self.cache
                     .get(key)
-                    .map(|c| init.as_ref().map(|f| c.get_or_init(|| f(key)).clone()))
+                    .map(|c| init.as_ref().map(|f| c.get_or_init(|| f(key)).clone()).or(c.get().cloned()))
                     .or({
                         self.cache.insert(key.to_owned(), Arc::new(OnceCell::<Option<V>>::new()));
                         self.cache
