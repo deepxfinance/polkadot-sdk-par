@@ -19,7 +19,6 @@ scale-info = { version = "2.5.0", default-features = false, features = ["derive"
 pallet-aura = { version = "4.0.0-dev", default-features = false, path = "../../../frame/aura" }
 pallet-balances = { version = "4.0.0-dev", default-features = false, path = "../../../frame/balances" }
 frame-support = { version = "4.0.0-dev", default-features = false, path = "../../../frame/support" }
-pallet-grandpa = { version = "4.0.0-dev", default-features = false, path = "../../../frame/grandpa" }
 pallet-sudo = { version = "4.0.0-dev", default-features = false, path = "../../../frame/sudo" }
 frame-system = { version = "4.0.0-dev", default-features = false, path = "../../../frame/system" }
 frame-try-runtime = { version = "0.10.0-dev", default-features = false, path = "../../../frame/try-runtime", optional = true }
@@ -31,7 +30,6 @@ sp-spot-api = { version = "4.0.0-dev", default-features = false, path = "../../.
 sp-perp-api = { version = "4.0.0-dev", default-features = false, path = "../../../primitives/perp-api" }
 sp-block-builder = { version = "4.0.0-dev", default-features = false, path = "../../../primitives/block-builder"}
 sp-consensus-aura = { version = "0.10.0-dev", default-features = false, path = "../../../primitives/consensus/aura" }
-sp-consensus-grandpa = { version = "4.0.0-dev", default-features = false, path = "../../../primitives/consensus/grandpa" }
 sp-core = { version = "7.0.0", default-features = false, path = "../../../primitives/core" }
 sp-inherents = { version = "4.0.0-dev", default-features = false, path = "../../../primitives/inherents"}
 sp-offchain = { version = "4.0.0-dev", default-features = false, path = "../../../primitives/offchain" }
@@ -74,7 +72,6 @@ std = [
 	"frame-try-runtime/std",
 	"pallet-aura/std",
 	"pallet-balances/std",
-	"pallet-grandpa/std",
 	"pallet-sudo/std",
 	"pallet-template/std",
 	"pallet-timestamp/std",
@@ -87,7 +84,6 @@ std = [
 	"sp-perp-api/std",
 	"sp-block-builder/std",
 	"sp-consensus-aura/std",
-	"sp-consensus-grandpa/std",
 	"sp-core/std",
 	"sp-inherents/std",
 	"sp-offchain/std",
@@ -104,7 +100,6 @@ runtime-benchmarks = [
 	"frame-system-benchmarking/runtime-benchmarks",
 	"frame-system/runtime-benchmarks",
 	"pallet-balances/runtime-benchmarks",
-	"pallet-grandpa/runtime-benchmarks",
 	"pallet-sudo/runtime-benchmarks",
 	"pallet-template/runtime-benchmarks",
 	"pallet-timestamp/runtime-benchmarks",
@@ -117,7 +112,6 @@ try-runtime = [
 	"frame-support/try-runtime",
 	"pallet-aura/try-runtime",
 	"pallet-balances/try-runtime",
-	"pallet-grandpa/try-runtime",
 	"pallet-sudo/try-runtime",
 	"pallet-template/try-runtime",
 	"pallet-timestamp/try-runtime",

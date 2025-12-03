@@ -30,6 +30,8 @@ pub trait StorageApi: DowncastSync {
     fn commit_transaction(&mut self);
     /// Drop tmp changes.
     fn rollback_transaction(&mut self);
+    /// Get all changes.
+    fn get_commited(&self) -> BTreeMap<StorageKey, Option<Vec<u8>>>;
     /// Convert storages to expected key/value pairs.
     fn drain_commited(&mut self) -> BTreeMap<StorageKey, Option<Vec<u8>>>;
     /// Get another copy with actual data, not just pointer(e.g. Arc).

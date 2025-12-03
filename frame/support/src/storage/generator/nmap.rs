@@ -36,7 +36,7 @@ use crate::{
 			EncodeLikeTuple, HasKeyPrefix, HasReversibleKeyPrefix, KeyGenerator,
 			ReversibleKeyGenerator, TupleToEncodedIter,
 		},
-		unhashed, KeyPrefixIterator, PrefixIterator, StorageAppend,
+		unhashed, KeyPrefixIterator, PrefixIterator, StorageAppend, TStorage
 	},
 	Never,
 };
@@ -57,7 +57,7 @@ use sp_std::prelude::*;
 /// If the keys are not trusted (e.g. can be set by a user), a cryptographic `hasher` such as
 /// `blake2_256` must be used.  Otherwise, other values in storage with the same prefix can
 /// be compromised.
-pub trait StorageNMap<K: KeyGenerator, V: FullCodec> {
+pub trait StorageNMap<K: KeyGenerator, V: FullCodec + TStorage> {
 	/// The type that get/take returns.
 	type Query;
 
@@ -117,7 +117,7 @@ pub trait StorageNMap<K: KeyGenerator, V: FullCodec> {
 impl<K, V, G> storage::StorageNMap<K, V> for G
 where
 	K: KeyGenerator,
-	V: FullCodec,
+	V: FullCodec + TStorage,
 	G: StorageNMap<K, V>,
 {
 	type Query = G::Query;
@@ -333,7 +333,7 @@ where
 	}
 }
 
-impl<K: ReversibleKeyGenerator, V: FullCodec, G: StorageNMap<K, V>>
+impl<K: ReversibleKeyGenerator, V: FullCodec + TStorage, G: StorageNMap<K, V>>
 	storage::IterableStorageNMap<K, V> for G
 {
 	type KeyIterator = KeyPrefixIterator<K::Key>;

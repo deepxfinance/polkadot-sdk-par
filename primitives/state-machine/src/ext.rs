@@ -623,6 +623,15 @@ where
 			);
 			return root.encode()
 		}
+		// TODO this `storage_root` should only be called only once at block finalize. And no more changes.
+		// Merge changes to overlay
+		for (key, value) in self.cache
+			.as_ref()
+			.map(|overlay| overlay.get_commited())
+			.unwrap_or_default()
+		{
+			self.overlay.top.set(key, value, None);
+		}
 
 		let root =
 			self.overlay

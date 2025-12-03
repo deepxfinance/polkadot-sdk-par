@@ -150,6 +150,10 @@ impl OverlayCache {
     pub fn rollback_transaction(&mut self) {
         self.inner.iter_mut().for_each(|(_, overlay)| overlay.rollback_transaction());
     }
+    
+    pub fn get_commited(&self) -> BTreeMap<StorageKey, Option<Vec<u8>>> {
+        self.inner.iter().map(|(_, overlay)| overlay.get_commited()).flatten().collect()
+    }
 
     pub fn drain_commited(&mut self) -> BTreeMap<StorageKey, Option<Vec<u8>>> {
         sp_std::mem::take(&mut self.inner)

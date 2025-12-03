@@ -39,6 +39,9 @@ pub use self::{
 pub use sp_runtime::TransactionOutcome;
 pub use types::Key;
 
+#[cfg(feature = "std")]
+pub use sp_state_machine::TStorage;
+
 pub mod bounded_btree_map;
 pub mod bounded_btree_set;
 pub mod bounded_vec;
@@ -54,6 +57,12 @@ pub mod types;
 pub mod unhashed;
 pub mod weak_bounded_vec;
 
+#[cfg(not(feature = "std"))]
+pub trait TStorage {}
+
+#[cfg(not(feature = "std"))]
+impl<S> TStorage for S {}
+
 /// Utility type for converting a storage map into a `Get<u32>` impl which returns the maximum
 /// key size.
 pub struct KeyLenOf<M>(PhantomData<M>);
@@ -61,7 +70,7 @@ pub struct KeyLenOf<M>(PhantomData<M>);
 /// A trait for working with macro-generated storage values under the substrate storage API.
 ///
 /// Details on implementation can be found at [`generator::StorageValue`].
-pub trait StorageValue<T: FullCodec> {
+pub trait StorageValue<T: FullCodec + TStorage> {
 	/// The type that get/take return.
 	type Query;
 
@@ -70,6 +79,9 @@ pub trait StorageValue<T: FullCodec> {
 
 	/// Does the value (explicitly) exist in storage?
 	fn exists() -> bool;
+
+	#[cfg(feature = "std")]
+	fn get_cache<F>(f: F) -> Option<T> where F: Fn(&[u8]) -> Option<T>;
 
 	/// Load the value from the provided storage instance.
 	fn get() -> Self::Query;
@@ -101,6 +113,11 @@ pub trait StorageValue<T: FullCodec> {
 	/// (More precisely prior initialized modules doesn't make use of this storage).
 	fn translate<O: Decode, F: FnOnce(Option<O>) -> Option<T>>(f: F) -> Result<Option<T>, ()>;
 
+	#[cfg(feature = "std")]
+	/// Store a value under this key into the provided storage instance.
+	fn put(val: T);
+
+	#[cfg(not(feature = "std"))]
 	/// Store a value under this key into the provided storage instance.
 	fn put<Arg: EncodeLike<T>>(val: Arg);
 
@@ -126,6 +143,12 @@ pub trait StorageValue<T: FullCodec> {
 	/// Take a value from storage, removing it afterwards.
 	fn take() -> Self::Query;
 
+	#[cfg(feature = "std")]
+	fn append<Item: Encode + Clone>(item: Item)
+	where
+		T: TypedAppend<Item> + TStorage;
+
+	#[cfg(not(feature = "std"))]
 	/// Append the given item to the value in the storage.
 	///
 	/// `T` is required to implement [`StorageAppend`].
@@ -1178,7 +1201,7 @@ impl<T> Iterator for ChildTriePrefixIterator<T> {
 /// ```nocompile
 /// Twox128(module_prefix) ++ Twox128(storage_prefix)
 /// ```
-pub trait StoragePrefixedMap<Value: FullCodec> {
+pub trait StoragePrefixedMap<Value: FullCodec + TStorage> {
 	/// Module prefix. Used for generating final key.
 	fn module_prefix() -> &'static [u8];
 
@@ -1279,6 +1302,28 @@ pub trait StoragePrefixedMap<Value: FullCodec> {
 				},
 			}
 		}
+	}
+}
+
+pub trait TypedAppend<Item>: Default {
+	fn append(&mut self, item: Item);
+}
+
+impl<T> TypedAppend<T> for Vec<T> {
+	fn append(&mut self, item: T) {
+		self.push(item);
+	}
+}
+
+impl<T: core::cmp::Ord> TypedAppend<T> for BTreeSet<T> {
+	fn append(&mut self, item: T) {
+		self.insert(item);
+	}
+}
+
+impl TypedAppend<DigestItem> for Digest {
+	fn append(&mut self, item: DigestItem) {
+		self.logs.push(item);
 	}
 }
 
@@ -1383,7 +1428,7 @@ pub trait TryAppendValue<T: StorageTryAppend<I>, I: Encode> {
 impl<T, I, StorageValueT> TryAppendValue<T, I> for StorageValueT
 where
 	I: Encode,
-	T: FullCodec + StorageTryAppend<I>,
+	T: FullCodec + TStorage + StorageTryAppend<I>,
 	StorageValueT: generator::StorageValue<T>,
 {
 	fn try_append<LikeI: EncodeLike<I>>(item: LikeI) -> Result<(), ()> {
@@ -1415,7 +1460,7 @@ pub trait TryAppendMap<K: Encode, T: StorageTryAppend<I>, I: Encode> {
 impl<K, T, I, StorageMapT> TryAppendMap<K, T, I> for StorageMapT
 where
 	K: FullCodec,
-	T: FullCodec + StorageTryAppend<I>,
+	T: FullCodec + TStorage + StorageTryAppend<I>,
 	I: Encode,
 	StorageMapT: generator::StorageMap<K, T>,
 {
@@ -1455,7 +1500,7 @@ impl<K1, K2, T, I, StorageDoubleMapT> TryAppendDoubleMap<K1, K2, T, I> for Stora
 where
 	K1: FullCodec,
 	K2: FullCodec,
-	T: FullCodec + StorageTryAppend<I>,
+	T: FullCodec + TStorage + StorageTryAppend<I>,
 	I: Encode,
 	StorageDoubleMapT: generator::StorageDoubleMap<K1, K2, T>,
 {

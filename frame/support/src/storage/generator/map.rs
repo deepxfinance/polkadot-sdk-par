@@ -17,7 +17,7 @@
 
 use crate::{
 	hash::{ReversibleStorageHasher, StorageHasher},
-	storage::{self, storage_prefix, unhashed, KeyPrefixIterator, PrefixIterator, StorageAppend},
+	storage::{self, storage_prefix, unhashed, KeyPrefixIterator, PrefixIterator, StorageAppend, TStorage},
 	Never,
 };
 use codec::{Decode, Encode, EncodeLike, FullCodec, FullEncode};
@@ -37,7 +37,7 @@ use sp_std::prelude::*;
 ///
 /// If the keys are not trusted (e.g. can be set by a user), a cryptographic `hasher` such as
 /// `blake2_256` must be used.  Otherwise, other values in storage can be compromised.
-pub trait StorageMap<K: FullEncode, V: FullCodec> {
+pub trait StorageMap<K: FullEncode, V: FullCodec + TStorage> {
 	/// The type that get/take returns.
 	type Query;
 
@@ -121,7 +121,7 @@ impl<K: Decode + Sized, V: Decode + Sized, Hasher: ReversibleStorageHasher> Iter
 	}
 }
 
-impl<K: FullCodec, V: FullCodec, G: StorageMap<K, V>> storage::IterableStorageMap<K, V> for G
+impl<K: FullCodec, V: FullCodec + TStorage, G: StorageMap<K, V>> storage::IterableStorageMap<K, V> for G
 where
 	G::Hasher: ReversibleStorageHasher,
 {
@@ -210,7 +210,7 @@ where
 	}
 }
 
-impl<K: FullEncode, V: FullCodec, G: StorageMap<K, V>> storage::StorageMap<K, V> for G {
+impl<K: FullEncode, V: FullCodec + TStorage, G: StorageMap<K, V>> storage::StorageMap<K, V> for G {
 	type Query = G::Query;
 
 	fn hashed_key_for<KeyArg: EncodeLike<K>>(key: KeyArg) -> Vec<u8> {

@@ -83,6 +83,14 @@ impl<V: Clone + Encode + 'static> StorageApi for StorageOverlay<StorageKey, V> {
         let _ = self.changes.rollback_transaction();
     }
 
+    fn get_commited(&self) -> BTreeMap<StorageKey, Option<Vec<u8>>> {
+        self.changes
+            .changes
+            .iter()
+            .map(|(k ,v)| (k.clone(), v.value().map(|v| v.encode())))
+            .collect()
+    }
+
     fn drain_commited(&mut self) -> BTreeMap<Vec<u8>, Option<Vec<u8>>> {
         self.changes.drain_changes()
             .into_iter()

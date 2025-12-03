@@ -24,6 +24,7 @@ use frame_support::{
 	pallet_prelude::ValueQuery, traits::PalletInfoAccess, weights::Weight, Blake2_128Concat,
 	RuntimeDebug,
 };
+use frame_support::storage::TStorage;
 use sp_std::prelude::*;
 
 /// Type used to encode the number of references an account has.
@@ -48,10 +49,10 @@ pub trait V2ToV3 {
 	type AccountId: 'static + FullCodec;
 
 	/// System config index
-	type Index: 'static + FullCodec + Copy;
+	type Index: 'static + FullCodec + Copy + TStorage;
 
 	/// System config account data
-	type AccountData: 'static + FullCodec;
+	type AccountData: 'static + FullCodec + TStorage;
 }
 
 #[frame_support::storage_alias]

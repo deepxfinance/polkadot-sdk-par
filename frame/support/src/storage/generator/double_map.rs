@@ -17,7 +17,7 @@
 
 use crate::{
 	hash::{ReversibleStorageHasher, StorageHasher},
-	storage::{self, storage_prefix, unhashed, KeyPrefixIterator, PrefixIterator, StorageAppend},
+	storage::{self, storage_prefix, unhashed, KeyPrefixIterator, PrefixIterator, StorageAppend, TStorage},
 	Never,
 };
 use codec::{Decode, Encode, EncodeLike, FullCodec, FullEncode};
@@ -44,7 +44,7 @@ use scale_info::prelude::string::String;
 /// If the key2s are not trusted (e.g. can be set by a user), a cryptographic `hasher` such as
 /// `blake2_256` must be used for Hasher2. Otherwise, other items in storage with the same first
 /// key can be compromised.
-pub trait StorageDoubleMap<K1: FullEncode, K2: FullEncode, V: FullCodec> {
+pub trait StorageDoubleMap<K1: FullEncode, K2: FullEncode, V: FullCodec + TStorage> {
 	/// The type that get/take returns.
 	type Query;
 
@@ -115,7 +115,7 @@ impl<K1, K2, V, G> storage::StorageDoubleMap<K1, K2, V> for G
 where
 	K1: FullEncode,
 	K2: FullEncode,
-	V: FullCodec,
+	V: FullCodec + TStorage,
 	G: StorageDoubleMap<K1, K2, V>,
 {
 	type Query = G::Query;
@@ -390,7 +390,7 @@ where
 	}
 }
 
-impl<K1: FullCodec, K2: FullCodec, V: FullCodec, G: StorageDoubleMap<K1, K2, V>>
+impl<K1: FullCodec, K2: FullCodec, V: FullCodec + TStorage, G: StorageDoubleMap<K1, K2, V>>
 	storage::IterableStorageDoubleMap<K1, K2, V> for G
 where
 	G::Hasher1: ReversibleStorageHasher,

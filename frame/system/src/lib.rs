@@ -251,6 +251,7 @@ pub mod pallet {
 			+ Default
 			+ Bounded
 			+ Copy
+			+ Clone
 			+ sp_std::hash::Hash
 			+ sp_std::str::FromStr
 			+ MaxEncodedLen
@@ -266,6 +267,7 @@ pub mod pallet {
 			+ Ord
 			+ Default
 			+ Copy
+			+ Clone
 			+ CheckEqual
 			+ sp_std::hash::Hash
 			+ AsRef<[u8]>
@@ -653,7 +655,7 @@ pub mod pallet {
 	impl<T: Config> GenesisBuild<T> for GenesisConfig {
 		fn build(&self) {
 			<BlockHash<T>>::insert::<_, T::Hash>(T::BlockNumber::zero(), hash69());
-			<ParentHash<T>>::put::<T::Hash>(hash69());
+			<ParentHash<T>>::put(hash69());
 			<LastRuntimeUpgrade<T>>::put(LastRuntimeUpgradeInfo::from(T::Version::get()));
 			<UpgradedToU32RefCount<T>>::put(true);
 			<UpgradedToTripleRefCount<T>>::put(true);
@@ -757,7 +759,7 @@ pub struct AccountInfo<Index, AccountData> {
 /// Stores the `spec_version` and `spec_name` of when the last runtime upgrade
 /// happened.
 #[derive(sp_runtime::RuntimeDebug, Encode, Decode, TypeInfo)]
-#[cfg_attr(feature = "std", derive(PartialEq))]
+#[cfg_attr(feature = "std", derive(PartialEq, Clone))]
 pub struct LastRuntimeUpgradeInfo {
 	pub spec_version: codec::Compact<u32>,
 	pub spec_name: sp_runtime::RuntimeString,
@@ -1282,6 +1284,9 @@ impl<T: Config> Pallet<T> {
 			old_event_count
 		};
 
+		#[cfg(feature = "std")]
+		Events::<T>::append(Box::new(event));
+		#[cfg(not(feature = "std"))]
 		Events::<T>::append(event);
 
 		for topic in topics {
@@ -1331,9 +1336,9 @@ impl<T: Config> Pallet<T> {
 		storage::unhashed::put(well_known_keys::EXTRINSIC_INDEX, &0u32);
 		let entropy = (b"frame_system::initialize", parent_hash).using_encoded(blake2_256);
 		storage::unhashed::put_raw(well_known_keys::INTRABLOCK_ENTROPY, &entropy[..]);
-		<Number<T>>::put(number);
-		<Digest<T>>::put(digest);
-		<ParentHash<T>>::put(parent_hash);
+		<Number<T>>::put(*number);
+		<Digest<T>>::put(digest.clone());
+		<ParentHash<T>>::put(*parent_hash);
 		<BlockHash<T>>::insert(*number - One::one(), parent_hash);
 
 		// Remove previous block data from storage
