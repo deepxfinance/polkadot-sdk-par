@@ -132,6 +132,8 @@ where
 
 	/// Enumerate all elements in the map.
 	fn iter() -> Self::Iterator {
+		#[cfg(feature = "std")]
+		if sp_io::mut_typed_cache(|_| ()).is_some() { panic!("`StorageMap::iter` not supported") };
 		let prefix = G::prefix_hash();
 		PrefixIterator {
 			prefix: prefix.clone(),
@@ -147,6 +149,8 @@ where
 
 	/// Enumerate all elements in the map after a given key.
 	fn iter_from(starting_raw_key: Vec<u8>) -> Self::Iterator {
+		#[cfg(feature = "std")]
+		if sp_io::mut_typed_cache(|_| ()).is_some() { panic!("`StorageMap::iter_from` not supported") };
 		let mut iter = Self::iter();
 		iter.set_last_raw_key(starting_raw_key);
 		iter
@@ -154,6 +158,8 @@ where
 
 	/// Enumerate all keys in the map.
 	fn iter_keys() -> Self::KeyIterator {
+		#[cfg(feature = "std")]
+		if sp_io::mut_typed_cache(|_| ()).is_some() { panic!("`StorageMap::iter_keys` not supported") };
 		let prefix = G::prefix_hash();
 		KeyPrefixIterator {
 			prefix: prefix.clone(),
@@ -168,6 +174,8 @@ where
 
 	/// Enumerate all keys in the map after a given key.
 	fn iter_keys_from(starting_raw_key: Vec<u8>) -> Self::KeyIterator {
+		#[cfg(feature = "std")]
+		if sp_io::mut_typed_cache(|_| ()).is_some() { panic!("`StorageMap::iter_keys_from` not supported") };
 		let mut iter = Self::iter_keys();
 		iter.set_last_raw_key(starting_raw_key);
 		iter
@@ -175,12 +183,16 @@ where
 
 	/// Enumerate all elements in the map.
 	fn drain() -> Self::Iterator {
+		#[cfg(feature = "std")]
+		if sp_io::mut_typed_cache(|_| ()).is_some() { panic!("`StorageMap::drain` not supported") };
 		let mut iterator = Self::iter();
 		iterator.drain = true;
 		iterator
 	}
 
 	fn translate<O: Decode, F: FnMut(K, O) -> Option<V>>(mut f: F) {
+		#[cfg(feature = "std")]
+		if sp_io::mut_typed_cache(|_| ()).is_some() { panic!("`StorageMap::translate` not supported") };
 		let prefix = G::prefix_hash();
 		let mut previous_key = prefix.clone();
 		while let Some(next) =

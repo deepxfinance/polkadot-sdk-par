@@ -351,6 +351,8 @@ where
 	where
 		KArg1: EncodeLike<K1>,
 	{
+		#[cfg(feature = "std")]
+		if sp_io::mut_typed_cache(|_| ()).is_some() { panic!("`StorageDoubleMap::remove_prefix` not supported") };
 		unhashed::clear_prefix(Self::storage_double_map_final_key1(k1).as_ref(), maybe_limit, None)
 			.into()
 	}
@@ -364,6 +366,8 @@ where
 	where
 		KArg1: EncodeLike<K1>,
 	{
+		#[cfg(feature = "std")]
+		if sp_io::mut_typed_cache(|_| ()).is_some() { panic!("`StorageDoubleMap::clear_prefix` not supported") };
 		unhashed::clear_prefix(
 			Self::storage_double_map_final_key1(k1).as_ref(),
 			Some(limit),
@@ -377,6 +381,8 @@ where
 	where
 		KArg1: EncodeLike<K1>,
 	{
+		#[cfg(feature = "std")]
+		if sp_io::mut_typed_cache(|_| ()).is_some() { panic!("`StorageDoubleMap::contains_prefix` not supported") };
 		unhashed::contains_prefixed_key(Self::storage_double_map_final_key1(k1).as_ref())
 	}
 
@@ -385,6 +391,8 @@ where
 	where
 		KArg1: ?Sized + EncodeLike<K1>,
 	{
+		#[cfg(feature = "std")]
+		if sp_io::mut_typed_cache(|_| ()).is_some() { panic!("`StorageDoubleMap::iter_prefix_values` not supported") };
 		let prefix = Self::storage_double_map_final_key1(k1);
 		storage::PrefixIterator {
 			prefix: prefix.clone(),
@@ -622,6 +630,8 @@ where
 	type Iterator = PrefixIterator<(K1, K2, V)>;
 
 	fn iter_prefix(k1: impl EncodeLike<K1>) -> Self::PrefixIterator {
+		#[cfg(feature = "std")]
+		if sp_io::mut_typed_cache(|_| ()).is_some() { panic!("`StorageDoubleMap::iter_prefix` not supported") };
 		let prefix = G::storage_double_map_final_key1(k1);
 		Self::PrefixIterator {
 			prefix: prefix.clone(),
@@ -639,12 +649,16 @@ where
 		k1: impl EncodeLike<K1>,
 		starting_raw_key: Vec<u8>,
 	) -> Self::PrefixIterator {
+		#[cfg(feature = "std")]
+		if sp_io::mut_typed_cache(|_| ()).is_some() { panic!("`StorageDoubleMap::iter_prefix_from` not supported") };
 		let mut iter = Self::iter_prefix(k1);
 		iter.set_last_raw_key(starting_raw_key);
 		iter
 	}
 
 	fn iter_key_prefix(k1: impl EncodeLike<K1>) -> Self::PartialKeyIterator {
+		#[cfg(feature = "std")]
+		if sp_io::mut_typed_cache(|_| ()).is_some() { panic!("`StorageDoubleMap::iter_key_prefix` not supported") };
 		let prefix = G::storage_double_map_final_key1(k1);
 		Self::PartialKeyIterator {
 			prefix: prefix.clone(),
@@ -661,18 +675,24 @@ where
 		k1: impl EncodeLike<K1>,
 		starting_raw_key: Vec<u8>,
 	) -> Self::PartialKeyIterator {
+		#[cfg(feature = "std")]
+		if sp_io::mut_typed_cache(|_| ()).is_some() { panic!("`StorageDoubleMap::iter_key_prefix_from` not supported") };
 		let mut iter = Self::iter_key_prefix(k1);
 		iter.set_last_raw_key(starting_raw_key);
 		iter
 	}
 
 	fn drain_prefix(k1: impl EncodeLike<K1>) -> Self::PrefixIterator {
+		#[cfg(feature = "std")]
+		if sp_io::mut_typed_cache(|_| ()).is_some() { panic!("`StorageDoubleMap::drain_prefix` not supported") };
 		let mut iterator = Self::iter_prefix(k1);
 		iterator.drain = true;
 		iterator
 	}
 
 	fn iter() -> Self::Iterator {
+		#[cfg(feature = "std")]
+		if sp_io::mut_typed_cache(|_| ()).is_some() { panic!("`StorageDoubleMap::iter` not supported") };
 		let prefix = G::prefix_hash();
 		Self::Iterator {
 			prefix: prefix.clone(),
@@ -690,12 +710,16 @@ where
 	}
 
 	fn iter_from(starting_raw_key: Vec<u8>) -> Self::Iterator {
+		#[cfg(feature = "std")]
+		if sp_io::mut_typed_cache(|_| ()).is_some() { panic!("`StorageDoubleMap::iter_from` not supported") };
 		let mut iter = Self::iter();
 		iter.set_last_raw_key(starting_raw_key);
 		iter
 	}
 
 	fn iter_keys() -> Self::FullKeyIterator {
+		#[cfg(feature = "std")]
+		if sp_io::mut_typed_cache(|_| ()).is_some() { panic!("`StorageDoubleMap::iter_keys` not supported") };
 		let prefix = G::prefix_hash();
 		Self::FullKeyIterator {
 			prefix: prefix.clone(),
@@ -712,18 +736,24 @@ where
 	}
 
 	fn iter_keys_from(starting_raw_key: Vec<u8>) -> Self::FullKeyIterator {
+		#[cfg(feature = "std")]
+		if sp_io::mut_typed_cache(|_| ()).is_some() { panic!("`StorageDoubleMap::iter_keys_from` not supported") };
 		let mut iter = Self::iter_keys();
 		iter.set_last_raw_key(starting_raw_key);
 		iter
 	}
 
 	fn drain() -> Self::Iterator {
+		#[cfg(feature = "std")]
+		if sp_io::mut_typed_cache(|_| ()).is_some() { panic!("`StorageDoubleMap::drain` not supported") };
 		let mut iterator = Self::iter();
 		iterator.drain = true;
 		iterator
 	}
 
 	fn translate<O: Decode, F: FnMut(K1, K2, O) -> Option<V>>(mut f: F) {
+		#[cfg(feature = "std")]
+		if sp_io::mut_typed_cache(|_| ()).is_some() { panic!("`StorageDoubleMap::translate` not supported") };
 		let prefix = G::prefix_hash();
 		let mut previous_key = prefix.clone();
 		while let Some(next) =
