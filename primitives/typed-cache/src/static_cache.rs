@@ -26,6 +26,7 @@ pub struct OverlayCache;
 pub struct OverlayCache {
     // pub cache: SharedCache,
     pub inner: Overlay,
+    pub closed: bool,
 }
 
 #[cfg(feature = "std")]
@@ -122,12 +123,18 @@ impl OverlayCache {
 
 #[cfg(feature = "std")]
 impl OverlayCache {
+    pub fn refresh(&mut self) {
+        self.inner.clear();
+        self.closed = false;
+    }
+
     pub fn copy_data(&self) -> Self {
         Self {
             // cache: self.cache.clone(),
             inner: self.inner.iter()
                 .map(|(space, overlay)| (space.clone(), overlay.copy_data()))
-                .collect()
+                .collect(),
+            closed: self.closed,
         }
     }
 
@@ -152,10 +159,13 @@ impl OverlayCache {
     }
     
     pub fn get_commited(&self) -> BTreeMap<StorageKey, Option<Vec<u8>>> {
+        if self.closed { panic!("OverlayCache::get_commited should only before closed"); }
         self.inner.iter().map(|(_, overlay)| overlay.get_commited()).flatten().collect()
     }
 
     pub fn drain_commited(&mut self) -> BTreeMap<StorageKey, Option<Vec<u8>>> {
+        if self.closed { panic!("OverlayCache::drain_commited should only be called once"); }
+        self.closed = true;
         sp_std::mem::take(&mut self.inner)
             .into_iter()
             .map(|(_, mut overlay)| overlay.drain_commited()).flatten().collect()
