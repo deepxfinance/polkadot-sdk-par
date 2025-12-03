@@ -22,15 +22,17 @@ use sp_std::prelude::*;
 
 #[cfg(feature = "std")]
 lazy_static::lazy_static! {
-	pub static ref GLOBAL_ENCODE: std::sync::Mutex<std::collections::HashMap<Vec<u8>, Vec<(std::time::Duration, usize)>>> = std::sync::Mutex::new(std::collections::HashMap::new());
-	pub static ref GLOBAL_DECODE: std::sync::Mutex<std::collections::HashMap<Vec<u8>, Vec<(std::time::Duration, usize)>>> = std::sync::Mutex::new(std::collections::HashMap::new());
+	pub static ref GLOBAL_ENCODE: std::sync::Mutex<std::collections::HashMap<Vec<u8>, Vec<(std::time::Duration, std::time::Duration, usize)>>> = std::sync::Mutex::new(std::collections::HashMap::new());
+	pub static ref GLOBAL_DECODE: std::sync::Mutex<std::collections::HashMap<Vec<u8>, Vec<(std::time::Duration, std::time::Duration, usize)>>> = std::sync::Mutex::new(std::collections::HashMap::new());
 }
 
 /// Return the value of the item in storage under `key`, or `None` if there is no explicit entry.
 pub fn get<T: Decode + Sized>(key: &[u8]) -> Option<T> {
+	#[cfg(feature = "std")]
+	let start = std::time::Instant::now();
 	sp_io::storage::get(key).and_then(|val| {
 		#[cfg(feature = "std")]
-		let start = std::time::Instant::now();
+		let decode_start = std::time::Instant::now();
 		let res = Decode::decode(&mut &val[..]).map(Some).unwrap_or_else(|e| {
 			// TODO #3700: error should be handleable.
 			log::error!(
@@ -42,6 +44,8 @@ pub fn get<T: Decode + Sized>(key: &[u8]) -> Option<T> {
 			None
 		});
 		#[cfg(feature = "std")]
+		let decode_time = decode_start.elapsed();
+		#[cfg(feature = "std")]
 		if res.is_some() {
 			let time = start.elapsed();
 			let mut lock = GLOBAL_DECODE.lock().unwrap();
@@ -50,9 +54,9 @@ pub fn get<T: Decode + Sized>(key: &[u8]) -> Option<T> {
 				key.resize(32, 0);
 			}
 			if let Some(v) = lock.get_mut(&key) {
-				v.push((time, val.len()));
+				v.push((decode_time, time, val.len()));
 			} else {
-				lock.insert(key, vec![(time, val.len())]);
+				lock.insert(key, vec![(decode_time, time, val.len())]);
 			}
 		}
 		res
@@ -83,6 +87,9 @@ pub fn put<T: Encode + ?Sized>(key: &[u8], value: &T) {
 	let start = std::time::Instant::now();
 	let slice = value.encode();
 	#[cfg(feature = "std")]
+	let encode_time = start.elapsed();
+	sp_io::storage::set(key, slice.as_slice());
+	#[cfg(feature = "std")]
 	{
 		let time = start.elapsed();
 		let mut lock = GLOBAL_ENCODE.lock().unwrap();
@@ -91,12 +98,11 @@ pub fn put<T: Encode + ?Sized>(key: &[u8], value: &T) {
 			key.resize(32, 0);
 		}
 		if let Some(v) = lock.get_mut(&key) {
-			v.push((time, slice.len()));
+			v.push((encode_time, time, slice.len()));
 		} else {
-			lock.insert(key, vec![(time, slice.len())]);
+			lock.insert(key, vec![(encode_time, time, slice.len())]);
 		}
 	}
-	sp_io::storage::set(key, slice.as_slice());
 	// value.using_encoded(|slice| sp_io::storage::set(key, slice));
 }
 
@@ -207,7 +213,24 @@ pub fn contains_prefixed_key(prefix: &[u8]) -> bool {
 
 /// Get a Vec of bytes from storage.
 pub fn get_raw(key: &[u8]) -> Option<Vec<u8>> {
-	sp_io::storage::get(key).map(|value| value.to_vec())
+	#[cfg(feature = "std")]
+	let start = std::time::Instant::now();
+	let res = sp_io::storage::get(key).map(|value| value.to_vec());
+	#[cfg(feature = "std")]
+	{
+		let time = start.elapsed();
+		let mut lock = GLOBAL_DECODE.lock().unwrap();
+		let mut key = key.to_vec();
+		if key.len() > 32 {
+			key.resize(32, 0);
+		}
+		if let Some(v) = lock.get_mut(&key) {
+			v.push((Default::default(), time, res.as_ref().map(|r| r.len()).unwrap_or(0)));
+		} else {
+			lock.insert(key, vec![(Default::default(), time, res.as_ref().map(|r| r.len()).unwrap_or(0))]);
+		}
+	}
+	res
 }
 
 /// Put a raw byte slice into storage.
@@ -216,5 +239,21 @@ pub fn get_raw(key: &[u8]) -> Option<Vec<u8>> {
 /// you should also call `frame_system::RuntimeUpgraded::put(true)` to trigger the
 /// `on_runtime_upgrade` logic.
 pub fn put_raw(key: &[u8], value: &[u8]) {
-	sp_io::storage::set(key, value)
+	#[cfg(feature = "std")]
+	let start = std::time::Instant::now();
+	sp_io::storage::set(key, value);
+	#[cfg(feature = "std")]
+	{
+		let time = start.elapsed();
+		let mut lock = GLOBAL_ENCODE.lock().unwrap();
+		let mut key = key.to_vec();
+		if key.len() > 32 {
+			key.resize(32, 0);
+		}
+		if let Some(v) = lock.get_mut(&key) {
+			v.push((Default::default(), time, value.len()));
+		} else {
+			lock.insert(key, vec![(Default::default(), time, value.len())]);
+		}
+	}
 }

@@ -497,14 +497,16 @@ impl<K: FullEncode, V: FullCodec + TStorage, G: StorageMap<K, V>> storage::Stora
 		if sp_io::mut_typed_cache(|_| ()).is_none() {
 			let start = std::time::Instant::now();
 			let encoded = item.encode();
+			let encode_time = start.elapsed();
+			let len = encoded.len();
+			sp_io::storage::append(&key, encoded);
 			let time = start.elapsed();
 			let mut lock = crate::storage::unhashed::GLOBAL_ENCODE.lock().unwrap();
 			if let Some(v) = lock.get_mut(&key[..32]) {
-				v.push((time, encoded.len()));
+				v.push((encode_time, time, len));
 			} else {
-				lock.insert(key[..32].to_vec(), vec![(time, encoded.len())]);
+				lock.insert(key[..32].to_vec(), vec![(encode_time, time, len)]);
 			}
-			sp_io::storage::append(&key, encoded);
 		} else {
 			let mut none_f = Some(|_k: &[u8]| { None });
 			none_f.take();
@@ -541,6 +543,10 @@ impl<K: FullEncode, V: FullCodec + TStorage, G: StorageMap<K, V>> storage::Stora
 		let start = std::time::Instant::now();
 		let encoded = item.encode();
 		#[cfg(feature = "std")]
+		let encode_time = start.elapsed();
+		let len = encoded.len();
+		sp_io::storage::append(&key, encoded);
+		#[cfg(feature = "std")]
 		{
 			let time = start.elapsed();
 			let mut key = key.clone();
@@ -548,13 +554,12 @@ impl<K: FullEncode, V: FullCodec + TStorage, G: StorageMap<K, V>> storage::Stora
 				key.resize(32, 0);
 			}
 			let mut lock = crate::storage::unhashed::GLOBAL_ENCODE.lock().unwrap();
-			if let Some(v) = lock.get_mut(&key) {
-				v.push((time, encoded.len()));
+			if let Some(v) = lock.get_mut(&key[..32]) {
+				v.push((encode_time, time, len));
 			} else {
-				lock.insert(key.to_vec(), vec![(time, encoded.len())]);
+				lock.insert(key[..32].to_vec(), vec![(encode_time, time, len)]);
 			}
 		}
-		sp_io::storage::append(&key, encoded);
 	}
 
 	fn migrate_key<OldHasher: StorageHasher, KeyArg: EncodeLike<K>>(key: KeyArg) -> Option<V> {

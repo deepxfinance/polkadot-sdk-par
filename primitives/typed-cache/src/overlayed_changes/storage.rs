@@ -87,7 +87,12 @@ impl<V: Clone + Encode + 'static> StorageApi for StorageOverlay<StorageKey, V> {
         self.changes
             .changes
             .iter()
-            .map(|(k ,v)| (k.clone(), v.value().map(|v| v.encode())))
+            .map(|(k ,v)| {
+                let start = std::time::Instant::now();
+                let res = (k.clone(), v.value().map(|v| v.encode()));
+                crate::ENCODE.lock().unwrap().entry(self.space.clone()).or_default().push(start.elapsed());
+                res
+            })
             .collect()
     }
 
@@ -95,7 +100,12 @@ impl<V: Clone + Encode + 'static> StorageApi for StorageOverlay<StorageKey, V> {
         self.changes.drain_changes()
             .into_iter()
             .map(|(k, mut v)| (k, v.pop_value()))
-            .map(|(k ,v)| (k, v.map(|v| v.encode())))
+            .map(|(k ,v)| {
+                let start = std::time::Instant::now();
+                let res = (k, v.map(|v| v.encode()));
+                crate::ENCODE.lock().unwrap().entry(self.space.clone()).or_default().push(start.elapsed());
+                res
+            })
             .collect()
     }
 
@@ -185,27 +195,34 @@ fn test_basic_types() {
     let mut overlay1 = StorageOverlay::new(b"str");
     let mut overlay2 = StorageOverlay::new(b"str");
 
+    let mut none_f = Some(|_: &_| { None });
+    none_f.take();
+
     overlay1.put(b"str", b"key1", "value1");
     overlay1.put(b"str", b"key2", "value2");
     overlay2.put(b"str", b"key3", "value3");
-    assert_eq!(overlay1.get(b"str", b"key1", None), Some(Some("value1")));
-    assert_eq!(overlay1.get(b"str", b"key2", None), Some(Some("value2")));
-    assert_eq!(overlay2.get(b"str", b"key3", None), Some(Some("value3")));
+    assert_eq!(overlay1.get(b"str", b"key1", none_f), Some(Some("value1")));
+    assert_eq!(overlay1.get(b"str", b"key2", none_f), Some(Some("value2")));
+    assert_eq!(overlay2.get(b"str", b"key3", none_f), Some(Some("value3")));
 }
 
 #[test]
 fn test_commit() {
+    let mut none_f = Some(|_: &_| { None });
+    none_f.take();
     let mut overlay = StorageOverlay::new(b"str");
     overlay.start_transaction();
     overlay.put(b"str", b"key1", "value1");
     overlay.rollback_transaction();
     overlay.put(b"str", b"key2", "value2");
-    assert_eq!(overlay.get(b"str", b"key1", None), Option::<Option<&str>>::None);
-    assert_eq!(overlay.get(b"str", b"key2", None), Some(Some("value2")));
+    assert_eq!(overlay.get(b"str", b"key1", none_f), Option::<Option<&str>>::None);
+    assert_eq!(overlay.get(b"str", b"key2", none_f), Some(Some("value2")));
 }
 
 #[test]
 fn test_clone_for_multi_threads() {
+    let mut none_f = Some(|_: &_| { None });
+    none_f.take();
     let mut overlay1 = StorageOverlay::new(b"str");
     overlay1.put(b"str", b"key1", "value1");
     let mut overlay2 = overlay1.clone_with_changes();
@@ -214,8 +231,17 @@ fn test_clone_for_multi_threads() {
         overlay2
     }).join().unwrap();
 
-    assert_eq!(overlay1.get(b"str", b"key1", None), Some(Some("value1")));
-    assert_eq!(overlay1.get(b"str", b"key2", None), Option::<Option<&str>>::None);
-    assert_eq!(overlay2.get(b"str", b"key1", None), Some(Some("value1")));
-    assert_eq!(overlay2.get(b"str", b"key2", None), Some(Some("value2")));
+    assert_eq!(overlay1.get(b"str", b"key1", none_f), Some(Some("value1")));
+    assert_eq!(overlay1.get(b"str", b"key2", none_f), Option::<Option<&str>>::None);
+    assert_eq!(overlay2.get(b"str", b"key1", none_f), Some(Some("value1")));
+    assert_eq!(overlay2.get(b"str", b"key2", none_f), Some(Some("value2")));
+}
+
+#[test]
+fn test_cache() {
+    let mut none_f = Some(|_: &_| { None });
+    none_f.take();
+    let mut overlay = StorageOverlay::new(b"str");
+    overlay.cache(b"str", b"key1", Some("value1"));
+    assert_eq!(overlay.get(b"str", b"key1", none_f), Some(Some("value1")));
 }

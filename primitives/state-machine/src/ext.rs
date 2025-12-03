@@ -624,7 +624,6 @@ where
 			);
 			return root.encode()
 		}
-		// TODO this `storage_root` should only be called only once at block finalize. And no more changes.
 		// Merge changes to overlay
 		for (key, value) in self.cache
 			.as_ref()

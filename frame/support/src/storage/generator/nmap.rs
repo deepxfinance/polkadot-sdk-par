@@ -444,14 +444,16 @@ where
 		if sp_io::mut_typed_cache(|_| ()).is_none() {
 			let start = std::time::Instant::now();
 			let encoded = item.encode();
+			let encode_time = start.elapsed();
+			let len = encoded.len();
+			sp_io::storage::append(&final_key, encoded);
 			let time = start.elapsed();
 			let mut lock = crate::storage::unhashed::GLOBAL_ENCODE.lock().unwrap();
 			if let Some(v) = lock.get_mut(&final_key[..32]) {
-				v.push((time, encoded.len()));
+				v.push((encode_time, time, len));
 			} else {
-				lock.insert(final_key[..32].to_vec(), vec![(time, encoded.len())]);
+				lock.insert(final_key[..32].to_vec(), vec![(encode_time, time, len)]);
 			}
-			sp_io::storage::append(&final_key, encoded);
 		} else {
 			let mut none_f = Some(|_k: &[u8]| { None });
 			none_f.take();
@@ -484,6 +486,10 @@ where
 		let start = std::time::Instant::now();
 		let encoded = item.encode();
 		#[cfg(feature = "std")]
+		let encode_time = start.elapsed();
+		let len = encoded.len();
+		sp_io::storage::append(&final_key, encoded);
+		#[cfg(feature = "std")]
 		{
 			let time = start.elapsed();
 			let mut key = final_key.clone();
@@ -491,13 +497,12 @@ where
 				key.resize(32, 0);
 			}
 			let mut lock = crate::storage::unhashed::GLOBAL_ENCODE.lock().unwrap();
-			if let Some(v) = lock.get_mut(&key) {
-				v.push((time, encoded.len()));
+			if let Some(v) = lock.get_mut(&final_key[..32]) {
+				v.push((encode_time, time, len));
 			} else {
-				lock.insert(key.to_vec(), vec![(time, encoded.len())]);
+				lock.insert(final_key[..32].to_vec(), vec![(encode_time, time, len)]);
 			}
 		}
-		sp_io::storage::append(&final_key, encoded);
 	}
 
 	fn migrate_keys<KArg>(key: KArg, hash_fns: K::HArg) -> Option<V>

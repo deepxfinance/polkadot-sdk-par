@@ -1,5 +1,5 @@
 #![allow(unused)]
-use codec::Encode;
+use codec::{Encode, Output};
 use sp_std::boxed::Box;
 use sp_std::collections::btree_map::{BTreeMap, Entry::{Vacant, Occupied}};
 use sp_std::sync::Arc;
@@ -13,9 +13,16 @@ use crate::StorageApi;
 use crate::{Cache, StorageOverlay};
 
 #[cfg(feature = "std")]
+lazy_static::lazy_static!{
+    pub static ref GET: std::sync::Mutex<std::collections::HashMap<Vec<u8>, Vec<(std::time::Duration, std::time::Duration)>>> = std::sync::Mutex::new(std::collections::HashMap::new());
+    pub static ref PUT: std::sync::Mutex<std::collections::HashMap<Vec<u8>, Vec<(std::time::Duration, std::time::Duration)>>> = std::sync::Mutex::new(std::collections::HashMap::new());
+    pub static ref ENCODE: std::sync::Mutex<std::collections::HashMap<Vec<u8>, Vec<std::time::Duration>>> = std::sync::Mutex::new(std::collections::HashMap::new());
+}
+
+#[cfg(feature = "std")]
 pub type AnyStorage = Box<dyn StorageApi>;
 #[cfg(feature = "std")]
-pub type Overlay = BTreeMap<Vec<u8>, AnyStorage>;
+pub type Overlay = std::collections::HashMap<Vec<u8>, AnyStorage>;
 
 #[cfg(not(feature = "std"))]
 #[derive(Clone, Default)]
@@ -36,8 +43,8 @@ impl OverlayCache {
         F: FnOnce(&mut AnyStorage) -> O
     {
         match self.inner.entry(space.to_vec()) {
-            Occupied(entry) => { return f(&mut entry.into_mut()) },
-            Vacant(e) => {
+            std::collections::hash_map::Entry::Occupied(entry) => { return f(&mut entry.into_mut()) },
+            std::collections::hash_map::Entry::Vacant(e) => {
                 e.insert(Box::new(StorageOverlay::<Vec<u8>, V>::new(space)));
             }
         }
@@ -55,9 +62,13 @@ impl OverlayCache {
 #[cfg(feature = "std")]
 impl OverlayCache {
     pub fn put<V: Clone + Encode + 'static>(&mut self, space: &[u8], key: &[u8], value: V) {
+        let start = std::time::Instant::now();
         let f = |storage: &mut AnyStorage| {
-            storage.downcast_mut::<StorageOverlay<Vec<u8>, V>>()
-                .map(|overlay| overlay.put(space, key, value));
+            let step1 = storage.downcast_mut::<StorageOverlay<Vec<u8>, V>>();
+            let time1 = start.elapsed();
+            step1.map(|overlay| overlay.put(space, key, value));
+            let time = start.elapsed();
+            PUT.lock().unwrap().entry(space.to_vec()).or_default().push((time1, time));
         };
         self.handle_mut::<V, _, _>(space, f);
     }
@@ -66,17 +77,27 @@ impl OverlayCache {
     where
         F: Fn(&[u8]) -> Option<V>
     {
+        let start = std::time::Instant::now();
         let f = |storage: &mut AnyStorage| {
-            storage.downcast_mut::<StorageOverlay<Vec<u8>, V>>()
-                .map(|overlay| overlay.get(space, key, init))
+            let step1 = storage.downcast_mut::<StorageOverlay<Vec<u8>, V>>();
+            let time1 = start.elapsed();
+            let res = step1.map(|overlay| overlay.get(space, key, init));
+            let time = start.elapsed();
+            GET.lock().unwrap().entry(space.to_vec()).or_default().push((time1, time));
+            res
         };
         self.handle_mut::<V, _, _>(space, f).unwrap_or(None)
     }
 
     pub fn get_change<V: Clone + Encode + 'static>(&self, space: &[u8], key: &[u8]) -> Option<Option<V>> {
+        let start = std::time::Instant::now();
         let f = |storage: &AnyStorage| {
-            storage.downcast_ref::<StorageOverlay<Vec<u8>, V>>()
-                .map(|overlay| overlay.get_change(space, key))
+            let step1 = storage.downcast_ref::<StorageOverlay<Vec<u8>, V>>();
+            let time1 = start.elapsed();
+            let res = step1.map(|overlay| overlay.get_change(space, key));
+            let time = start.elapsed();
+            GET.lock().unwrap().entry(space.to_vec()).or_default().push((time1, time));
+            res
         };
         self.handle_ref::<V, _, _>(space, f)?.unwrap_or(None)
     }
@@ -85,17 +106,26 @@ impl OverlayCache {
     where
         F: Fn(&[u8]) -> Option<V>
     {
+        let start = std::time::Instant::now();
         let f = |storage: &mut AnyStorage| {
-            storage.downcast_mut::<StorageOverlay<Vec<u8>, V>>()
-                .map(|overlay| overlay.take(space, key, init))
+            let step1 = storage.downcast_mut::<StorageOverlay<Vec<u8>, V>>();
+            let time1 = start.elapsed();
+            let res = step1.map(|overlay| overlay.take(space, key, init));
+            let time = start.elapsed();
+            GET.lock().unwrap().entry(space.to_vec()).or_default().push((time1, time));
+            res
         };
         self.handle_mut::<V, _, _>(space, f).unwrap_or(None)
     }
 
     pub fn kill<V: Clone + Encode + 'static>(&mut self, space: &[u8], key: &[u8]) {
+        let start = std::time::Instant::now();
         let f = |storage: &mut AnyStorage| {
-            storage.downcast_mut::<StorageOverlay<Vec<u8>, V>>()
-                .map(|overlay| overlay.kill(space, key));
+            let step1 = storage.downcast_mut::<StorageOverlay<Vec<u8>, V>>();
+            let time1 = start.elapsed();
+            step1.map(|overlay| overlay.kill(space, key));
+            let time = start.elapsed();
+            PUT.lock().unwrap().entry(space.to_vec()).or_default().push((time1, time));
         };
         self.handle_mut::<V, _, _>(space, f);
     }
@@ -105,17 +135,26 @@ impl OverlayCache {
         F: Fn(&[u8]) -> Option<V>,
         M: FnOnce(Option<&mut V>)
     {
+        let start = std::time::Instant::now();
         let f = |storage: &mut AnyStorage| {
-            storage.downcast_mut::<StorageOverlay<Vec<u8>, V>>()
-                .map(|overlay| overlay.mutate(space, key, init, mutate))
+            let step1 = storage.downcast_mut::<StorageOverlay<Vec<u8>, V>>();
+            let time1 = start.elapsed();
+            let res = step1.map(|overlay| overlay.mutate(space, key, init, mutate));
+            let time = start.elapsed();
+            PUT.lock().unwrap().entry(space.to_vec()).or_default().push((time1, time));
+            res
         };
         self.handle_mut::<V, _, _>(space, f).unwrap_or(false)
     }
 
     pub fn cache<V: Clone + Encode + 'static>(&mut self, space: &[u8], key: &[u8], value: Option<V>) {
+        let start = std::time::Instant::now();
         let f = |storage: &mut AnyStorage| {
-            storage.downcast_mut::<StorageOverlay<Vec<u8>, V>>()
-                .map(|overlay| overlay.cache(space, key, value));
+            let step1 = storage.downcast_mut::<StorageOverlay<Vec<u8>, V>>();
+            let time1 = start.elapsed();
+            step1.map(|overlay| overlay.cache(space, key, value));
+            let time = start.elapsed();
+            PUT.lock().unwrap().entry(space.to_vec()).or_default().push((time1, time));
         };
         self.handle_mut::<V, _, _>(space, f);
     }
@@ -213,10 +252,10 @@ pub mod test {
         let mut cache = OverlayCache::default();
         a::write_values(&mut cache);
         b::write_values(&mut cache);
-        assert_eq!(cache.get(b"Account", b"alice", None), Some(Some(a::Account::new(b"alice", 0, 1000))));
-        assert_eq!(cache.get(b"Account", b"bob", None), Some(Some(a::Account::new(b"bob", 0, 500))));
-        assert_eq!(cache.get(b"u32", b"alice_extend", None), Some(Some(100u32)));
-        assert_eq!(cache.get(b"u32", b"bob_extend", None), Some(Some(50u32)));
+        assert_eq!(cache.get(b"Account", b"alice", Some(|_: &_| { None })), Some(Some(a::Account::new(b"alice", 0, 1000))));
+        assert_eq!(cache.get(b"Account", b"bob", Some(|_: &_| { None })), Some(Some(a::Account::new(b"bob", 0, 500))));
+        assert_eq!(cache.get(b"u32", b"alice_extend", Some(|_: &_| { None })), Some(Some(100u32)));
+        assert_eq!(cache.get(b"u32", b"bob_extend", Some(|_: &_| { None })), Some(Some(50u32)));
     }
 
     #[test]
@@ -226,30 +265,34 @@ pub mod test {
 
         let mut cache1 = std::thread::spawn(move || {
             // this extra will insert `1u32` with key `thread1` at space `u32`. This is shared between threads.
-            assert_eq!(cache1.get(b"u32", b"thread1", Some(|_| { Some(1u32) })), Some(Some(1u32)));
+            assert_eq!(cache1.get(b"u32", b"thread1", Some(|_: &_| { Some(1u32) })), Some(Some(1u32)));
             cache1.put(b"u32", b"thread1", 132u32);
             cache1.put(b"u64", b"thread1", 100u64);
             cache1
         }).join().unwrap();
 
+        let mut none_f_u32 = Some(|_: &_| { None });
+        none_f_u32.take();
         let mut cache2 = std::thread::spawn(move || {
-            assert_eq!(cache2.get(b"u32", b"thread1", None), Option::<Option<u32>>::None);
+            assert_eq!(cache2.get(b"u32", b"thread1", none_f_u32), Option::<Option<u32>>::None);
             cache2.put(b"u64", b"thread2", 200u64);
             cache2
         }).join().unwrap();
 
+        let mut none_f_u64 = Some(|_: &_| { None });
+        none_f_u64.take();
         // get values
-        assert_eq!(cache1.get(b"u32", b"thread1", Some(|_| { Some(1u32) })), Some(Some(132u32)));
-        assert_eq!(cache1.get(b"u64", b"thread1", None), Some(Some(100u64)));
-        assert_eq!(cache2.get(b"u32", b"thread1", Some(|_| { None })), Some(Option::<u32>::None));
-        assert_eq!(cache2.get(b"u64", b"thread2", None), Some(Some(200u64)));
+        assert_eq!(cache1.get(b"u32", b"thread1", Some(|_: &_| { Some(1u32) })), Some(Some(132u32)));
+        assert_eq!(cache1.get(b"u64", b"thread1", none_f_u64), Some(Some(100u64)));
+        assert_eq!(cache2.get(b"u32", b"thread1", Some(|_: &_| { None })), Some(Option::<u32>::None));
+        assert_eq!(cache2.get(b"u64", b"thread2", none_f_u64), Some(Some(200u64)));
         let _ = cache1.drain_commited();
         let _ = cache2.drain_commited();
         // get values from cached values
-        assert_eq!(cache1.get(b"u32", b"thread1", Some(|_| { Some(1u32) })), Some(Some(1u32)));
-        assert_eq!(cache1.get(b"u64", b"thread1", None), Option::<Option<u64>>::None);
-        assert_eq!(cache2.get(b"u32", b"thread2", None), Option::<Option<u32>>::None);
-        assert_eq!(cache2.get(b"u64", b"thread2", None), Option::<Option<u64>>::None);
+        assert_eq!(cache1.get(b"u32", b"thread1", Some(|_: &_| { Some(1u32) })), Some(Some(1u32)));
+        assert_eq!(cache1.get(b"u64", b"thread1", none_f_u64), Option::<Option<u64>>::None);
+        assert_eq!(cache2.get(b"u32", b"thread2", none_f_u32), Option::<Option<u32>>::None);
+        assert_eq!(cache2.get(b"u64", b"thread2", none_f_u64), Option::<Option<u64>>::None);
     }
 
     #[test]

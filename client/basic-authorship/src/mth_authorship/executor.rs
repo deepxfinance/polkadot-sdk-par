@@ -146,6 +146,9 @@ where
 
         unhashed::GLOBAL_ENCODE.lock().unwrap().clear();
         unhashed::GLOBAL_DECODE.lock().unwrap().clear();
+        sp_state_machine::GET.lock().unwrap().clear();
+        sp_state_machine::PUT.lock().unwrap().clear();
+        sp_state_machine::ENCODE.lock().unwrap().clear();
         // 2. execute main process for multi thread and single thread.
         let (mth_invalid, single_invalid, final_end_reason) = self.multi_single_process(
             parent_number,
@@ -876,32 +879,102 @@ where
     fn collect_encode_decode(info: &str) {
         let mut encode = unhashed::GLOBAL_ENCODE.lock().unwrap();
         let mut decode = unhashed::GLOBAL_DECODE.lock().unwrap();
+        let mut get = sp_state_machine::GET.lock().unwrap();
+        let mut put = sp_state_machine::PUT.lock().unwrap();
+        let mut cache_encode = sp_state_machine::ENCODE.lock().unwrap();
         let mut encode = encode
             .drain()
             .into_iter()
-            .map(|(k, v)| (hex::encode(&k), v.len(), v.into_iter().map(|(t, _)| t).sum::<Duration>()))
+            .map(|(k, v)| (
+                hex::encode(&k),
+                v.len(),
+                v.into_iter().fold((Duration::default(), Duration::default()), |acc, x| (acc.0 + x.0, acc.1 + x.1))
+            ))
             .collect::<Vec<_>>();
         let mut decode = decode
             .drain()
             .into_iter()
-            .map(|(k, v)| (hex::encode(&k), v.len(), v.into_iter().map(|(t, _)| t).sum::<Duration>()))
+            .map(|(k, v)| (
+                hex::encode(&k),
+                v.len(),
+                v.into_iter().fold((Duration::default(), Duration::default()), |acc, x| (acc.0 + x.0, acc.1 + x.1))
+            ))
             .collect::<Vec<_>>();
-        encode.sort_by(|a, b| b.2.cmp(&a.2));
-        decode.sort_by(|a, b| b.2.cmp(&a.2));
+        encode.sort_by(|a, b| b.2.0.cmp(&a.2.0));
+        decode.sort_by(|a, b| b.2.0.cmp(&a.2.0));
         let mut total_read_times = 0usize;
+        let mut total_read_time1 = Duration::default();
         let mut total_read_time = Duration::default();
-        encode.iter().for_each(|(_, n, t)| {
+        encode.iter().for_each(|(_, n, (t1, t))| {
             total_read_times += *n;
+            total_read_time1 += *t1;
             total_read_time += *t;
         });
         let mut total_write_times = 0usize;
+        let mut total_write_time1 = Duration::default();
         let mut total_write_time = Duration::default();
-        decode.iter().for_each(|(_, n, t)| {
+        decode.iter().for_each(|(_, n, (t1, t))| {
             total_write_times += *n;
+            total_write_time1 += *t1;
             total_write_time += *t;
         });
-        log::info!(target: "codec", "{info} put: {total_read_time:?}({total_read_times}) {:?}", encode);
-        log::info!(target: "codec", "{info} get: {total_write_time:?}({total_write_times}) {:?}", decode);
+        log::info!(target: "codec", "{info} encode: {total_read_time1:?}/{total_read_time:?}({total_read_times}) {encode:?}");
+        log::info!(target: "codec", "{info} decode: {total_write_time1:?}/{total_write_time:?}({total_write_times}) {decode:?}");
+
+        let mut put = put
+            .drain()
+            .into_iter()
+            .map(|(k, v)| (
+                hex::encode(&k),
+                v.len(),
+                v.into_iter().fold((Duration::default(), Duration::default()), |acc, x| (acc.0 + x.0, acc.1 + x.1))
+            ))
+            .collect::<Vec<_>>();
+        let mut get = get
+            .drain()
+            .into_iter()
+            .map(|(k, v)| (
+                hex::encode(&k),
+                v.len(),
+                v.into_iter().fold((Duration::default(), Duration::default()), |acc, x| (acc.0 + x.0, acc.1 + x.1))
+            ))
+            .collect::<Vec<_>>();
+        let mut cache_encode = cache_encode
+            .drain()
+            .into_iter()
+            .map(|(k, v)| (hex::encode(&k), v.len(), v.into_iter().sum::<Duration>()))
+            .collect::<Vec<_>>();
+        put.sort_by(|a, b| b.2.1.cmp(&a.2.1));
+        get.sort_by(|a, b| b.2.1.cmp(&a.2.1));
+        cache_encode.sort_by(|a, b| b.2.cmp(&a.2));
+
+        let mut total_put_times = 0usize;
+        let mut total_put_time1 = Duration::default();
+        let mut total_put_time = Duration::default();
+        put.iter().for_each(|(_, n, (t1, t))| {
+            total_put_times += *n;
+            total_put_time1 += *t1;
+            total_put_time += *t;
+        });
+        let mut total_get_times = 0usize;
+        let mut total_get_time1 = Duration::default();
+        let mut total_get_time = Duration::default();
+        get.iter().for_each(|(_, n, (t1, t))| {
+            total_get_times += *n;
+            total_get_time1 += *t1;
+            total_get_time += *t;
+        });
+
+        let mut total_cache_encode_times = 0usize;
+        let mut total_cache_encode_time = Duration::default();
+        cache_encode.iter().for_each(|(_, n, t)| {
+            total_cache_encode_times += *n;
+            total_cache_encode_time += *t;
+        });
+
+        log::info!(target: "codec", "{info} put: {total_put_time1:?}/{total_put_time:?}({total_put_times}) {put:?}");
+        log::info!(target: "codec", "{info} get: {total_get_time1:?}/{total_get_time:?}({total_get_times}) {get:?}");
+        log::info!(target: "codec", "{info} cache_encode: {total_cache_encode_time:?}({total_cache_encode_times}) {cache_encode:?}");
     }
 }
 
