@@ -34,6 +34,7 @@ use codec::{Decode, Encode, EncodeLike, FullCodec, MaxEncodedLen, Ref};
 use sp_io::MultiRemovalResults;
 use sp_runtime::traits::Saturating;
 use sp_std::prelude::*;
+use crate::storage::TypedAppend;
 
 /// A wrapper around a `StorageMap` and a `StorageValue<Value=u32>` to keep track of how many items
 /// are in a map, without needing to iterate all the values.
@@ -145,6 +146,16 @@ where
 		<Self as MapWrapper>::Map::swap(key1, key2)
 	}
 
+	#[cfg(feature = "std")]
+	/// Store a value to be associated with the given key from the map.
+	pub fn insert<KeyArg: EncodeLike<Key>>(key: KeyArg, val: Value) {
+		if !<Self as MapWrapper>::Map::contains_key(Ref::from(&key)) {
+			CounterFor::<Prefix>::mutate(|value| value.saturating_inc());
+		}
+		<Self as MapWrapper>::Map::insert(key, val)
+	}
+
+	#[cfg(not(feature = "std"))]
 	/// Store a value to be associated with the given key from the map.
 	pub fn insert<KeyArg: EncodeLike<Key>, ValArg: EncodeLike<Value>>(key: KeyArg, val: ValArg) {
 		if !<Self as MapWrapper>::Map::contains_key(Ref::from(&key)) {
@@ -229,7 +240,19 @@ where
 		}
 		<Self as MapWrapper>::Map::from_optional_value_to_query(removed_value)
 	}
+	#[cfg(feature = "std")]
+	pub fn append<Item: Encode + Clone, EncodeLikeKey>(key: EncodeLikeKey, item: Item)
+	where
+		EncodeLikeKey: EncodeLike<Key>,
+		Value: TypedAppend<Item> + TStorage
+	{
+		if !<Self as MapWrapper>::Map::contains_key(Ref::from(&key)) {
+			CounterFor::<Prefix>::mutate(|value| value.saturating_inc());
+		}
+		<Self as MapWrapper>::Map::append(key, item)
+	}
 
+	#[cfg(not(feature = "std"))]
 	/// Append the given items to the value in the storage.
 	///
 	/// `Value` is required to implement `codec::EncodeAppend`.

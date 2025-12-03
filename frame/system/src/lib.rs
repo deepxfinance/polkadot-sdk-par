@@ -654,7 +654,7 @@ pub mod pallet {
 	#[pallet::genesis_build]
 	impl<T: Config> GenesisBuild<T> for GenesisConfig {
 		fn build(&self) {
-			<BlockHash<T>>::insert::<_, T::Hash>(T::BlockNumber::zero(), hash69());
+			<BlockHash<T>>::insert::<_>(T::BlockNumber::zero(), hash69());
 			<ParentHash<T>>::put(hash69());
 			<LastRuntimeUpgrade<T>>::put(LastRuntimeUpgradeInfo::from(T::Version::get()));
 			<UpgradedToU32RefCount<T>>::put(true);
@@ -1290,7 +1290,7 @@ impl<T: Config> Pallet<T> {
 		Events::<T>::append(event);
 
 		for topic in topics {
-			<EventTopics<T>>::append(topic, &(block_number, event_idx));
+			<EventTopics<T>>::append(topic, (block_number, event_idx));
 		}
 	}
 
@@ -1339,7 +1339,7 @@ impl<T: Config> Pallet<T> {
 		<Number<T>>::put(*number);
 		<Digest<T>>::put(digest.clone());
 		<ParentHash<T>>::put(*parent_hash);
-		<BlockHash<T>>::insert(*number - One::one(), parent_hash);
+		<BlockHash<T>>::insert(*number - One::one(), *parent_hash);
 
 		// Remove previous block data from storage
 		BlockWeight::<T>::kill();

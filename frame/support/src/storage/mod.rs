@@ -81,6 +81,7 @@ pub trait StorageValue<T: FullCodec + TStorage> {
 	fn exists() -> bool;
 
 	#[cfg(feature = "std")]
+	/// Load the value from typed_cache
 	fn get_cache<F>(f: F) -> Option<T> where F: Fn(&[u8]) -> Option<T>;
 
 	/// Load the value from the provided storage instance.
@@ -144,6 +145,7 @@ pub trait StorageValue<T: FullCodec + TStorage> {
 	fn take() -> Self::Query;
 
 	#[cfg(feature = "std")]
+	/// Append the given item to the value in the `typed_cache`.
 	fn append<Item: Encode + Clone>(item: Item)
 	where
 		T: TypedAppend<Item> + TStorage;
@@ -196,6 +198,21 @@ pub trait StorageMap<K: FullEncode, V: FullCodec> {
 	/// Does the value (explicitly) exist in storage?
 	fn contains_key<KeyArg: EncodeLike<K>>(key: KeyArg) -> bool;
 
+	#[cfg(feature = "std")]
+	/// Load the value from typed_cache
+	fn get_cache<F>(key: &[u8], f: F) -> Option<V> where F: Fn(&[u8]) -> Option<V>;
+
+	#[cfg(feature = "std")]
+	/// put the value to typed_cache
+	fn put_cache(key: &[u8], val: V);
+
+	#[cfg(feature = "std")]
+	/// put the value to typed_cache
+	fn kill_cache(key: &[u8]);
+
+	#[cfg(feature = "std")]
+	fn take_cache<F>(key: &[u8], f: F) -> Option<V> where F: Fn(&[u8]) -> Option<V>;
+
 	/// Load the value associated with the given key from the map.
 	fn get<KeyArg: EncodeLike<K>>(key: KeyArg) -> Self::Query;
 
@@ -210,6 +227,11 @@ pub trait StorageMap<K: FullEncode, V: FullCodec> {
 	/// Swap the values of two keys.
 	fn swap<KeyArg1: EncodeLike<K>, KeyArg2: EncodeLike<K>>(key1: KeyArg1, key2: KeyArg2);
 
+	#[cfg(feature = "std")]
+	/// Store a value to be associated with the given key from the map.
+	fn insert<KeyArg: EncodeLike<K>>(key: KeyArg, val: V);
+
+	#[cfg(not(feature = "std"))]
 	/// Store a value to be associated with the given key from the map.
 	fn insert<KeyArg: EncodeLike<K>, ValArg: EncodeLike<V>>(key: KeyArg, val: ValArg);
 
@@ -244,6 +266,14 @@ pub trait StorageMap<K: FullEncode, V: FullCodec> {
 	/// Take the value under a key.
 	fn take<KeyArg: EncodeLike<K>>(key: KeyArg) -> Self::Query;
 
+	#[cfg(feature = "std")]
+	/// Append the given item to the value in the `typed_cache`.
+	fn append<Item: Encode + Clone, EncodeLikeKey>(key: EncodeLikeKey, item: Item)
+	where
+		EncodeLikeKey: EncodeLike<K>,
+		V: TypedAppend<Item> + TStorage;
+
+	#[cfg(not(feature = "std"))]
 	/// Append the given items to the value in the storage.
 	///
 	/// `V` is required to implement `codec::EncodeAppend`.
