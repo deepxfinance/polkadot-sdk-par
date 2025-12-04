@@ -19,7 +19,7 @@
 
 use codec::{Decode, Encode, FullCodec};
 use sp_std::prelude::*;
-use crate::storage::{unhashed, TStorage};
+use crate::storage::{unhashed, TStorage, TypedAppend};
 
 #[cfg(feature = "std")]
 lazy_static::lazy_static! {
@@ -91,19 +91,19 @@ pub fn put_cache<T: FullCodec + TStorage>(key: &[u8], val: T) {
 	if sp_io::mut_typed_cache(|_| ()).is_none() {
 		put(key, &val);
 	} else {
-		sp_io::mut_typed_cache(|o| o.put(&key_prefix(key), &key, val));
+		sp_io::mut_typed_cache(|o| o.put(key_prefix(key), &key, val));
 	}
 }
 
 #[cfg(feature = "std")]
 pub fn get_cache<T: FullCodec + TStorage, F>(key: &[u8], _f: F) -> Option<T> where F: Fn(&[u8]) -> Option<T> {
 	match sp_io::mut_typed_cache(
-		|o| o.get::<T, F>(&key_prefix(key), key, None),
+		|o| o.get::<T, F>(key_prefix(key), key, None),
 	) {
 		Some(Some(value)) => value,
 		Some(None) => {
 			let res = get(key);
-			sp_io::mut_typed_cache(|o| o.cache(&key_prefix(key), key, res.clone()));
+			sp_io::mut_typed_cache(|o| o.cache(key_prefix(key), key, res.clone()));
 			res
 		}
 		None => get(key),
@@ -113,15 +113,15 @@ pub fn get_cache<T: FullCodec + TStorage, F>(key: &[u8], _f: F) -> Option<T> whe
 #[cfg(feature = "std")]
 pub fn take_cache<T: FullCodec + TStorage, F>(key: &[u8], _f: F) -> Option<T> where F: Fn(&[u8]) -> Option<T> {
 	match sp_io::mut_typed_cache(
-		|o| o.take::<T, F>(&key_prefix(key), key, None),
+		|o| o.take::<T, F>(key_prefix(key), key, None),
 	) {
 		Some(Some(value)) => value,
 		Some(None) => {
 			let res = take(key);
 			if res.is_some() {
-				sp_io::mut_typed_cache(|o| o.kill::<T>(&key_prefix(key), key));
+				sp_io::mut_typed_cache(|o| o.kill::<T>(key_prefix(key), key));
 			} else {
-				sp_io::mut_typed_cache(|o| o.cache(&key_prefix(key), key, res.clone()));
+				sp_io::mut_typed_cache(|o| o.cache(key_prefix(key), key, res.clone()));
 			}
 			res
 		}
@@ -134,7 +134,44 @@ pub fn kill_cache<T: FullCodec + TStorage>(key: &[u8]) {
 	if sp_io::mut_typed_cache(|_| ()).is_none() {
 		kill(key);
 	} else {
-		sp_io::mut_typed_cache(|o| o.kill::<T>(&key_prefix(key), key));
+		sp_io::mut_typed_cache(|o| o.kill::<T>(key_prefix(key), key));
+	}
+}
+
+#[cfg(feature = "std")]
+pub fn append_cache<T: FullCodec + TStorage, Item: Encode + Clone>(key: &[u8], item: Item)
+where
+	T: TypedAppend<Item> + TStorage
+{
+	if sp_io::mut_typed_cache(|_| ()).is_none() {
+		let start = std::time::Instant::now();
+		let encoded = item.encode();
+		let encode_time = start.elapsed();
+		let len = encoded.len();
+		sp_io::storage::append(&key, encoded);
+		let time = start.elapsed();
+		let mut lock = crate::storage::unhashed::GLOBAL_ENCODE.lock().unwrap();
+		if let Some(v) = lock.get_mut(key_prefix(key)) {
+			v.push((encode_time, time, len));
+		} else {
+			lock.insert(key_prefix(key).to_vec(), vec![(encode_time, time, len)]);
+		}
+	} else {
+		let mut none_f = Some(|_k: &[u8]| { None });
+		none_f.take();
+		let updated = sp_io::mut_typed_cache(|o| o.mutate::<T, _, _>(
+			key_prefix(key),
+			&key,
+			none_f,
+			|t| {
+				t.map(|t| t.append(item.clone()));
+			}
+		)).unwrap();
+		if !updated {
+			let mut new_value = T::default();
+			new_value.append(item);
+			sp_io::mut_typed_cache(|o| o.put(key_prefix(key), &key, new_value));
+		}
 	}
 }
 

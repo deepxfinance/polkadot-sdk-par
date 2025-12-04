@@ -80,10 +80,6 @@ pub trait StorageValue<T: FullCodec + TStorage> {
 	/// Does the value (explicitly) exist in storage?
 	fn exists() -> bool;
 
-	#[cfg(feature = "std")]
-	/// Load the value from typed_cache
-	fn get_cache<F>(f: F) -> Option<T> where F: Fn(&[u8]) -> Option<T>;
-
 	/// Load the value from the provided storage instance.
 	fn get() -> Self::Query;
 
@@ -197,21 +193,6 @@ pub trait StorageMap<K: FullEncode, V: FullCodec> {
 
 	/// Does the value (explicitly) exist in storage?
 	fn contains_key<KeyArg: EncodeLike<K>>(key: KeyArg) -> bool;
-
-	#[cfg(feature = "std")]
-	/// Load the value from typed_cache
-	fn get_cache<F>(key: &[u8], f: F) -> Option<V> where F: Fn(&[u8]) -> Option<V>;
-
-	#[cfg(feature = "std")]
-	/// put the value to typed_cache
-	fn put_cache(key: &[u8], val: V);
-
-	#[cfg(feature = "std")]
-	/// put the value to typed_cache
-	fn kill_cache(key: &[u8]);
-
-	#[cfg(feature = "std")]
-	fn take_cache<F>(key: &[u8], f: F) -> Option<V> where F: Fn(&[u8]) -> Option<V>;
 
 	/// Load the value associated with the given key from the map.
 	fn get<KeyArg: EncodeLike<K>>(key: KeyArg) -> Self::Query;
@@ -532,21 +513,6 @@ pub trait StorageDoubleMap<K1: FullEncode, K2: FullEncode, V: FullCodec> {
 		KArg1: EncodeLike<K1>,
 		KArg2: EncodeLike<K2>;
 
-	#[cfg(feature = "std")]
-	/// Load the value from typed_cache
-	fn get_cache<F>(key: &[u8], f: F) -> Option<V> where F: Fn(&[u8]) -> Option<V>;
-
-	#[cfg(feature = "std")]
-	/// put the value to typed_cache
-	fn put_cache(key: &[u8], val: V);
-
-	#[cfg(feature = "std")]
-	/// put the value to typed_cache
-	fn kill_cache(key: &[u8]);
-
-	#[cfg(feature = "std")]
-	fn take_cache<F>(key: &[u8], f: F) -> Option<V> where F: Fn(&[u8]) -> Option<V>;
-
 	/// Load the value associated with the given key from the double map.
 	fn get<KArg1, KArg2>(k1: KArg1, k2: KArg2) -> Self::Query
 	where
@@ -754,21 +720,6 @@ pub trait StorageNMap<K: KeyGenerator, V: FullCodec> {
 
 	/// Does the value (explicitly) exist in storage?
 	fn contains_key<KArg: EncodeLikeTuple<K::KArg> + TupleToEncodedIter>(key: KArg) -> bool;
-
-	#[cfg(feature = "std")]
-	/// Load the value from typed_cache
-	fn get_cache<F>(key: &[u8], f: F) -> Option<V> where F: Fn(&[u8]) -> Option<V>;
-
-	#[cfg(feature = "std")]
-	/// put the value to typed_cache
-	fn put_cache(key: &[u8], val: V);
-
-	#[cfg(feature = "std")]
-	/// put the value to typed_cache
-	fn kill_cache(key: &[u8]);
-
-	#[cfg(feature = "std")]
-	fn take_cache<F>(key: &[u8], f: F) -> Option<V> where F: Fn(&[u8]) -> Option<V>;
 
 	/// Load the value associated with the given key from the map.
 	fn get<KArg: EncodeLikeTuple<K::KArg> + TupleToEncodedIter>(key: KArg) -> Self::Query;
