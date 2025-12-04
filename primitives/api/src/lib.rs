@@ -605,6 +605,10 @@ pub trait ApiExt<Block: BlockT> {
 	where
 		Self: Sized;
 
+	fn get_typed_change_encode(&self, space: &[u8], key: &StorageKey) -> Option<Option<Vec<u8>>>
+	where
+		Self: Sized;
+
 	fn get_typed_change<T: Clone + codec::Encode + 'static>(&self, space: &[u8], key: &StorageKey) -> Option<Option<T>>
 	where
 		Self: Sized;

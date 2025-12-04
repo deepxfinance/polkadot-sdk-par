@@ -30,6 +30,8 @@ pub trait StorageApi: DowncastSync {
     fn commit_transaction(&mut self);
     /// Drop tmp changes.
     fn rollback_transaction(&mut self);
+    /// Get expected change if exists.
+    fn get_change_encode(&self, key: &[u8]) -> Option<Option<Vec<u8>>>;
     /// Get all changes.
     fn get_commited(&self) -> BTreeMap<StorageKey, Option<Vec<u8>>>;
     /// Convert storages to expected key/value pairs.

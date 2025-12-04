@@ -428,6 +428,8 @@ pub mod pallet {
 			items: Vec<KeyValue>,
 		) -> DispatchResultWithPostInfo {
 			ensure_root(origin)?;
+			#[cfg(feature = "std")]
+			if sp_io::mut_typed_cache(|_| ()).is_some() { panic!("`System::set_storage` not supported") };
 			for i in &items {
 				storage::unhashed::put_raw(&i.0, &i.1);
 			}
@@ -442,6 +444,8 @@ pub mod pallet {
 		))]
 		pub fn kill_storage(origin: OriginFor<T>, keys: Vec<Key>) -> DispatchResultWithPostInfo {
 			ensure_root(origin)?;
+			#[cfg(feature = "std")]
+			if sp_io::mut_typed_cache(|_| ()).is_some() { panic!("`System::kill_storage` not supported") };
 			for key in &keys {
 				storage::unhashed::kill(key);
 			}
@@ -463,6 +467,8 @@ pub mod pallet {
 			_subkeys: u32,
 		) -> DispatchResultWithPostInfo {
 			ensure_root(origin)?;
+			#[cfg(feature = "std")]
+			if sp_io::mut_typed_cache(|_| ()).is_some() { panic!("`System::kill_prefix` not supported") };
 			let _ = storage::unhashed::clear_prefix(&prefix, None, None);
 			Ok(().into())
 		}
@@ -1296,6 +1302,9 @@ impl<T: Config> Pallet<T> {
 
 	/// Gets the index of extrinsic that is currently executing.
 	pub fn extrinsic_index() -> Option<u32> {
+		#[cfg(feature = "std")]
+		{ storage::unhashed::get_cache(well_known_keys::EXTRINSIC_INDEX, |_| { Option::<u32>::None }) }
+		#[cfg(not(feature = "std"))]
 		storage::unhashed::get(well_known_keys::EXTRINSIC_INDEX)
 	}
 
@@ -1333,8 +1342,14 @@ impl<T: Config> Pallet<T> {
 	pub fn initialize(number: &T::BlockNumber, parent_hash: &T::Hash, digest: &generic::Digest) {
 		// populate environment
 		ExecutionPhase::<T>::put(Phase::Initialization);
+		#[cfg(feature = "std")]
+		storage::unhashed::put_cache(well_known_keys::EXTRINSIC_INDEX, 0u32);
+		#[cfg(not(feature = "std"))]
 		storage::unhashed::put(well_known_keys::EXTRINSIC_INDEX, &0u32);
 		let entropy = (b"frame_system::initialize", parent_hash).using_encoded(blake2_256);
+		#[cfg(feature = "std")]
+		storage::unhashed::put_cache(well_known_keys::INTRABLOCK_ENTROPY, entropy);
+		#[cfg(not(feature = "std"))]
 		storage::unhashed::put_raw(well_known_keys::INTRABLOCK_ENTROPY, &entropy[..]);
 		<Number<T>>::put(*number);
 		<Digest<T>>::put(digest.clone());
@@ -1387,6 +1402,9 @@ impl<T: Config> Pallet<T> {
 		);
 		ExecutionPhase::<T>::kill();
 		AllExtrinsicsLen::<T>::kill();
+		#[cfg(feature = "std")]
+		storage::unhashed::kill_cache::<[u8; 32]>(well_known_keys::INTRABLOCK_ENTROPY);
+		#[cfg(not(feature = "std"))]
 		storage::unhashed::kill(well_known_keys::INTRABLOCK_ENTROPY);
 
 		// The following fields
@@ -1508,6 +1526,9 @@ impl<T: Config> Pallet<T> {
 	/// Sets the index of extrinsic that is currently executing.
 	#[cfg(any(feature = "std", test))]
 	pub fn set_extrinsic_index(extrinsic_index: u32) {
+		#[cfg(feature = "std")]
+		storage::unhashed::put_cache(well_known_keys::EXTRINSIC_INDEX, extrinsic_index);
+		#[cfg(not(feature = "std"))]
 		storage::unhashed::put(well_known_keys::EXTRINSIC_INDEX, &extrinsic_index)
 	}
 
@@ -1614,6 +1635,9 @@ impl<T: Config> Pallet<T> {
 	pub fn note_next_extrinsic() {
 		let next_extrinsic_index = Self::extrinsic_index().unwrap_or_default() + 1u32;
 
+		#[cfg(feature = "std")]
+		storage::unhashed::put_cache(well_known_keys::EXTRINSIC_INDEX, next_extrinsic_index);
+		#[cfg(not(feature = "std"))]
 		storage::unhashed::put(well_known_keys::EXTRINSIC_INDEX, &next_extrinsic_index);
 		ExecutionPhase::<T>::put(Phase::ApplyExtrinsic(next_extrinsic_index));
 	}
@@ -1621,6 +1645,10 @@ impl<T: Config> Pallet<T> {
 	/// To be called immediately after `note_applied_extrinsic` of the last extrinsic of the block
 	/// has been called.
 	pub fn note_finished_extrinsics() {
+		#[cfg(feature = "std")]
+		let extrinsic_index: u32 =
+			storage::unhashed::take_cache(well_known_keys::EXTRINSIC_INDEX, |_| { Option::<u32>::None }).unwrap_or_default();
+		#[cfg(not(feature = "std"))]
 		let extrinsic_index: u32 =
 			storage::unhashed::take(well_known_keys::EXTRINSIC_INDEX).unwrap_or_default();
 		ExtrinsicCount::<T>::put(extrinsic_index);

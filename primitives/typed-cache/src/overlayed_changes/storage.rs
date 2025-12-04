@@ -31,7 +31,6 @@ impl<K: Ord + Hash + Clone, V: Clone> StorageOverlay<K, V> {
     pub fn clone_with_changes(&self) -> Self {
         Self {
             space: self.space.clone(),
-            // cache are shared between copies
             cache: self.cache.clone(),
             // changes are different(if changed) between copies
             changes: self.changes.clone(),
@@ -83,6 +82,10 @@ impl<V: Clone + Encode + 'static> StorageApi for StorageOverlay<StorageKey, V> {
         let _ = self.changes.rollback_transaction();
     }
 
+    fn get_change_encode(&self, key: &[u8]) -> Option<Option<Vec<u8>>> {
+        self.changes.changes.get(key).map(|v| v.value().map(|v| v.encode()))
+    }
+
     fn get_commited(&self) -> BTreeMap<StorageKey, Option<Vec<u8>>> {
         self.changes
             .changes
@@ -131,14 +134,16 @@ impl<V: Clone> StorageIO<V> for StorageOverlay<StorageKey, V> {
             .or(
                 self.cache
                     .get(key)
-                    .map(|c| init.as_ref().map(|f| c.get_or_init(|| f(key)).clone()).or(c.get().cloned()))
+                    .map(|c| c.get().cloned().unwrap_or(None))
                     .or({
-                        self.cache.insert(key.to_owned(), Arc::new(OnceCell::<Option<V>>::new()));
-                        self.cache
-                            .get(key)
-                            .map(|c| init.as_ref().map(|f| c.get_or_init(|| f(key)).clone()))
+                        init.map(|f| {
+                            let cache_value = f(key);
+                            let new_cell = Arc::new(OnceCell::new());
+                            let _ = new_cell.set(cache_value.clone());
+                            self.cache.insert(key.to_vec(), new_cell);
+                            cache_value
+                        })
                     })
-                    .unwrap_or(None)
             )
     }
 
@@ -244,4 +249,36 @@ fn test_cache() {
     let mut overlay = StorageOverlay::new(b"str");
     overlay.cache(b"str", b"key1", Some("value1"));
     assert_eq!(overlay.get(b"str", b"key1", none_f), Some(Some("value1")));
+}
+
+#[test]
+fn test_storage_copy_data() {
+    let mut none_f = Some(|_: &_| { None });
+    none_f.take();
+    let mut overlay = StorageOverlay::new(b"str");
+    overlay.cache(b"str", b"key1", Some("value1"));
+    assert_eq!(overlay.get(b"str", b"key1", none_f), Some(Some("value1")));
+    overlay.start_transaction();
+    overlay.put(b"str", b"key1", "value2");
+    assert_eq!(overlay.get(b"str", b"key1", none_f), Some(Some("value2")));
+
+    let mut overlay1 = overlay.copy_data();
+
+    overlay.rollback_transaction();
+    assert_eq!(overlay.get(b"str", b"key1", none_f), Some(Some("value1")));
+
+    assert_eq!(
+        overlay1.downcast_mut::<StorageOverlay<Vec<u8>, &str>>()
+            .unwrap()
+            .get(b"str", b"key1", none_f),
+        Some(Some("value2"))
+    );
+    overlay1.rollback_transaction();
+    assert_eq!(
+        overlay1
+            .downcast_mut::<StorageOverlay<Vec<u8>, &str>>()
+            .unwrap()
+            .get(b"str", b"key1", none_f),
+        Some(Some("value1"))
+    );
 }

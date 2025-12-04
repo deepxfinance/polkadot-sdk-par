@@ -17,8 +17,9 @@
 
 //! Operation on unhashed runtime storage.
 
-use codec::{Decode, Encode};
+use codec::{Decode, Encode, FullCodec};
 use sp_std::prelude::*;
+use crate::storage::{unhashed, TStorage};
 
 #[cfg(feature = "std")]
 lazy_static::lazy_static! {
@@ -79,6 +80,62 @@ pub fn get_or<T: Decode + Sized>(key: &[u8], default_value: T) -> T {
 /// explicit entry.
 pub fn get_or_else<T: Decode + Sized, F: FnOnce() -> T>(key: &[u8], default_value: F) -> T {
 	get(key).unwrap_or_else(default_value)
+}
+
+fn key_prefix(key: &[u8]) -> &[u8] {
+	&key[..key.len().min(32)]
+}
+
+#[cfg(feature = "std")]
+pub fn put_cache<T: FullCodec + TStorage>(key: &[u8], val: T) {
+	if sp_io::mut_typed_cache(|_| ()).is_none() {
+		put(key, &val);
+	} else {
+		sp_io::mut_typed_cache(|o| o.put(&key_prefix(key), &key, val));
+	}
+}
+
+#[cfg(feature = "std")]
+pub fn get_cache<T: FullCodec + TStorage, F>(key: &[u8], _f: F) -> Option<T> where F: Fn(&[u8]) -> Option<T> {
+	match sp_io::mut_typed_cache(
+		|o| o.get::<T, F>(&key_prefix(key), key, None),
+	) {
+		Some(Some(value)) => value,
+		Some(None) => {
+			let res = get(key);
+			sp_io::mut_typed_cache(|o| o.cache(&key_prefix(key), key, res.clone()));
+			res
+		}
+		None => get(key),
+	}
+}
+
+#[cfg(feature = "std")]
+pub fn take_cache<T: FullCodec + TStorage, F>(key: &[u8], _f: F) -> Option<T> where F: Fn(&[u8]) -> Option<T> {
+	match sp_io::mut_typed_cache(
+		|o| o.take::<T, F>(&key_prefix(key), key, None),
+	) {
+		Some(Some(value)) => value,
+		Some(None) => {
+			let res = take(key);
+			if res.is_some() {
+				sp_io::mut_typed_cache(|o| o.kill::<T>(&key_prefix(key), key));
+			} else {
+				sp_io::mut_typed_cache(|o| o.cache(&key_prefix(key), key, res.clone()));
+			}
+			res
+		}
+		None => take(key),
+	}
+}
+
+#[cfg(feature = "std")]
+pub fn kill_cache<T: FullCodec + TStorage>(key: &[u8]) {
+	if sp_io::mut_typed_cache(|_| ()).is_none() {
+		kill(key);
+	} else {
+		sp_io::mut_typed_cache(|o| o.kill::<T>(&key_prefix(key), key));
+	}
 }
 
 /// Put `value` in storage under `key`.

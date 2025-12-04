@@ -51,7 +51,7 @@ impl OverlayCache {
         f(&mut self.inner.get_mut(space).unwrap())
     }
 
-    pub fn handle_ref<V: Clone + Encode, F, O>(&self, space: &[u8], f: F) -> Option<O>
+    pub fn handle_ref<F, O>(&self, space: &[u8], f: F) -> Option<O>
     where
         F: FnOnce(&AnyStorage) -> O
     {
@@ -89,6 +89,17 @@ impl OverlayCache {
         self.handle_mut::<V, _, _>(space, f).unwrap_or(None)
     }
 
+    pub fn get_change_encode(&self, space: &[u8], key: &[u8]) -> Option<Option<Vec<u8>>> {
+        let start = std::time::Instant::now();
+        let f = |storage: &AnyStorage| {
+            let res = storage.get_change_encode(key);
+            let time = start.elapsed();
+            GET.lock().unwrap().entry(space.to_vec()).or_default().push((Default::default(), time));
+            res
+        };
+        self.handle_ref::<_, _>(space, f)?
+    }
+
     pub fn get_change<V: Clone + Encode + 'static>(&self, space: &[u8], key: &[u8]) -> Option<Option<V>> {
         let start = std::time::Instant::now();
         let f = |storage: &AnyStorage| {
@@ -99,7 +110,7 @@ impl OverlayCache {
             GET.lock().unwrap().entry(space.to_vec()).or_default().push((time1, time));
             res
         };
-        self.handle_ref::<V, _, _>(space, f)?.unwrap_or(None)
+        self.handle_ref::<_, _>(space, f)?.unwrap_or(None)
     }
 
     pub fn take<V: Clone + Encode + 'static, F>(&mut self, space: &[u8], key: &[u8], init: Option<F>) -> Option<Option<V>>
@@ -213,6 +224,7 @@ impl OverlayCache {
 
 #[cfg(test)]
 pub mod test {
+    use codec::{Decode, Encode};
     use crate::{OverlayCache, StorageIO};
 
     pub mod a {
@@ -302,6 +314,39 @@ pub mod test {
         cache.put(b"u32", b"11", 11u32);
         cache.put(b"u32", b"12", 12u32);
         cache.put(b"u64", b"22", 22u64);
+    }
 
+    #[test]
+    fn test_copy_data() {
+        let mut cache = OverlayCache::default();
+        cache.cache(b"u32", b"11", Some(0u32));
+        cache.start_transaction();
+        cache.put(b"u32", b"11", 11u32);
+
+        let mut none_f_u32 = Some(|_: &_| { None });
+        none_f_u32.take();
+        let mut cache1 = cache.copy_data();
+        assert_eq!(cache1.get(b"u32", b"11", none_f_u32), Some(Some(11u32)));
+        cache1.rollback_transaction();
+        assert_eq!(cache1.get(b"u32", b"11", none_f_u32), Some(Some(0u32)));
+    }
+
+    #[test]
+    fn get_cache_change() {
+        #[derive(Clone, Encode, PartialEq, Eq, Decode, Debug)]
+        struct A {
+            v: u32,
+        }
+        let mut cache = OverlayCache::default();
+        cache.put(b"u32", b"11", A { v: 1 });
+
+        {
+            #[derive(Clone, Encode, PartialEq, Eq, Decode, Debug)]
+            struct A {
+                v: u32,
+            }
+            assert_eq!(cache.get_change(b"u32", b"11"), Some(Some(A { v: 1 })));
+        }
+        assert_eq!(cache.get_change(b"u32", b"11"), Some(Some(A { v: 1 })));
     }
 }

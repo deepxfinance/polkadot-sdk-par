@@ -53,7 +53,8 @@ impl<RE: Encode + Decode + Debug + Clone, B, Block: BlockT, Api: ApiExt<Block>> 
         self.init_event_count = api.get_typed_change(SYSTEM_EVENT_COUNT.as_slice(), &SYSTEM_EVENT_COUNT.to_vec())
             .unwrap_or_default()
             .unwrap_or(get_top_value(api, &SYSTEM_EVENT_COUNT.to_vec()).unwrap_or_default());
-        self.init_block_weight = api.get_typed_change(SYSTEM_BLOCK_WEIGHT.as_slice(), &SYSTEM_BLOCK_WEIGHT.to_vec())
+        self.init_block_weight = api.get_typed_change_encode(SYSTEM_BLOCK_WEIGHT.as_slice(), &SYSTEM_BLOCK_WEIGHT.to_vec())
+            .map(|r| r.map(|v| Decode::decode(&mut v.as_slice()).ok()))
             .unwrap_or_default()
             .unwrap_or(get_top_value(api, &SYSTEM_BLOCK_WEIGHT.to_vec()));
         self.init_extrinsic_count = api.get_typed_change(SYSTEM_EXTRINSIC_COUNT.as_slice(), &SYSTEM_EXTRINSIC_COUNT.to_vec())

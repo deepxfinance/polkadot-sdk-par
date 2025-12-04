@@ -318,7 +318,7 @@ impl<K: FullEncode, V: FullCodec + TStorage, G: StorageMap<K, V>> storage::Stora
 		) {
 			Some(Some(value)) => value,
 			Some(None) => {
-				let res = unhashed::get(key);
+				let res = unhashed::take(key);
 				if res.is_some() {
 					sp_io::mut_typed_cache(|o| o.kill::<V>(&key[..32], key));
 				} else {
