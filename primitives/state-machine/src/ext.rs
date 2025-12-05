@@ -624,6 +624,7 @@ where
 			);
 			return root.encode()
 		}
+		#[cfg(feature = "std")]
 		// Merge changes to overlay
 		for (key, value) in self.cache
 			.as_ref()
