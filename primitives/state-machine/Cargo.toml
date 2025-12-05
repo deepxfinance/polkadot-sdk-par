@@ -56,3 +56,4 @@ std = [
 	"tracing",
 	"typed-cache/std",
 ]
+dev-time = ["typed-cache/dev-time"]

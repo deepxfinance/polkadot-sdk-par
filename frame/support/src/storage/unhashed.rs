@@ -19,9 +19,9 @@
 
 use codec::{Decode, Encode, FullCodec};
 use sp_std::prelude::*;
-use crate::storage::{unhashed, TStorage, TypedAppend};
+use crate::storage::{TStorage, TypedAppend};
 
-#[cfg(feature = "std")]
+#[cfg(all(feature = "std", feature = "dev-time"))]
 lazy_static::lazy_static! {
 	pub static ref GLOBAL_ENCODE: std::sync::Mutex<std::collections::HashMap<Vec<u8>, Vec<(std::time::Duration, std::time::Duration, usize)>>> = std::sync::Mutex::new(std::collections::HashMap::new());
 	pub static ref GLOBAL_DECODE: std::sync::Mutex<std::collections::HashMap<Vec<u8>, Vec<(std::time::Duration, std::time::Duration, usize)>>> = std::sync::Mutex::new(std::collections::HashMap::new());
@@ -29,10 +29,10 @@ lazy_static::lazy_static! {
 
 /// Return the value of the item in storage under `key`, or `None` if there is no explicit entry.
 pub fn get<T: Decode + Sized>(key: &[u8]) -> Option<T> {
-	#[cfg(feature = "std")]
+	#[cfg(all(feature = "std", feature = "dev-time"))]
 	let start = std::time::Instant::now();
 	sp_io::storage::get(key).and_then(|val| {
-		#[cfg(feature = "std")]
+		#[cfg(all(feature = "std", feature = "dev-time"))]
 		let decode_start = std::time::Instant::now();
 		let res = Decode::decode(&mut &val[..]).map(Some).unwrap_or_else(|e| {
 			// TODO #3700: error should be handleable.
@@ -44,9 +44,9 @@ pub fn get<T: Decode + Sized>(key: &[u8]) -> Option<T> {
 			);
 			None
 		});
-		#[cfg(feature = "std")]
+		#[cfg(all(feature = "std", feature = "dev-time"))]
 		let decode_time = decode_start.elapsed();
-		#[cfg(feature = "std")]
+		#[cfg(all(feature = "std", feature = "dev-time"))]
 		if res.is_some() {
 			let time = start.elapsed();
 			let mut lock = GLOBAL_DECODE.lock().unwrap();
@@ -144,17 +144,23 @@ where
 	T: TypedAppend<Item> + TStorage
 {
 	if sp_io::mut_typed_cache(|_| ()).is_none() {
+		#[cfg(all(feature = "std", feature = "dev-time"))]
 		let start = std::time::Instant::now();
 		let encoded = item.encode();
+		#[cfg(all(feature = "std", feature = "dev-time"))]
 		let encode_time = start.elapsed();
+		#[cfg(all(feature = "std", feature = "dev-time"))]
 		let len = encoded.len();
 		sp_io::storage::append(&key, encoded);
-		let time = start.elapsed();
-		let mut lock = crate::storage::unhashed::GLOBAL_ENCODE.lock().unwrap();
-		if let Some(v) = lock.get_mut(key_prefix(key)) {
-			v.push((encode_time, time, len));
-		} else {
-			lock.insert(key_prefix(key).to_vec(), vec![(encode_time, time, len)]);
+		#[cfg(all(feature = "std", feature = "dev-time"))]
+		{
+			let time = start.elapsed();
+			let mut lock = crate::storage::unhashed::GLOBAL_ENCODE.lock().unwrap();
+			if let Some(v) = lock.get_mut(key_prefix(key)) {
+				v.push((encode_time, time, len));
+			} else {
+				lock.insert(key_prefix(key).to_vec(), vec![(encode_time, time, len)]);
+			}
 		}
 	} else {
 		let mut none_f = Some(|_k: &[u8]| { None });
@@ -177,13 +183,13 @@ where
 
 /// Put `value` in storage under `key`.
 pub fn put<T: Encode + ?Sized>(key: &[u8], value: &T) {
-	#[cfg(feature = "std")]
+	#[cfg(all(feature = "std", feature = "dev-time"))]
 	let start = std::time::Instant::now();
 	let slice = value.encode();
-	#[cfg(feature = "std")]
+	#[cfg(all(feature = "std", feature = "dev-time"))]
 	let encode_time = start.elapsed();
 	sp_io::storage::set(key, slice.as_slice());
-	#[cfg(feature = "std")]
+	#[cfg(all(feature = "std", feature = "dev-time"))]
 	{
 		let time = start.elapsed();
 		let mut lock = GLOBAL_ENCODE.lock().unwrap();
@@ -307,10 +313,10 @@ pub fn contains_prefixed_key(prefix: &[u8]) -> bool {
 
 /// Get a Vec of bytes from storage.
 pub fn get_raw(key: &[u8]) -> Option<Vec<u8>> {
-	#[cfg(feature = "std")]
+	#[cfg(all(feature = "std", feature = "dev-time"))]
 	let start = std::time::Instant::now();
 	let res = sp_io::storage::get(key).map(|value| value.to_vec());
-	#[cfg(feature = "std")]
+	#[cfg(all(feature = "std", feature = "dev-time"))]
 	{
 		let time = start.elapsed();
 		let mut lock = GLOBAL_DECODE.lock().unwrap();
@@ -333,10 +339,10 @@ pub fn get_raw(key: &[u8]) -> Option<Vec<u8>> {
 /// you should also call `frame_system::RuntimeUpgraded::put(true)` to trigger the
 /// `on_runtime_upgrade` logic.
 pub fn put_raw(key: &[u8], value: &[u8]) {
-	#[cfg(feature = "std")]
+	#[cfg(all(feature = "std", feature = "dev-time"))]
 	let start = std::time::Instant::now();
 	sp_io::storage::set(key, value);
-	#[cfg(feature = "std")]
+	#[cfg(all(feature = "std", feature = "dev-time"))]
 	{
 		let time = start.elapsed();
 		let mut lock = GLOBAL_ENCODE.lock().unwrap();

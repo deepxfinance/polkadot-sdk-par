@@ -144,11 +144,14 @@ where
         inherent_info.time = inherent_start.elapsed();
         recorder.inherent_finish(inherent_info);
 
-        unhashed::GLOBAL_ENCODE.lock().unwrap().clear();
-        unhashed::GLOBAL_DECODE.lock().unwrap().clear();
-        sp_state_machine::GET.lock().unwrap().clear();
-        sp_state_machine::PUT.lock().unwrap().clear();
-        sp_state_machine::ENCODE.lock().unwrap().clear();
+        #[cfg(feature = "dev-time")]
+        {
+            unhashed::GLOBAL_ENCODE.lock().unwrap().clear();
+            unhashed::GLOBAL_DECODE.lock().unwrap().clear();
+            sp_state_machine::GET.lock().unwrap().clear();
+            sp_state_machine::PUT.lock().unwrap().clear();
+            sp_state_machine::ENCODE.lock().unwrap().clear();
+        }
         // 2. execute main process for multi thread and single thread.
         let (mth_invalid, single_invalid, final_end_reason) = self.multi_single_process(
             parent_number,
@@ -163,6 +166,7 @@ where
             limit_execution_time,
             &mut recorder,
         ).await?;
+        #[cfg(feature = "dev-time")]
         if block_builder.extrinsics.len() > 1 {
             Self::collect_encode_decode(format!("Block {}", recorder.number).as_str());
         }
@@ -867,6 +871,7 @@ where
         }
     }
 
+    #[cfg(feature = "dev-time")]
     fn collect_encode_decode(info: &str) {
         let mut encode = unhashed::GLOBAL_ENCODE.lock().unwrap();
         let mut decode = unhashed::GLOBAL_DECODE.lock().unwrap();

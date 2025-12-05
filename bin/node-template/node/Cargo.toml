@@ -40,6 +40,7 @@ sp-timestamp = { version = "4.0.0-dev", path = "../../../primitives/timestamp" }
 sp-inherents = { version = "4.0.0-dev", path = "../../../primitives/inherents" }
 sp-keyring = { version = "7.0.0", path = "../../../primitives/keyring" }
 frame-system = { version = "4.0.0-dev", path = "../../../frame/system" }
+frame-support = { version = "4.0.0-dev", path = "../../../frame/support" }
 pallet-transaction-payment = { version = "4.0.0-dev", default-features = false, path = "../../../frame/transaction-payment" }
 
 # Hotstuff Consensus
@@ -75,6 +76,7 @@ substrate-build-script-utils = { version = "3.0.0", path = "../../../utils/build
 
 [features]
 default = []
+dev-time = ["sc-basic-authorship/dev-time", "frame-support/dev-time"]
 # Dependencies that are only required if runtime benchmarking should be build.
 runtime-benchmarks = [
 	"node-template-runtime/runtime-benchmarks",

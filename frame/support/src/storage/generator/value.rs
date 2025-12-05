@@ -243,23 +243,6 @@ impl<T: FullCodec + TStorage, G: StorageValue<T>> storage::StorageValue<T> for G
 			String::from_utf8(Self::module_prefix().to_vec()).unwrap(), 
 			String::from_utf8(Self::storage_prefix().to_vec()).unwrap(),
 		);
-		let key = Self::storage_value_final_key();
-		#[cfg(feature = "std")]
-		let start = std::time::Instant::now();
-		let encoded = item.encode();
-		#[cfg(feature = "std")]
-		let encode_time = start.elapsed();
-		let len = encoded.len();
-		sp_io::storage::append(&key, encoded);
-		#[cfg(feature = "std")]
-		{
-			let time = start.elapsed();
-			let mut lock = crate::storage::unhashed::GLOBAL_ENCODE.lock().unwrap();
-			if let Some(v) = lock.get_mut(key.as_ref()) {
-				v.push((encode_time, time, len));
-			} else {
-				lock.insert(key.to_vec(), vec![(encode_time, time, len)]);
-			}
-		}
+		sp_io::storage::append(&Self::storage_value_final_key(), item.encode());
 	}
 }

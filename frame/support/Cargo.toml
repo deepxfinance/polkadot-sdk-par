@@ -90,3 +90,4 @@ full-metadata-docs = ["scale-info/docs"]
 # pallets in a runtime grows. Does increase the compile time!
 tuples-96 = ["frame-support-procedural/tuples-96"]
 tuples-128 = ["frame-support-procedural/tuples-128"]
+dev-time = ["sp-state-machine/dev-time"]

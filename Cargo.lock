@@ -5604,6 +5604,7 @@ dependencies = [
  "clap 4.2.7",
  "frame-benchmarking",
  "frame-benchmarking-cli",
+ "frame-support",
  "frame-system",
  "futures",
  "hex 0.4.3",

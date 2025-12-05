@@ -459,28 +459,7 @@ where
 			String::from_utf8(Self::module_prefix().to_vec()).unwrap(), 
 			String::from_utf8(Self::storage_prefix().to_vec()).unwrap(),
 		);
-		let final_key = Self::storage_double_map_final_key(k1, k2);
-		#[cfg(feature = "std")]
-		let start = std::time::Instant::now();
-		let encoded = item.encode();
-		#[cfg(feature = "std")]
-		let encode_time = start.elapsed();
-		let len = encoded.len();
-		sp_io::storage::append(&final_key, encoded);
-		#[cfg(feature = "std")]
-		{
-			let time = start.elapsed();
-			let mut key = final_key.clone();
-			if key.len() > 32 {
-				key.resize(32, 0);
-			}
-			let mut lock = crate::storage::unhashed::GLOBAL_ENCODE.lock().unwrap();
-			if let Some(v) = lock.get_mut(&key[..32]) {
-				v.push((encode_time, time, len));
-			} else {
-				lock.insert(key[..32].to_vec(), vec![(encode_time, time, len)]);
-			}
-		}
+		sp_io::storage::append(&Self::storage_double_map_final_key(k1, k2), item.encode());
 	}
 
 	fn migrate_keys<

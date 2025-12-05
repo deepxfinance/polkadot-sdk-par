@@ -91,8 +91,10 @@ impl<V: Clone + Encode + 'static> StorageApi for StorageOverlay<StorageKey, V> {
             .changes
             .iter()
             .map(|(k ,v)| {
+                #[cfg(all(feature = "std", feature = "dev-time"))]
                 let start = std::time::Instant::now();
                 let res = (k.clone(), v.value().map(|v| v.encode()));
+                #[cfg(all(feature = "std", feature = "dev-time"))]
                 crate::ENCODE.lock().unwrap().entry(self.space.clone()).or_default().push(start.elapsed());
                 res
             })
@@ -104,8 +106,10 @@ impl<V: Clone + Encode + 'static> StorageApi for StorageOverlay<StorageKey, V> {
             .into_iter()
             .map(|(k, mut v)| (k, v.pop_value()))
             .map(|(k ,v)| {
+                #[cfg(all(feature = "std", feature = "dev-time"))]
                 let start = std::time::Instant::now();
                 let res = (k, v.map(|v| v.encode()));
+                #[cfg(all(feature = "std", feature = "dev-time"))]
                 crate::ENCODE.lock().unwrap().entry(self.space.clone()).or_default().push(start.elapsed());
                 res
             })
