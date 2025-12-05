@@ -310,9 +310,6 @@ fn generate_runtime_api_base_structures() -> Result<TokenStream> {
 				let state_version = #crate_::CallApiAt::<Block>::runtime_version_at(self.call, std::clone::Clone::clone(&parent_hash))
 					.map(|v| #crate_::RuntimeVersion::state_version(&v))
 					.map_err(|e| format!("Failed to get state version: {}", e))?;
-				for (k, v) in std::cell::RefCell::take(&self.typed_cache).drain_commited() {
-					std::cell::RefCell::borrow_mut(&self.changes).top.changes.entry(k).or_default().set(v, true, None);
-				}
 				#crate_::OverlayedChanges::into_storage_changes(
 					std::cell::RefCell::take(&self.changes),
 					backend,
