@@ -543,18 +543,33 @@ where
             times.sort_by(|a, b| b.1[0].cmp(&a.1[0]));
             (round_times, times, execute_time_count, commit_time, rollback_time)
         };
-        let (round_times, times, execute_time, commit_time, rollback_time) = times(&block_builder, &thread_name);
-        let extra = thread_start.elapsed().as_nanos().saturating_sub(execute_time);
-        let round_with_times = round_execute_collect.iter().zip(round_times.into_iter()).map(|(txs, time)| {
-            let tx_num = (*txs).max(1);
-            let io_time = time[1] + time[3];
-            let avg = time[0] as usize / tx_num;
-            let avg_io = io_time as usize / tx_num;
-            let avg_rb = time[2] as usize / tx_num;
-            let avg_w = time[3] as usize / tx_num;
-            (*txs, avg, avg.saturating_sub(avg_io), avg_io, avg_rb, avg_w)
-        }).collect::<Vec<_>>();
-        trace!(target: LOG_TARGET, "[Execute Block {block}] Thread {thread_name} extra: {extra}({commit_time}/{rollback_time}) nanos, times(min/avg/max/count): {times:?}");
+        #[cfg(feature = "dev-time")]
+        let round_info = {
+            let (round_times, times, execute_time, commit_time, rollback_time) = times(&block_builder, &thread_name);
+            let extra = thread_start.elapsed().as_nanos().saturating_sub(execute_time);
+            let round_with_times = round_execute_collect.iter().zip(round_times.into_iter()).map(|(txs, time)| {
+                let tx_num = (*txs).max(1);
+                let io_time = time[1] + time[3];
+                let avg = time[0] as usize / tx_num;
+                let avg_io = io_time as usize / tx_num;
+                let avg_rb = time[2] as usize / tx_num;
+                let avg_w = time[3] as usize / tx_num;
+                (*txs, avg, avg.saturating_sub(avg_io), avg_io, avg_rb, avg_w)
+            }).collect::<Vec<_>>();
+            trace!(target: LOG_TARGET, "[Execute Block {block}] Thread {thread_name} extra: {extra}({commit_time}/{rollback_time}) nanos, times(min/avg/max/count): {times:?}");
+            format!("([(num, avg, avg_exe, avg_io, avg_rb, avg_w)]: {round_with_times:?})")
+        };
+        #[cfg(not(feature = "dev-time"))]
+        let round_info = {
+            let (round_times, ..) = times(&block_builder, &thread_name);
+            let round_with_times = round_execute_collect
+                .iter()
+                .zip(round_times.into_iter())
+                .map(|(txs, time)| (*txs, time[0] as usize / (*txs).max(1)))
+                .collect::<Vec<_>>();
+            format!("([(num, avg)]: {round_with_times:?})")
+        };
+
         let limit_millis_info = if limit_execution_time {
             format!("/{}", thread_time.as_millis())
         } else {
@@ -567,7 +582,7 @@ where
         };
         debug!(
             target: LOG_TARGET,
-            "[Execute Block {block}] Thread {thread_name} {reason}({}{} ms) {}/{}{invalid_info} executed in {} rounds([(num, avg, avg_exe, avg_io, avg_rb, avg_w)]: {round_with_times:?}).",
+            "[Execute Block {block}] Thread {thread_name} {reason}({}{} ms) {}/{}{invalid_info} executed in {} rounds{round_info}.",
             thread_start.elapsed().as_millis(),
             limit_millis_info,
             thread_info.applied(),

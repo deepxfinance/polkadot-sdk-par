@@ -199,7 +199,7 @@ where
 	B: Backend<H>,
 {
 	fn io_time(&self) -> (u128, u128, u128) {
-		#[cfg(feature = "std")]
+		#[cfg(all(feature = "std", feature = "dev-time"))]
 		{
 			let mut read_time = self.read_time.write().unwrap();
 			let r_time = *read_time;
@@ -212,7 +212,7 @@ where
 			*write_time = 0;
 			(r_time, b_r_time, w_time)
 		}
-		#[cfg(not(feature = "std"))]
+		#[cfg(not(all(feature = "std", feature = "dev-time")))]
 		(0, 0, 0)
 	}
 
@@ -232,7 +232,7 @@ where
 	}
 
 	fn storage(&self, key: &[u8]) -> Option<StorageValue> {
-		#[cfg(feature = "std")]
+		#[cfg(all(feature = "std", feature = "dev-time"))]
 		let start = std::time::Instant::now();
 		let mut backend = false;
 		let _guard = guard();
@@ -241,7 +241,7 @@ where
 			.storage(key)
 			.map(|x| x.map(|x| x.to_vec()))
 			.unwrap_or_else(|| { backend = true; self.backend.storage(key).expect(EXT_NOT_ALLOWED_TO_FAIL) });
-		#[cfg(feature = "std")]
+		#[cfg(all(feature = "std", feature = "dev-time"))]
 		{
 			let time = start.elapsed().as_nanos();
 			*self.read_time.write().unwrap() += time;
@@ -452,7 +452,7 @@ where
 	}
 
 	fn place_storage(&mut self, key: StorageKey, value: Option<StorageValue>) {
-		#[cfg(feature = "std")]
+		#[cfg(all(feature = "std", feature = "dev-time"))]
 		let start = std::time::Instant::now();
 		let _guard = guard();
 		if is_child_storage_key(&key) {
@@ -477,7 +477,7 @@ where
 
 		self.mark_dirty();
 		self.overlay.set_storage(key.clone(), value);
-		#[cfg(feature = "std")]
+		#[cfg(all(feature = "std", feature = "dev-time"))]
 		{
 			let time = start.elapsed().as_nanos();
 			*self.write_time.write().unwrap() += time;
@@ -584,7 +584,7 @@ where
 	}
 
 	fn storage_append(&mut self, key: Vec<u8>, value: Vec<u8>) {
-		#[cfg(feature = "std")]
+		#[cfg(all(feature = "std", feature = "dev-time"))]
 		let start = std::time::Instant::now();
 		trace!(
 			target: "state",
@@ -602,7 +602,7 @@ where
 			backend.storage(&key).expect(EXT_NOT_ALLOWED_TO_FAIL).unwrap_or_default()
 		});
 		StorageAppend::new(current_value).append(value);
-		#[cfg(feature = "std")]
+		#[cfg(all(feature = "std", feature = "dev-time"))]
 		{
 			let time = start.elapsed().as_nanos();
 			*self.write_time.write().unwrap() += time;
