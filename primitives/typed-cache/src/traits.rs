@@ -35,7 +35,7 @@ pub trait StorageApi: DowncastSync {
     /// Get all changes.
     fn get_commited(&self) -> BTreeMap<StorageKey, Option<Vec<u8>>>;
     /// Convert storages to expected key/value pairs.
-    fn drain_commited(&mut self) -> BTreeMap<StorageKey, Option<Vec<u8>>>;
+    fn drain_commited(&mut self) -> Vec<(StorageKey, Option<Vec<u8>>)>;
     /// Get another copy with actual data, not just pointer(e.g. Arc).
     fn copy_data(&self) -> sp_std::boxed::Box<dyn StorageApi>;
 }

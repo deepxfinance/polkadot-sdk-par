@@ -36,14 +36,6 @@ impl<K: Ord + Hash + Clone, V: Clone> StorageOverlay<K, V> {
             changes: self.changes.clone(),
         }
     }
-
-    pub fn drain_changes(&mut self) -> Vec<(K, Option<V>)> {
-        self.changes
-            .drain_changes()
-            .into_iter()
-            .map(|(k, v)| (k.clone(), v.into_value()))
-            .collect()
-    }
 }
 
 impl<K: Ord + Hash + Clone, V: Clone> Default for StorageOverlay<K, V> {
@@ -101,14 +93,13 @@ impl<V: Clone + Encode + 'static> StorageApi for StorageOverlay<StorageKey, V> {
             .collect()
     }
 
-    fn drain_commited(&mut self) -> BTreeMap<Vec<u8>, Option<Vec<u8>>> {
+    fn drain_commited(&mut self) -> Vec<(Vec<u8>, Option<Vec<u8>>)> {
         self.changes.drain_changes()
             .into_iter()
-            .map(|(k, mut v)| (k, v.pop_value()))
-            .map(|(k ,v)| {
+            .map(|(k, mut v)| {
                 #[cfg(all(feature = "std", feature = "dev-time"))]
                 let start = std::time::Instant::now();
-                let res = (k, v.map(|v| v.encode()));
+                let res = (k, v.pop_value().map(|v| v.encode()));
                 #[cfg(all(feature = "std", feature = "dev-time"))]
                 crate::ENCODE.lock().unwrap().entry(self.space.clone()).or_default().push(start.elapsed());
                 res

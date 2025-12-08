@@ -252,7 +252,7 @@ impl OverlayCache {
         self.inner.iter().map(|(_, overlay)| overlay.get_commited()).flatten().collect()
     }
 
-    pub fn drain_commited(&mut self) -> BTreeMap<StorageKey, Option<Vec<u8>>> {
+    pub fn drain_commited(&mut self) -> Vec<(StorageKey, Option<Vec<u8>>)> {
         if self.closed { panic!("OverlayCache::drain_commited should only be called once"); }
         self.closed = true;
         sp_std::mem::take(&mut self.inner)
