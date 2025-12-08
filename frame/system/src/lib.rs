@@ -696,8 +696,8 @@ pub type Key = Vec<u8>;
 pub type KeyValue = (Vec<u8>, Vec<u8>);
 
 /// A phase of a block's execution.
-#[derive(Encode, Decode, RuntimeDebug, TypeInfo, MaxEncodedLen)]
-#[cfg_attr(feature = "std", derive(Serialize, PartialEq, Eq, Clone))]
+#[derive(Encode, Decode, RuntimeDebug, TypeInfo, MaxEncodedLen, Clone)]
+#[cfg_attr(feature = "std", derive(Serialize, PartialEq, Eq))]
 pub enum Phase {
 	/// Applying an extrinsic.
 	ApplyExtrinsic(u32),
@@ -1701,6 +1701,14 @@ impl<T: Config> Pallet<T> {
 				Ok(())
 			}
 		}
+	}
+
+	pub fn get_execution_phase() -> Option<Phase> {
+		ExecutionPhase::<T>::get()
+	}
+
+	pub fn update_execution_phase(phase: Phase) {
+		ExecutionPhase::<T>::put(phase)
 	}
 }
 
