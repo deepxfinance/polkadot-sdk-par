@@ -627,8 +627,8 @@ where
 		#[cfg(feature = "std")]
 		// Merge changes to overlay
 		for (key, value) in self.cache
-			.as_ref()
-			.map(|overlay| overlay.get_commited())
+			.as_mut()
+			.map(|overlay| overlay.drain_commited())
 			.unwrap_or_default()
 		{
 			self.overlay.top.set(key, value, None);

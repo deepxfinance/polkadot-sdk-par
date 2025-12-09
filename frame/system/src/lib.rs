@@ -1443,7 +1443,7 @@ impl<T: Config> Pallet<T> {
 		#[cfg(feature = "std")]
 		log::debug!(
 			target: "authorship",
-			"finalize block {} micros(extrinsic_root: {extrinsics_root_time} micros, storage_root: {storage_root_time} micros)",
+			"finalize block {} micros(storage_root: {storage_root_time} micros)",
 			finalize_start.elapsed().as_micros(),
 		);
 		<T::Header as traits::Header>::new(
