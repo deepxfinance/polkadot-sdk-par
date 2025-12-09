@@ -144,24 +144,7 @@ where
 	T: TypedAppend<Item> + TStorage
 {
 	if sp_io::mut_typed_cache(|_| ()).is_none() {
-		#[cfg(all(feature = "std", feature = "dev-time"))]
-		let start = std::time::Instant::now();
-		let encoded = item.encode();
-		#[cfg(all(feature = "std", feature = "dev-time"))]
-		let encode_time = start.elapsed();
-		#[cfg(all(feature = "std", feature = "dev-time"))]
-		let len = encoded.len();
-		sp_io::storage::append(&key, encoded);
-		#[cfg(all(feature = "std", feature = "dev-time"))]
-		{
-			let time = start.elapsed();
-			let mut lock = crate::storage::unhashed::GLOBAL_ENCODE.lock().unwrap();
-			if let Some(v) = lock.get_mut(key_prefix(key)) {
-				v.push((encode_time, time, len));
-			} else {
-				lock.insert(key_prefix(key).to_vec(), vec![(encode_time, time, len)]);
-			}
-		}
+		append(key, item);
 	} else {
 		let mut none_f = Some(|_k: &[u8]| { None });
 		none_f.take();
@@ -174,9 +157,31 @@ where
 			}
 		)).unwrap();
 		if !updated {
-			let mut new_value = T::default();
+			let mut new_value: T = get_cache(key, |_| { Option::<T>::None }).unwrap_or_default();
 			new_value.append(item);
 			sp_io::mut_typed_cache(|o| o.put(key_prefix(key), &key, new_value));
+		}
+	}
+}
+
+/// Direct encode `item` to `value`.
+pub fn append<Item: Encode>(key: &[u8], item: Item) {
+	#[cfg(all(feature = "std", feature = "dev-time"))]
+	let start = std::time::Instant::now();
+	let encoded = item.encode();
+	#[cfg(all(feature = "std", feature = "dev-time"))]
+	let encode_time = start.elapsed();
+	#[cfg(all(feature = "std", feature = "dev-time"))]
+	let len = encoded.len();
+	sp_io::storage::append(&key, encoded);
+	#[cfg(all(feature = "std", feature = "dev-time"))]
+	{
+		let time = start.elapsed();
+		let mut lock = crate::storage::unhashed::GLOBAL_ENCODE.lock().unwrap();
+		if let Some(v) = lock.get_mut(key_prefix(key)) {
+			v.push((encode_time, time, len));
+		} else {
+			lock.insert(key_prefix(key).to_vec(), vec![(encode_time, time, len)]);
 		}
 	}
 }
