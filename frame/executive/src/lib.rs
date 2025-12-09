@@ -569,7 +569,7 @@ where
 			let r = Applyable::apply::<UnsignedValidator>(xt, &dispatch_info, encoded_len);
 			(dispatch_info, r)
 		});
-		<frame_system::Pallet<System>>::note_extrinsic(encoded);
+		// <frame_system::Pallet<System>>::note_extrinsic(encoded);
 		match result {
 			Ok((dispatch_info, r)) => match r {
 				Ok(dispatch_result) => {

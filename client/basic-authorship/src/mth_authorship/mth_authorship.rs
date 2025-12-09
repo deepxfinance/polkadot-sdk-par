@@ -368,6 +368,7 @@ where
                 .map(|g| g.iter().map(|(i, tx)| (*i, tx.hash().clone(), tx.data().clone())).collect())
                 .collect(),
             group_output.single.iter().map(|(i, tx)| (*i, tx.hash().clone(), tx.data().clone())).collect(),
+            None,
             false,
             true,
         )
@@ -477,6 +478,7 @@ where
         inherent_data: InherentData,
         inherent_digests: Digest,
         extrinsic: (Vec<Vec<Block::Extrinsic>>, Vec<Block::Extrinsic>),
+        set_extrinsics_root: Option<Block::Hash>,
         round_tx: usize,
         merge_in_thread_order: bool,
         limit_execution_time: bool,
@@ -491,6 +493,7 @@ where
             inherent_data,
             inherent_digests,
             extrinsic,
+            set_extrinsics_root,
             round_tx,
             merge_in_thread_order,
             limit_execution_time,

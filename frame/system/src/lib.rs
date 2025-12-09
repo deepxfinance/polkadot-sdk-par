@@ -1423,15 +1423,7 @@ impl<T: Config> Pallet<T> {
 		// We have to store events by block number since `Events` keep change.
 		<EventsMap<T>>::insert(number, <Events<T>>::get());
 
-		#[cfg(feature = "std")]
-		let extrinsics_root_start = std::time::Instant::now();
-		let extrinsics = (1..ExtrinsicCount::<T>::take().unwrap_or_default())
-			.map(ExtrinsicData::<T>::take)
-			.collect();
-		let extrinsics_root = extrinsics_data_root::<T::Hashing>(extrinsics);
-		#[cfg(feature = "std")]
-		let extrinsics_root_time = extrinsics_root_start.elapsed().as_micros();
-
+		ExtrinsicCount::<T>::kill();
 		// move block hash pruning window by one block
 		let block_hash_count = T::BlockHashCount::get();
 		let to_remove = number.saturating_sub(block_hash_count).saturating_sub(One::one());
@@ -1456,7 +1448,7 @@ impl<T: Config> Pallet<T> {
 		);
 		<T::Header as traits::Header>::new(
 			number,
-			extrinsics_root,
+			Default::default(),
 			storage_root,
 			parent_hash,
 			digest,

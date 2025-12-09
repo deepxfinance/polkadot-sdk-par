@@ -251,6 +251,10 @@ impl<
 	type Header = Header;
 	type Hash = <Header as traits::Header>::Hash;
 
+	fn header_mut(&mut self) -> &mut Self::Header {
+		&mut self.header
+	}
+
 	fn header(&self) -> &Self::Header {
 		&self.header
 	}

@@ -941,6 +941,8 @@ pub trait Block: Clone + Send + Sync + Codec + Eq + MaybeSerialize + Debug + 'st
 		+ AsMut<[u8]>
 		+ TypeInfo;
 
+	/// Returns a mutable reference to the header.
+	fn header_mut(&mut self) -> &mut Self::Header;
 	/// Returns a reference to the header.
 	fn header(&self) -> &Self::Header;
 	/// Returns a reference to the list of extrinsics.

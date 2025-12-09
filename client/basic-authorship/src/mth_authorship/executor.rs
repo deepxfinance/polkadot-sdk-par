@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::{cmp, time};
 use std::time::Duration;
 use codec::Encode;
-use futures::StreamExt;
+use futures::{SinkExt, StreamExt};
 use futures::channel::mpsc::{Receiver, Sender, channel};
 use futures::task::SpawnExt;
 use log::{debug, error, info, trace, warn};
@@ -23,12 +23,11 @@ use sp_core::traits::SpawnNamed;
 use sp_inherents::InherentData;
 use sp_perp_api::PerpRuntimeApi;
 use sp_runtime::{traits, Digest, Percent, SaturatedConversion, Saturating};
-use sp_runtime::traits::{Header, One};
+use sp_runtime::traits::{Hash, Header, One};
 use sp_spot_api::SpotRuntimeApi;
 use sp_state_machine::{MergeErr, OverlayedChanges, StorageKey, StorageValue};
 use crate::{BlockPropose, ExtendExtrinsic, MultiThreadBlockBuilder};
 use crate::mth_authorship::execute_info::{BlockExecuteInfo, InfoRecorder, MergeInfo, ThreadExecutionInfo};
-use frame_support::storage::unhashed;
 
 const LOG_TARGET: &str = "authorship";
 
@@ -103,6 +102,7 @@ where
         round_tx: usize,
         mut extrinsic_group: Vec<Vec<(usize, <A as TransactionPool>::Hash, Block::Extrinsic)>>,
         mut single_group: Vec<(usize, <A as TransactionPool>::Hash, Block::Extrinsic)>,
+        set_extrinsics_root: Option<Block::Hash>,
         merge_in_thread_order: bool,
         limit_execution_time: bool,
     ) -> Result<(Proposal<Block, backend::TransactionFor<B, Block>, PR::Proof>, BlockExecuteInfo<Block>), sp_blockchain::Error> {
@@ -175,7 +175,13 @@ where
 
         // 5. build block by finalize block.
         recorder.finalize_start();
-        let (block, storage_changes, proof) = block_builder.build()?.into_inner();
+        let (mut block, storage_changes, proof) = block_builder.build()?.into_inner();
+        if let Some(extrinsics_root) = set_extrinsics_root {
+            block.header_mut().set_extrinsics_root(extrinsics_root);
+        } else if block.header().extrinsics_root() == &Default::default() {
+            let extrinsics_root = extrinsics_root::<<Block::Header as HeaderT>::Hashing, <Block as BlockT>::Extrinsic>(&block.extrinsics()[1..]);
+            block.header_mut().set_extrinsics_root(extrinsics_root);
+        }
         let info = recorder.finalize();
 
         // 6. spawn a single execution check if env `MTH_CHECK` is true, this is just an extra check, weill not block main block build.
@@ -1024,6 +1030,7 @@ where
         inherent_data: InherentData,
         inherent_digests: Digest,
         extrinsic: (Vec<Vec<Block::Extrinsic>>, Vec<Block::Extrinsic>),
+        set_extrinsics_root: Option<Block::Hash>,
         round_tx: usize,
         merge_in_thread_order: bool,
         limit_execution_time: bool,
@@ -1063,6 +1070,7 @@ where
                 .map(|g| g.into_iter().enumerate().map(|(i, tx)| (i, <<<Block as BlockT>::Header as Header>::Hashing as traits::Hash>::hash(&tx.encode()), tx)).collect())
                 .collect(),
             extrinsic.1.into_iter().enumerate().map(|(i, tx)| (i, <<<Block as BlockT>::Header as Header>::Hashing as traits::Hash>::hash(&tx.encode()), tx)).collect(),
+            set_extrinsics_root,
             merge_in_thread_order,
             limit_execution_time,
         )
@@ -1123,7 +1131,20 @@ where
         let max_duration = time::Duration::from_secs(10);
         let block_builder =
             self.client.new_block_at(parent_hash, inherent_digests.clone(), PR::ENABLED, Some(context))?;
-        let (proposal, info) = self.execute_block(
+        // Spawn mission for large extrinsics root calculation.
+        let (mut extrinsics_root_sender, mut extrinsics_root_receiver) = channel(1);
+        let spawn_extrinsics = extrinsic[inherents.len()..].to_vec();
+        self.spawn_handle.spawn(
+            "mth-authorship-proposer",
+            None,
+            Box::pin(async move {
+                let root = extrinsics_root::<<Block::Header as HeaderT>::Hashing, <Block as BlockT>::Extrinsic>(&spawn_extrinsics);
+                if let Err(e) = extrinsics_root_sender.send(root).await {
+                    warn!(target: LOG_TARGET,"Send extrinsics_root failed for {e:?}");
+                }
+            })
+        );
+        let (mut proposal, info) = self.execute_block(
             parent_hash,
             parent_number,
             time::Instant::now(),
@@ -1139,10 +1160,15 @@ where
                 .map(|g| g.into_iter().enumerate().map(|(i, tx)| (i, <<<Block as BlockT>::Header as Header>::Hashing as traits::Hash>::hash(&tx.encode()), tx)).collect())
                 .collect(),
             single.into_iter().enumerate().map(|(i, tx)| (i, <<<Block as BlockT>::Header as Header>::Hashing as traits::Hash>::hash(&tx.encode()), tx)).collect(),
+            Some(Default::default()),
             merge_in_thread_order,
             limit_execution_time,
         )
             .await?;
+        match extrinsics_root_receiver.next().await {
+            Some(extrinsics_root) => proposal.block.header_mut().set_extrinsics_root(extrinsics_root),
+            None => return Err(Self::Error::UnknownBlock("Failed to get extrinsiscs_root".to_string())),
+        }
         info!(
             target: LOG_TARGET,
 			"🎁 [{source}] Prepared block {} [{}] \
@@ -1162,4 +1188,14 @@ where
 		);
         Ok((proposal, info))
     }
+}
+
+/// Same with `frame_system::extrinsics_root`.
+pub fn extrinsics_root<H: Hash, E: codec::Encode>(extrinsics: &[E]) -> H::Output {
+    extrinsics_data_root::<H>(extrinsics.iter().map(codec::Encode::encode).collect())
+}
+
+/// Same with `frame_system::extrinsics_data_root`.
+pub fn extrinsics_data_root<H: Hash>(xts: Vec<Vec<u8>>) -> H::Output {
+    H::ordered_trie_root(xts, sp_core::storage::StateVersion::V0)
 }
