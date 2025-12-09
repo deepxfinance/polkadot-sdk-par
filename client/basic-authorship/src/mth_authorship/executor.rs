@@ -146,6 +146,8 @@ where
 
         #[cfg(feature = "dev-time")]
         {
+            use frame_support::storage::unhashed;
+
             unhashed::GLOBAL_ENCODE.lock().unwrap().clear();
             unhashed::GLOBAL_DECODE.lock().unwrap().clear();
             sp_state_machine::GET.lock().unwrap().clear();
@@ -894,6 +896,8 @@ where
 
     #[cfg(feature = "dev-time")]
     fn collect_encode_decode(info: &str) {
+        use frame_support::storage::unhashed;
+
         let mut encode = unhashed::GLOBAL_ENCODE.lock().unwrap();
         let mut decode = unhashed::GLOBAL_DECODE.lock().unwrap();
         let mut get = sp_state_machine::GET.lock().unwrap();
