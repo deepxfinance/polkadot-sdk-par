@@ -755,15 +755,21 @@ where
 	}
 
 	fn storage_start_transaction(&mut self) {
+		#[cfg(feature = "std")]
+		self.cache.as_mut().map(|cache| cache.start_transaction());
 		self.overlay.start_transaction()
 	}
 
 	fn storage_rollback_transaction(&mut self) -> Result<(), ()> {
 		self.mark_dirty();
+		#[cfg(feature = "std")]
+		self.cache.as_mut().map(|cache| cache.rollback_transaction());
 		self.overlay.rollback_transaction().map_err(|_| ())
 	}
 
 	fn storage_commit_transaction(&mut self) -> Result<(), ()> {
+		#[cfg(feature = "std")]
+		self.cache.as_mut().map(|cache| cache.commit_transaction());
 		self.overlay.commit_transaction().map_err(|_| ())
 	}
 

@@ -600,9 +600,9 @@ impl SharedKVCache {
 			self.lru.len() * 100 / super::SHARED_KV_CACHE_MAX_REPLACE_PERCENT;
 
 		for (key, value) in added {
-			if value == vec![0u8] {
+			if value.is_empty() {
 				remove_count += 1;
-				self.lru.remove(&key);
+				self.lru.insert(key, value);
 			} else {
 				add_count += 1;
 				self.lru.insert(key, value);
