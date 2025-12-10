@@ -601,6 +601,10 @@ pub trait ApiExt<Block: BlockT> {
 	where
 		Self: Sized;
 
+	fn typed_cache_keys_by_prefix(&self, prefix: &[u8]) -> Option<Vec<StorageKey>>
+	where
+		Self: Sized;
+
 	fn top_keys_by_prefix(&self, prefix: &StorageKey) -> Vec<StorageKey>
 	where
 		Self: Sized;

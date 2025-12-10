@@ -246,6 +246,10 @@ impl OverlayCache {
     pub fn rollback_transaction(&mut self) {
         self.inner.iter_mut().for_each(|(_, overlay)| overlay.rollback_transaction());
     }
+
+    pub fn get_changed_keys_by_prefix(&self, space: &[u8]) -> Option<Vec<StorageKey>> {
+        self.inner.get(space).map(|overlay| overlay.get_changed_keys())
+    }
     
     pub fn get_commited(&self) -> BTreeMap<StorageKey, Option<Vec<u8>>> {
         if self.closed { panic!("OverlayCache::get_commited should only before closed"); }

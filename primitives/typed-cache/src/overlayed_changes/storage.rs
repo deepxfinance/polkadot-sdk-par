@@ -78,6 +78,14 @@ impl<V: Clone + Encode + 'static> StorageApi for StorageOverlay<StorageKey, V> {
         self.changes.changes.get(key).map(|v| v.value().map(|v| v.encode()))
     }
 
+    fn get_changed_keys(&self) -> Vec<StorageKey> {
+        self.changes
+            .changes
+            .iter()
+            .map(|(k , _)| k.clone())
+            .collect()
+    }
+
     fn get_commited(&self) -> BTreeMap<StorageKey, Option<Vec<u8>>> {
         self.changes
             .changes
