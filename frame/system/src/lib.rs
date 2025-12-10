@@ -607,7 +607,7 @@ pub mod pallet {
 	#[pallet::storage]
 	#[pallet::unbounded]
 	pub(super) type EventsMap<T: Config> =
-	StorageMap<_, Blake2_128Concat, T::BlockNumber, Vec<Box<EventRecord<T::RuntimeEvent, T::Hash>>>, ValueQuery>;
+	StorageMap<_, Blake2_128, T::BlockNumber, Vec<Box<EventRecord<T::RuntimeEvent, T::Hash>>>, ValueQuery>;
 
 	/// The number of events in the `Events<T>` list.
 	#[pallet::storage]
@@ -1290,10 +1290,7 @@ impl<T: Config> Pallet<T> {
 			old_event_count
 		};
 
-		#[cfg(feature = "std")]
-		Events::<T>::append(Box::new(event));
-		#[cfg(not(feature = "std"))]
-		Events::<T>::append(event);
+		storage::unhashed::append(&Events::<T>::hashed_key(), event);
 
 		for topic in topics {
 			<EventTopics<T>>::append(topic, (block_number, event_idx));
@@ -1421,7 +1418,9 @@ impl<T: Config> Pallet<T> {
 		let parent_hash = <ParentHash<T>>::get();
 		let digest = <Digest<T>>::get();
 		// We have to store events by block number since `Events` keep change.
-		<EventsMap<T>>::insert(number, <Events<T>>::get());
+		if let Some(events_raw) = storage::unhashed::get_raw(&Events::<T>::hashed_key()) {
+			storage::unhashed::put_raw(&EventsMap::<T>::hashed_key_for(number), &events_raw);
+		}
 
 		ExtrinsicCount::<T>::kill();
 		// move block hash pruning window by one block
@@ -1545,7 +1544,7 @@ impl<T: Config> Pallet<T> {
 	/// This needs to be used in prior calling [`initialize`](Self::initialize) for each new block
 	/// to clear events from previous block.
 	pub fn reset_events() {
-		<Events<T>>::kill();
+		storage::unhashed::kill(&Events::<T>::hashed_key());
 		EventCount::<T>::kill();
 		let _ = <EventTopics<T>>::clear(u32::max_value(), None);
 	}

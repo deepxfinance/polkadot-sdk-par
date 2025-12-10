@@ -7,17 +7,19 @@ use std::sync::Arc;
 use codec::{Compact, Decode, Encode, EncodeAppend};
 use sp_api::ApiExt;
 use sp_runtime::Digest;
-use sp_runtime::traits::Block as BlockT;
+use sp_runtime::traits::{Block as BlockT, NumberFor};
 use sp_state_machine::{MergeChange, OverlayedEntry, StorageKey, StorageValue};
 use super::{get_map_value, get_top_value, parse_entry_value};
 
 pub const EXTRINSIC_INDEX: [u8; 16] = [58, 101, 120, 116, 114, 105, 110, 115, 105, 99, 95, 105, 110, 100, 101, 120];
+pub const SYSTEM_NUMBER: [u8; 32] = [38, 170, 57, 78, 234, 86, 48, 224, 124, 72, 174, 12, 149, 88, 206, 247, 2, 165, 193, 177, 154, 183, 160, 79, 83, 108, 81, 154, 202, 73, 131, 172];
 pub const SYSTEM_EXTRINSIC_COUNT: [u8; 32] = [38, 170, 57, 78, 234, 86, 48, 224, 124, 72, 174, 12, 149, 88, 206, 247, 189, 192, 189, 48, 62, 152, 85, 129, 58, 168, 163, 13, 78, 252, 81, 18];
 pub const SYSTEM_BLOCK_WEIGHT: [u8; 32] = [38, 170, 57, 78, 234, 86, 48, 224, 124, 72, 174, 12, 149, 88, 206, 247, 52, 171, 245, 203, 52, 214, 36, 67, 120, 205, 219, 241, 142, 132, 157, 150];
 pub const SYSTEM_ALL_EXTRINSICS_LEN: [u8; 32] = [38, 170, 57, 78, 234, 86, 48, 224, 124, 72, 174, 12, 149, 88, 206, 247, 168, 109, 165, 169, 50, 104, 79, 25, 149, 57, 131, 111, 203, 140, 136, 111];
 pub const SYSTEM_DIGEST: [u8; 32] = [38, 170, 57, 78, 234, 86, 48, 224, 124, 72, 174, 12, 149, 88, 206, 247, 153, 231, 249, 63, 198, 169, 143, 8, 116, 253, 5, 127, 17, 28, 77, 45];
 pub const SYSTEM_EVENT_COUNT: [u8; 32] = [38, 170, 57, 78, 234, 86, 48, 224, 124, 72, 174, 12, 149, 88, 206, 247, 10, 152, 253, 190, 156, 230, 197, 88, 55, 87, 108, 96, 199, 175, 56, 80];
 pub const SYSTEM_EVENTS: [u8; 32] = [38, 170, 57, 78, 234, 86, 48, 224, 124, 72, 174, 12, 149, 88, 206, 247, 128, 212, 30, 94, 22, 5, 103, 101, 188, 132, 97, 133, 16, 114, 201, 215];
+pub const SYSTEM_EVENTS_MAP_PREFIX: [u8;32] = [38, 170, 57, 78, 234, 86, 48, 224, 124, 72, 174, 12, 149, 88, 206, 247, 49, 208, 128, 228, 214, 125, 178, 100, 12, 86, 17, 66, 220, 220, 32, 101];
 pub const SYSTEM_EXTRINSIC_DATA_PREFIX: [u8; 32] = [38, 170, 57, 78, 234, 86, 48, 224, 124, 72, 174, 12, 149, 88, 206, 247, 223, 29, 174, 184, 152, 104, 55, 242, 28, 197, 209, 117, 150, 187, 120, 209];
 pub const SYSTEM_EXECUTION_PHASE: [u8; 32] = [38, 170, 57, 78, 234, 86, 48, 224, 124, 72, 174, 12, 149, 88, 206, 247, 255, 85, 59, 90, 152, 98, 165, 22, 147, 157, 130, 179, 211, 216, 102, 26];
 
@@ -25,6 +27,7 @@ pub const SYSTEM_EXECUTION_PHASE: [u8; 32] = [38, 170, 57, 78, 234, 86, 48, 224,
 #[derive(Clone)]
 pub struct MergeSystem<RE> {
     init_index: u32,
+    init_number_encoded: Vec<u8>,
     init_extrinsic_count: u32,
     init_all_extrinsics_len: u32,
     init_event_count: u32,
@@ -36,6 +39,7 @@ impl<RE: Encode + Decode + Debug + Clone> Default for MergeSystem<RE> {
     fn default() -> Self {
         MergeSystem {
             init_index: 0,
+            init_number_encoded: Vec::new(),
             init_extrinsic_count: 0,
             init_all_extrinsics_len: 0,
             init_event_count: 0,
@@ -50,6 +54,9 @@ impl<RE: Encode + Decode + Debug + Clone, B, Block: BlockT, Api: ApiExt<Block>> 
         self.init_index = api.get_typed_change(EXTRINSIC_INDEX.as_slice(), &EXTRINSIC_INDEX.to_vec())
             .unwrap_or_default()
             .unwrap_or(get_top_value(api, &EXTRINSIC_INDEX.to_vec()).unwrap_or_default());
+        self.init_number_encoded = api.get_typed_change_encode(SYSTEM_NUMBER.as_slice(), &SYSTEM_NUMBER.to_vec())
+            .unwrap_or_default()
+            .unwrap_or(get_top_value::<_, _, NumberFor<Block>>(api, &SYSTEM_NUMBER.to_vec()).unwrap_or(0u32.into()).encode());
         self.init_event_count = api.get_typed_change(SYSTEM_EVENT_COUNT.as_slice(), &SYSTEM_EVENT_COUNT.to_vec())
             .unwrap_or_default()
             .unwrap_or(get_top_value(api, &SYSTEM_EVENT_COUNT.to_vec()).unwrap_or_default());
@@ -76,7 +83,8 @@ impl<RE: Encode + Decode + Debug + Clone> MergeChange<StorageKey, Option<Storage
         local: &mut BTreeMap<StorageKey, OverlayedEntry<Option<StorageValue>>>,
         other: &mut BTreeMap<StorageKey, OverlayedEntry<Option<StorageValue>>>,
     ) -> Vec<StorageKey> {
-        use sp_io::hashing::twox_64;
+        use sp_core::hash::H256;
+        use sp_io::hashing::{twox_64, blake2_128};
 
         let init_index: u32 = self.init_index;
         let offset: u32 = get_map_value(local, &EXTRINSIC_INDEX.to_vec()).unwrap_or_default();
@@ -189,17 +197,15 @@ impl<RE: Encode + Decode + Debug + Clone> MergeChange<StorageKey, Option<Storage
             }
         }
 
+        #[derive(Encode, Decode, Clone, Debug)]
+        pub struct EventRecord<RuntimeEvent> {
+            pub phase: Phase,
+            pub event: RuntimeEvent,
+            pub topics: Vec<H256>,
+        }
+
         // update "System Events"
         if let Some(entry_other) = other.remove(&SYSTEM_EVENTS.to_vec()) {
-            pub use sp_core::hash::H256;
-
-            #[derive(Encode, Decode, Clone, Debug)]
-            pub struct EventRecord<RuntimeEvent> {
-                pub phase: Phase,
-                pub event: RuntimeEvent,
-                pub topics: Vec<H256>,
-            }
-
             let other_events: Vec<EventRecord<RE>> = parse_entry_value(&entry_other).unwrap_or_default();
             let extrinsics = entry_other.extrinsics();
             let final_extrinsic = extrinsics.last().cloned().map(|e| e.saturating_add(offset).saturating_sub(init_index));
@@ -232,6 +238,44 @@ impl<RE: Encode + Decode + Debug + Clone> MergeChange<StorageKey, Option<Storage
             } else {
                 log::trace!(target: "merge_system", "merge Events local: None, other: {other_events:?}");
                 local.insert(SYSTEM_EVENTS.to_vec(), entry_other);
+            }
+        }
+
+        // update "System EventsMap"
+        let events_map_key = [SYSTEM_EVENTS_MAP_PREFIX.to_vec(), blake2_128(&self.init_number_encoded).to_vec()].concat();
+        if let Some(entry_other) = other.remove(&events_map_key) {
+            let other_events: Vec<EventRecord<RE>> = parse_entry_value(&entry_other).unwrap_or_default();
+            let extrinsics = entry_other.extrinsics();
+            let final_extrinsic = extrinsics.last().cloned().map(|e| e.saturating_add(offset).saturating_sub(init_index));
+            if let Some(entry_local) = local.get_mut(&events_map_key) {
+                log::trace!(target: "merge_system", "merge EventsMap other: {other_events:?}");
+                let local_event_data = entry_local
+                    .value_ref()
+                    .clone()
+                    .unwrap_or_default();
+                let append_events: Vec<_> = other_events
+                    .into_iter()
+                    .filter_map(|mut event| match &mut event.phase {
+                        // drop duplicate initialize events.
+                        Phase::Initialization => None,
+                        Phase::ApplyExtrinsic(e) => {
+                            if *e < init_index {
+                                // duplicate initial events will not be pushed.
+                                None
+                            } else {
+                                *e = e.saturating_add(offset).saturating_sub(init_index);
+                                Some(event)
+                            }
+                        }
+                        Phase::Finalization => Some(event)
+                    })
+                    .collect();
+                let final_events_encoded = <Vec<EventRecord<RE>> as EncodeAppend>::append_or_new(local_event_data, append_events)
+                    .expect("append new events");
+                entry_local.set(Some(final_events_encoded), false, final_extrinsic);
+            } else {
+                log::trace!(target: "merge_system", "merge EventsMap local: None, other: {other_events:?}");
+                local.insert(events_map_key, entry_other);
             }
         }
 
