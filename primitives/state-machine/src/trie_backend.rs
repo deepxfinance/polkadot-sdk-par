@@ -253,6 +253,11 @@ where
 	pub fn essence(&self) -> &TrieBackendEssence<S, H, C> {
 		&self.essence
 	}
+	
+	/// Get mut backend essence reference.
+	pub fn mut_essence(&mut self) -> &mut TrieBackendEssence<S, H, C> {
+		&mut self.essence
+	}
 
 	/// Get backend storage reference.
 	pub fn backend_storage_mut(&mut self) -> &mut S {

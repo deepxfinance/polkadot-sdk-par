@@ -396,10 +396,8 @@ impl<H: Hasher> LocalTrieCache<H> {
 			stats: &self.stats,
 		}
 	}
-}
 
-impl<H: Hasher> Drop for LocalTrieCache<H> {
-	fn drop(&mut self) {
+	pub fn merge_local_into_shared(&mut self) {
 		tracing::debug!(
 			target: LOG_TARGET,
 			"Local node trie cache dropped: {}",
@@ -431,6 +429,11 @@ impl<H: Hasher> Drop for LocalTrieCache<H> {
 		);
 
 		shared_inner.kv_cache_mut().update(self.kv_cache.get_mut().drain())
+	}
+}
+
+impl<H: Hasher> Drop for LocalTrieCache<H> {
+	fn drop(&mut self) {
 	}
 }
 

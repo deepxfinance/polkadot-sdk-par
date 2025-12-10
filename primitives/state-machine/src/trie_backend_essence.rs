@@ -268,6 +268,11 @@ impl<S: TrieBackendStorage<H>, H: Hasher, C> TrieBackendEssence<S, H, C> {
 		&self.root
 	}
 
+	/// Get trie node cache.
+	pub fn trie_node_cache(&mut self) -> &mut Option<C> {
+		&mut self.trie_node_cache
+	}
+
 	/// Set trie root. This is useful for testing.
 	pub fn set_root(&mut self, root: H::Out) {
 		// If root did change so can have cached content.

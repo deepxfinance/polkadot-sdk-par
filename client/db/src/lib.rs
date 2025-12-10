@@ -144,6 +144,12 @@ impl<B: BlockT> RefTrackingState<B> {
 	fn new(state: DbState<B>, storage: Arc<StorageDb<B>>, parent_hash: Option<B::Hash>) -> Self {
 		RefTrackingState { state, parent_hash, storage }
 	}
+	
+	fn merge_local_into_shared(&mut self) {
+		if let Some(cache) = self.state.mut_essence().trie_node_cache() {
+			cache.merge_local_into_shared();
+		}
+	}
 }
 
 impl<B: BlockT> Drop for RefTrackingState<B> {
@@ -417,6 +423,7 @@ pub(crate) mod columns {
 	pub const BODY_INDEX: u32 = 12;
 }
 
+#[derive(Clone)]
 struct PendingBlock<Block: BlockT> {
 	header: Block::Header,
 	justifications: Option<Justifications>,
@@ -837,6 +844,11 @@ pub struct BlockImportOperation<Block: BlockT> {
 }
 
 impl<Block: BlockT> BlockImportOperation<Block> {
+
+	fn merge_local_into_shared(&mut self) {
+		self.old_state.state.merge_local_into_shared();
+	}
+
 	fn apply_offchain(&mut self, transaction: &mut Transaction<DbHash>) {
 		let mut count = 0;
 		for ((prefix, key), value_operation) in self.offchain_storage_updates.drain(..) {
@@ -1438,7 +1450,7 @@ impl<Block: BlockT> Backend<Block> {
 
 		let mut current_transaction_justifications: HashMap<Block::Hash, Justification> =
 			HashMap::new();
-		for (block_hash, justification) in operation.finalized_blocks {
+		for (block_hash, justification) in operation.finalized_blocks.clone() {
 			let block_header = self.blockchain.expect_header(block_hash)?;
 			meta_updates.push(self.finalize_block_with_transaction(
 				&mut transaction,
@@ -1452,7 +1464,7 @@ impl<Block: BlockT> Backend<Block> {
 			last_finalized_num = *block_header.number();
 		}
 
-		let imported = if let Some(pending_block) = operation.pending_block {
+		let imported = if let Some(pending_block) = operation.pending_block.clone() {
 			let hash = pending_block.header.hash();
 
 			let parent_hash = *pending_block.header.parent_hash();
@@ -1483,7 +1495,7 @@ impl<Block: BlockT> Backend<Block> {
 					transaction.set_from_vec(columns::BODY, &lookup_key, body.encode());
 				} else {
 					let body =
-						apply_index_ops::<Block>(&mut transaction, body, operation.index_ops);
+						apply_index_ops::<Block>(&mut transaction, body, operation.index_ops.clone());
 					transaction.set_from_vec(columns::BODY_INDEX, &lookup_key, body);
 				}
 			}
@@ -1614,6 +1626,7 @@ impl<Block: BlockT> Backend<Block> {
 
 			// release state reference so that it can be finalized
 			// VERY IMPORTANT
+			operation.merge_local_into_shared();
 			drop(operation.old_state);
 
 			if finalized {

@@ -37,7 +37,7 @@ pub struct RecordStatsState<S, B: BlockT> {
 	/// State machine registered stats
 	overlay_stats: sp_state_machine::StateMachineStats,
 	/// Backing state.
-	state: S,
+	pub state: S,
 	/// The hash of the block is state belongs to.
 	block_hash: Option<B::Hash>,
 	/// The usage statistics of the backend. These will be updated on drop.
