@@ -209,31 +209,20 @@ impl OverlayedChanges {
 	/// if `allow_rollback` is true, we will copy state to test change, and change real state when merge success(cost more memory).
 	pub fn merge<M: MergeChange<StorageKey, Option<StorageValue>>>(
 		&mut self,
-		other: &Self,
+		mut other: Self,
 		merge_handle: &M,
-		allow_rollback: bool,
 	) -> Result<(), MergeErr> {
-		let mut tmp_top = OverlayedChangeSet::default();
-		let mut tmp_children = Map::new();
-		let mut tmp_offchain = OffchainOverlayedChanges::default();
-		let (merge_top, merge_children, merge_offchain) = if allow_rollback {
-			tmp_top = self.top.clone();
-			tmp_children = self.children.clone();
-			tmp_offchain = self.offchain.clone();
-			(&mut tmp_top, &mut tmp_children, &mut tmp_offchain)
-		} else {
-			(&mut self.top, &mut self.children, &mut self.offchain)
-		};
-		if let Err(duplicate_keys) = merge_top.merge_custom(other.top.clone(), Some(merge_handle)) {
+		let (merge_top, merge_children, merge_offchain) = (&mut self.top, &mut self.children, &mut self.offchain);
+		if let Err(duplicate_keys) = merge_top.merge_custom(std::mem::take(&mut other.top), Some(merge_handle)) {
 			return if duplicate_keys.is_empty() {
 				Err(MergeErr::Unfinished("OverlayedChanges merge top meet unfinished transaction"))
 			} else {
 				Err(MergeErr::DuplicateTopKeys(duplicate_keys))
 			}
 		};
-		for (key, (set, info)) in other.children.iter() {
-			if let Some((changeset, _info)) = merge_children.get_mut(key) {
-				if let Err(duplicate_keys) = changeset.merge(set.clone()) {
+		for (key, (set, info)) in other.children.into_iter() {
+			if let Some((changeset, _info)) = merge_children.get_mut(&key) {
+				if let Err(duplicate_keys) = changeset.merge(set) {
 					return if duplicate_keys.is_empty() {
 						Err(MergeErr::Unfinished("OverlayedChanges merge children meet unfinished transaction"))
 					} else {
@@ -241,7 +230,7 @@ impl OverlayedChanges {
 					}
 				}
 			} else {
-				merge_children.insert(key.clone(), (set.clone(), info.clone()));
+				merge_children.insert(key, (set, info));
 			}
 		}
 		if let Err(duplicate_keys) = merge_offchain.overlay_mut().merge(other.offchain.overlay().clone()) {
@@ -251,17 +240,12 @@ impl OverlayedChanges {
 				Err(MergeErr::DuplicateOffchainKeys(duplicate_keys))
 			}
 		};
-		if allow_rollback {
-			self.top = tmp_top;
-			self.children = tmp_children;
-			self.offchain = tmp_offchain;
-		}
 
 		let offset = self.transaction_index_ops.last().map(|tio| match tio {
 			IndexOperation::Insert { extrinsic: e, .. } => *e + 1,
 			IndexOperation::Renew { extrinsic: e, .. } => *e + 1,
 		}).unwrap_or(0);
-		for mut other_tio in other.transaction_index_ops.clone() {
+		for mut other_tio in other.transaction_index_ops {
 			match &mut other_tio {
 				IndexOperation::Insert { extrinsic: e, .. } => *e += offset,
 				IndexOperation::Renew { extrinsic: e, .. } => *e += offset,

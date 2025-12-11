@@ -615,7 +615,7 @@ where
         let mut merge_info = MergeInfo::default();
         let mut mth_merge = std::env::var("MTH_MERGE").unwrap_or("false".into()).parse().unwrap_or(false);
         if merge_in_thread_order { mth_merge = false; }
-        let allow_rollback = std::env::var("MTH_MERGE_ROLLBACK").unwrap_or("true".into()).parse().unwrap_or(true);
+        let allow_rollback = std::env::var("MTH_MERGE_ROLLBACK").unwrap_or("false".into()).parse().unwrap_or(false);
         let mut merge_count = 0usize;
         let mut extra_merge_count = (time::Instant::now(), thread_number);
         let mut merge_box: Vec<(u32, MergeType<A, Block>)> = vec![];
@@ -757,15 +757,14 @@ where
         // if failed, return unchanged state.
         if allow_rollback {
             let mut tmp_state = to.1.clone();
-            if let Err(e) = tmp_state.merge(&from.1, mbh, allow_rollback) {
+            if let Err(e) = tmp_state.merge(std::mem::take(&mut from.1), mbh) {
                 // since both state are not changed. we choose to keep `to` and drop `from`
                 return Err((to, from, e));
             }
             to.1 = tmp_state;
         } else {
-            if let Err(e) = to.1.merge(&from.1, mbh, allow_rollback) {
-                // since `to` state is dirty, we should keep `from` and drop `to`
-                return Err((from, to, e));
+            if let Err(e) = to.1.merge(std::mem::take(&mut from.1), mbh) {
+                panic!("Merge threads {:?} and {:?} failed for {e:?}(rollback not allowed)", to.0, from.0);
             }
         }
         let to_threads = to.0.clone();

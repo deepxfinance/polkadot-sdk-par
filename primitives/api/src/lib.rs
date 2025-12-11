@@ -645,16 +645,6 @@ pub trait ApiExt<Block: BlockT> {
 	fn set_storage_transaction_cache(&mut self, storage_transaction_cache: StorageTransactionCache<Block, Self::StateBackend>)
 	where
 		Self: Sized;
-
-	fn merge_all_changes<M: MergeChange<StorageKey, Option<StorageValue>>>(
-		&mut self,
-		_changes: OverlayedChanges,
-		_recorder: Option<ProofRecorder<Block>>,
-		_merge_top: &M,
-		_allow_rollback: bool,
-	) -> Result<(), MergeErr>
-	where
-		Self: Sized;
 }
 
 /// Parameters for [`CallApiAt::call_api_at`].
