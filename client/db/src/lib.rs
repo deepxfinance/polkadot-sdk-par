@@ -1208,7 +1208,10 @@ impl<Block: BlockT> Backend<Block> {
 
 		let offchain_storage = offchain::LocalStorage::new(db.clone());
 
-		let kv_mode = std::env::var("DB_KV_MODE").map(|s| s.parse().unwrap_or(false)).unwrap_or(false);
+		#[cfg(feature = "kvdb")]
+		let kv_mode = true;
+		#[cfg(not(feature = "kvdb"))]
+		let kv_mode = false;
 		let backend = Backend {
 			kv_mode,
 			storage: Arc::new(storage_db),
@@ -1911,7 +1914,6 @@ impl<Block: BlockT> Backend<Block> {
 	fn empty_state(&self) -> RecordStatsState<RefTrackingState<Block>, Block> {
 		let root = EmptyStorage::<Block>::new().0; // Empty trie
 		let db_state = DbStateBuilder::<Block>::new(self.storage.clone(), root)
-			.set_kv_mode(self.kv_mode)
 			.with_optional_cache(self.shared_trie_cache.as_ref().map(|c| c.local_cache()))
 			.build();
 		let state = RefTrackingState::new(db_state, self.storage.clone(), None);
@@ -2404,7 +2406,6 @@ impl<Block: BlockT> sc_client_api::backend::Backend<Block> for Backend<Block> {
 			if let Some(genesis_state) = &*self.genesis_state.read() {
 				let root = genesis_state.root;
 				let db_state = DbStateBuilder::<Block>::new(genesis_state.clone(), root)
-					.set_kv_mode(self.kv_mode)
 					.with_optional_cache(self.shared_trie_cache.as_ref().map(|c| c.local_cache()))
 					.build();
 
@@ -2426,7 +2427,6 @@ impl<Block: BlockT> sc_client_api::backend::Backend<Block> for Backend<Block> {
 				{
 					let root = hdr.state_root;
 					let db_state = DbStateBuilder::<Block>::new(self.storage.clone(), root)
-						.set_kv_mode(self.kv_mode)
 						.with_optional_cache(
 							self.shared_trie_cache.as_ref().map(|c| c.local_cache()),
 						)

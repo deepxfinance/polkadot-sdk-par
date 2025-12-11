@@ -186,8 +186,11 @@ where
         }
         let info = recorder.finalize();
 
+        // TODO kv mode currently not support OTC.
         // 6. spawn a single execution check if env `MTH_CHECK` is true, this is just an extra check, weill not block main block build.
+        #[cfg(not(feature = "kvdb"))]
         let single_thread_check = std::env::var("MTH_CHECK").unwrap_or("false".into()).parse().unwrap_or(false);
+        #[cfg(not(feature = "kvdb"))]
         if single_thread_check && thread_number > 0 {
             let client = self.client.clone();
             let inherent_digests = inherent_digests.clone();
@@ -195,26 +198,21 @@ where
             let main_storage_changes = storage_changes.main_storage_changes.clone();
             let child_storage_changes = storage_changes.child_storage_changes.clone();
             let proof = proof.clone();
-            let kv_mode = std::env::var("DB_KV_MODE").map(|s| s.parse().unwrap_or(false)).unwrap_or(false);
-            if kv_mode {
-                // TODO kv mode currently not support OTC.
-            } else {
-                self.spawn_handle.spawn(
-                    "mth-authorship-proposer",
-                    None,
-                    Box::pin(async move {
-                        Self::one_thread_build_check(
-                            client,
-                            inherent_digests,
-                            block,
-                            main_storage_changes,
-                            child_storage_changes,
-                            proof,
-                        )
-                            .await
-                    })
-                );
-            }
+            self.spawn_handle.spawn(
+                "mth-authorship-proposer",
+                None,
+                Box::pin(async move {
+                    Self::one_thread_build_check(
+                        client,
+                        inherent_digests,
+                        block,
+                        main_storage_changes,
+                        child_storage_changes,
+                        proof,
+                    )
+                        .await
+                })
+            );
         }
 
         self.metrics.report(|metrics| {

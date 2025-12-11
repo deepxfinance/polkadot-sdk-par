@@ -56,4 +56,5 @@ std = [
 	"tracing",
 	"typed-cache/std",
 ]
+kvdb = []
 dev-time = ["typed-cache/dev-time"]

@@ -48,6 +48,7 @@ array-bytes = "4.1"
 
 [features]
 default = []
+kvdb = ["sp-trie/kvdb", "sc-state-db/kvdb"]
 test-helpers = []
 runtime-benchmarks = []
 rocksdb = ["kvdb-rocksdb"]

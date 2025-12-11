@@ -49,16 +49,20 @@ use std::{
 	time::Duration,
 };
 use trie_db::{node::NodeOwned, CachedValue};
+#[cfg(feature = "kvdb")]
 use kv_db::{DBValue, KVCache};
 
 mod shared_cache;
+#[cfg(feature = "kvdb")]
 mod kv_cache;
 
 pub use shared_cache::SharedTrieCache;
+#[cfg(feature = "kvdb")]
 use crate::cache::kv_cache::KValueCacheMap;
 use self::shared_cache::ValueCacheKeyHash;
 
 const LOG_TARGET: &str = "trie-cache";
+#[cfg(feature = "kvdb")]
 const KV_LOG_TARGET: &str = "kv-cache";
 
 /// The maximum amount of time we'll wait trying to acquire the shared cache lock
@@ -85,6 +89,7 @@ const SHARED_NODE_CACHE_MAX_REPLACE_PERCENT: usize = 33;
 /// Same as [`SHARED_NODE_CACHE_MAX_REPLACE_PERCENT`].
 const SHARED_VALUE_CACHE_MAX_REPLACE_PERCENT: usize = 33;
 /// Same as [`SHARED_NODE_CACHE_MAX_REPLACE_PERCENT`].
+#[cfg(feature = "kvdb")]
 const SHARED_KV_CACHE_MAX_REPLACE_PERCENT: usize = 33;
 /// The maximum inline capacity of the local cache, in bytes.
 ///
@@ -340,6 +345,7 @@ pub struct LocalTrieCache<H: Hasher> {
 	/// The local cache for the trie nodes.
 	node_cache: Mutex<NodeCacheMap<H::Out>>,
 
+	#[cfg(feature = "kvdb")]
 	/// The local cache for the key values.
 	kv_cache: Mutex<KValueCacheMap>,
 
@@ -374,6 +380,7 @@ impl<H: Hasher> LocalTrieCache<H> {
 		TrieCache {
 			shared_cache: self.shared.clone(),
 			local_cache: self.node_cache.lock(),
+			#[cfg(feature = "kvdb")]
 			local_kv_cache: self.kv_cache.lock(),
 			value_cache,
 			stats: &self.stats,
@@ -391,6 +398,7 @@ impl<H: Hasher> LocalTrieCache<H> {
 		TrieCache {
 			shared_cache: self.shared.clone(),
 			local_cache: self.node_cache.lock(),
+			#[cfg(feature = "kvdb")]
 			local_kv_cache: self.kv_cache.lock(),
 			value_cache: ValueCache::Fresh(Default::default()),
 			stats: &self.stats,
@@ -430,6 +438,7 @@ impl<H: Hasher> Drop for LocalTrieCache<H> {
 			self.shared_value_cache_access.get_mut().drain().map(|(key, ())| key),
 		);
 
+		#[cfg(feature = "kvdb")]
 		shared_inner.kv_cache_mut().update(self.kv_cache.get_mut().drain())
 	}
 }
@@ -528,6 +537,7 @@ impl<H: Hasher> ValueCache<'_, H> {
 pub struct TrieCache<'a, H: Hasher> {
 	shared_cache: SharedTrieCache<H>,
 	local_cache: MutexGuard<'a, NodeCacheMap<H::Out>>,
+	#[cfg(feature = "kvdb")]
 	local_kv_cache: MutexGuard<'a, KValueCacheMap>,
 	value_cache: ValueCache<'a, H>,
 	stats: &'a TrieHitStats,
@@ -663,6 +673,7 @@ impl<'a, H: Hasher> trie_db::TrieCache<NodeCodec<H>> for TrieCache<'a, H> {
 	}
 }
 
+#[cfg(feature = "kvdb")]
 impl<'a, H: Hasher> KVCache<H> for TrieCache<'a, H> {
 	fn lookup_value_for_key(&mut self, hash: H::Out, key: &[u8], pad: Option<u8>) -> Option<DBValue> {
 		let full_key = [hash.as_ref(), key, [pad.unwrap_or_default()].as_slice()].concat();
