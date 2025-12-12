@@ -117,7 +117,7 @@ pub fn take_cache<T: FullCodec + TStorage, F>(key: &[u8], _f: F) -> Option<T> wh
 	) {
 		Some(Some(value)) => value,
 		Some(None) => {
-			let res = take(key);
+			let res = get(key);
 			if res.is_some() {
 				sp_io::mut_typed_cache(|o| o.kill::<T>(key_prefix(key), key));
 			} else {
