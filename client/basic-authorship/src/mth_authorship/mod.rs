@@ -97,14 +97,14 @@ pub trait BlockPropose<Block: BlockT> {
 /// Special trait for mth authorship used to generate extend extrinsic before finalize.
 pub trait ExtendExtrinsic {
     /// Input runtime api with latest state.
-    /// Return extrinsic with group_info
-    fn extend_extrinsic<Block: BlockT, Api: ApiExt<Block> + SpotRuntimeApi<Block> + PerpRuntimeApi<Block>>(api: &Api, hash: <Block as BlockT>::Hash) -> Vec<Block::Extrinsic>;
+    /// Return execute info
+    fn extend_extrinsic<Block: BlockT, Api: ApiExt<Block> + SpotRuntimeApi<Block> + PerpRuntimeApi<Block>>(api: &Api, hash: <Block as BlockT>::Hash) -> Vec<u8>;
 }
 
 pub struct EmptyExtendTx;
 
 impl ExtendExtrinsic for EmptyExtendTx {
-    fn extend_extrinsic<Block: BlockT, Api: ApiExt<Block> + SpotRuntimeApi<Block> + PerpRuntimeApi<Block>>(_api: &Api, _hash: <Block as BlockT>::Hash) -> Vec<Block::Extrinsic> {
+    fn extend_extrinsic<Block: BlockT, Api: ApiExt<Block> + SpotRuntimeApi<Block> + PerpRuntimeApi<Block>>(_api: &Api, _hash: <Block as BlockT>::Hash) -> Vec<u8> {
         Vec::new()
     }
 }

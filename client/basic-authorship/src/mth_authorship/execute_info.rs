@@ -306,6 +306,8 @@ pub struct ThreadExecutionInfo<B: BlockT> {
     pub invalid: usize,
     /// thread execute time.
     pub time: Duration,
+    /// thread extra execution time.
+    pub extend_time: Duration,
     /// transaction hashes(future transactions are not filtered).
     pub transactions: Vec<B::Hash>,
 }
@@ -318,6 +320,7 @@ impl<B: BlockT> Default for ThreadExecutionInfo<B> {
             invalid: 0,
             future_or_exhausted: 0,
             time: Default::default(),
+            extend_time: Default::default(),
             transactions: vec![],
         }
     }

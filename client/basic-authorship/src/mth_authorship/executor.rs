@@ -495,12 +495,13 @@ where
         };
         thread_info.total = block_builder.extrinsics.len() - initial_applied;
         thread_info.transactions = filter_transactions.into_iter().collect();
-        // TODO should we loop call this `E::extend_extrinsic`? does it will generate new transaction by extended result?
-        let _extend_extrinsics = E::extend_extrinsic(&*block_builder.api, block_builder.parent_hash);
+        let extend_start = time::Instant::now();
+        let _ = E::extend_extrinsic(&*block_builder.api, block_builder.parent_hash);
+        thread_info.extend_time = extend_start.elapsed();
+        thread_info.time = thread_start.elapsed();
         Self::thread_finish_log(
             block,
             &thread_name,
-            thread_start,
             thread_time,
             reason,
             &block_builder,
@@ -508,7 +509,6 @@ where
             round_execute_collect,
             limit_execution_time,
         );
-        thread_info.time = thread_start.elapsed();
 
         (unqueue_invalid, end_reason, thread_info)
     }
@@ -516,7 +516,6 @@ where
     fn thread_finish_log(
         block: <<Block as BlockT>::Header as HeaderT>::Number,
         thread_name: &String,
-        thread_start: time::Instant,
         thread_time: Duration,
         reason: &str,
         block_builder: &BlockBuilder<Block, C, B>,
@@ -552,7 +551,7 @@ where
         #[cfg(feature = "dev-time")]
         let round_info = {
             let (round_times, times, execute_time, commit_time, rollback_time) = times(&block_builder, &thread_name);
-            let extra = thread_start.elapsed().as_nanos().saturating_sub(execute_time);
+            let extra = thread_info.time.as_nanos().saturating_sub(execute_time);
             let round_with_times = round_execute_collect.iter().zip(round_times.into_iter()).map(|(txs, time)| {
                 let tx_num = (*txs).max(1);
                 let io_time = time[1] + time[3];
@@ -588,8 +587,9 @@ where
         };
         debug!(
             target: LOG_TARGET,
-            "[Execute Block {block}] Thread {thread_name} {reason}({}{} ms) {}/{}{invalid_info} executed in {} rounds{round_info}.",
-            thread_start.elapsed().as_millis(),
+            "[Execute Block {block}] Thread {thread_name} {reason} {}({}){} ms {}/{}{invalid_info} executed in {} rounds{round_info}.",
+            thread_info.time.as_millis(),
+            thread_info.extend_time.as_millis(),
             limit_millis_info,
             thread_info.applied(),
             thread_info.total,
