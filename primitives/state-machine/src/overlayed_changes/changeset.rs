@@ -198,7 +198,7 @@ impl<V> OverlayedEntry<V> {
 	}
 
 	/// Mutable reference to the most recent version.
-	fn value_mut(&mut self) -> &mut V {
+	pub fn value_mut(&mut self) -> &mut V {
 		&mut self.transactions.last_mut().expect(PROOF_OVERLAY_NON_EMPTY).value
 	}
 
@@ -431,6 +431,7 @@ pub trait MergeChange<K, V> {
 		&self,
 		_local: &mut BTreeMap<K, OverlayedEntry<V>>,
 		_other: &mut BTreeMap<K, OverlayedEntry<V>>,
+		_in_order: bool,
 	) -> Vec<K>;
 
 	/// Finalize state if after all merge finished.(e.g. delete tmp values when merge_changes).
@@ -448,7 +449,8 @@ impl<K: Ord + Hash + Clone, V: PartialEq> MergeChange<K, V> for DefaultMerge {
 	fn merge_changes(
 		&self,
 		local: &mut BTreeMap<K, OverlayedEntry<V>>, 
-		other: &mut BTreeMap<K, OverlayedEntry<V>>
+		other: &mut BTreeMap<K, OverlayedEntry<V>>,
+		_in_order: bool,
 	) -> Vec<K>  {
 		let mut duplicate_keys = Vec::new();
 		for (k, v) in core::mem::replace(other, Default::default()) {
@@ -476,11 +478,11 @@ impl<K: Ord + Hash + Clone, V: PartialEq> OverlayedMap<K, V> {
 		M::merge_weight(&self.changes)
 	}
 	
-	pub fn merge(&mut self, other: Self) -> Result<(), Vec<K>> {
-		self.merge_custom::<DefaultMerge>(other, None)
+	pub fn merge(&mut self, other: Self, in_order: bool) -> Result<(), Vec<K>> {
+		self.merge_custom::<DefaultMerge>(other, in_order, None)
 	}
 	
-	pub fn merge_custom<M: MergeChange<K, V>>(&mut self, mut other: Self, custom: Option<&M>) -> Result<(), Vec<K>> {
+	pub fn merge_custom<M: MergeChange<K, V>>(&mut self, mut other: Self, in_order: bool, custom: Option<&M>) -> Result<(), Vec<K>> {
 		// 1. If local or other change set have dirty key, that means some transaction not closed or rollback.
 		// Unfinished change should not merge.
 		if self.transaction_depth() != 0 || other.transaction_depth() != 0 {
@@ -490,12 +492,12 @@ impl<K: Ord + Hash + Clone, V: PartialEq> OverlayedMap<K, V> {
 		// 3. merge changes.
 		let duplicate_keys = if let Some(m) = custom {
 			[
-				m.merge_changes(&mut self.changes, &mut other.changes),
-				DefaultMerge::default().merge_changes(&mut self.changes, &mut other.changes),
+				m.merge_changes(&mut self.changes, &mut other.changes, in_order),
+				DefaultMerge::default().merge_changes(&mut self.changes, &mut other.changes, in_order),
 			]
 				.concat()
 		} else {
-			DefaultMerge::default().merge_changes(&mut self.changes, &mut other.changes)
+			DefaultMerge::default().merge_changes(&mut self.changes, &mut other.changes, in_order)
 		};
 		if !duplicate_keys.is_empty() {
 			return Err(duplicate_keys);
@@ -732,7 +734,7 @@ mod test {
 		changeset2.set(b"key6".to_vec(), Some(b"val6".to_vec()), Some(100));
 		changeset2.commit_transaction().unwrap();
 
-		changeset1.merge(changeset2).unwrap();
+		changeset1.merge(changeset2, false).unwrap();
 		assert_changes(&changeset1, &all_changes);
 	}
 	#[test]
@@ -761,7 +763,7 @@ mod test {
 		];
 		assert_changes(&changeset2, &changes2);
 
-		assert_eq!(changeset1.merge(changeset2), Err(vec![b"key0".to_vec()]));
+		assert_eq!(changeset1.merge(changeset2, false), Err(vec![b"key0".to_vec()]));
 	}
 
 	#[test]

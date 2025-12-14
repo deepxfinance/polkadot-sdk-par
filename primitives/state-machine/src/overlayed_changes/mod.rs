@@ -210,10 +210,11 @@ impl OverlayedChanges {
 	pub fn merge<M: MergeChange<StorageKey, Option<StorageValue>>>(
 		&mut self,
 		mut other: Self,
+		in_order: bool,
 		merge_handle: &M,
 	) -> Result<(), MergeErr> {
 		let (merge_top, merge_children, merge_offchain) = (&mut self.top, &mut self.children, &mut self.offchain);
-		if let Err(duplicate_keys) = merge_top.merge_custom(std::mem::take(&mut other.top), Some(merge_handle)) {
+		if let Err(duplicate_keys) = merge_top.merge_custom(std::mem::take(&mut other.top), in_order, Some(merge_handle)) {
 			return if duplicate_keys.is_empty() {
 				Err(MergeErr::Unfinished("OverlayedChanges merge top meet unfinished transaction"))
 			} else {
@@ -222,7 +223,7 @@ impl OverlayedChanges {
 		};
 		for (key, (set, info)) in other.children.into_iter() {
 			if let Some((changeset, _info)) = merge_children.get_mut(&key) {
-				if let Err(duplicate_keys) = changeset.merge(set) {
+				if let Err(duplicate_keys) = changeset.merge(set, in_order) {
 					return if duplicate_keys.is_empty() {
 						Err(MergeErr::Unfinished("OverlayedChanges merge children meet unfinished transaction"))
 					} else {
@@ -233,7 +234,7 @@ impl OverlayedChanges {
 				merge_children.insert(key, (set, info));
 			}
 		}
-		if let Err(duplicate_keys) = merge_offchain.overlay_mut().merge(other.offchain.overlay().clone()) {
+		if let Err(duplicate_keys) = merge_offchain.overlay_mut().merge(other.offchain.overlay().clone(), in_order) {
 			return if duplicate_keys.is_empty() {
 				Err(MergeErr::Unfinished("OverlayedChanges merge offchain meet unfinished transaction"))
 			} else {

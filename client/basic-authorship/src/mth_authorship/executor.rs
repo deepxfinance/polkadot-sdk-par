@@ -289,11 +289,13 @@ where
             self.spawn_execute_groups(
                 parent_number,
                 block_builder,
+                &mut mbh,
                 mth_execute_deadline.clone(),
                 inherents.clone(),
                 multi_groups,
                 merge_tx.clone(),
                 round_tx,
+                merge_in_thread_order,
                 limit_execution_time,
             );
 
@@ -349,11 +351,13 @@ where
         &self,
         parent_number: <<Block as BlockT>::Header as HeaderT>::Number,
         block_builder: &mut BlockBuilder<Block, C, B>,
+        mbh: &mut MBH,
         mth_execute_deadline: time::Instant,
         inherents: Vec<<Block as BlockT>::Extrinsic>,
         extrinsic_group: Vec<Vec<(usize, <A as TransactionPool>::Hash, Block::Extrinsic)>>,
         merge_tx: Sender<(MergeType<A, Block>, Option<ThreadExecutionInfo<Block>>)>,
         round_tx: usize,
+        merge_in_thread_order: bool,
         limit_execution_time: bool,
     ) {
         let (init_cache, init_changes, _, init_recorder) = block_builder.api.take_all_changes();
@@ -363,12 +367,15 @@ where
             let estimated_header_size = block_builder.estimated_header_size.clone();
             let extrinsics = block_builder.extrinsics.clone();
             let context = Some(block_builder.context.clone());
-            let init_cache = init_cache.copy_data();
-            let init_changes = init_changes.clone();
+            let mut init_cache = init_cache.copy_data();
+            let mut init_changes = init_changes.clone();
             let init_recorder = init_recorder.clone();
             let thread_client = self.client.clone();
             let block = parent_number + One::one();
             let mut res_tx = merge_tx.clone();
+            if merge_in_thread_order {
+                mbh.prepare_thread_in_order(i + 1, pending_txs.len(), &mut init_cache, &mut init_changes);
+            }
             self.spawn_handle.spawn_blocking(
                 "mth-authorship-proposer",
                 None,
@@ -757,13 +764,13 @@ where
         // if failed, return unchanged state.
         if allow_rollback {
             let mut tmp_state = to.1.clone();
-            if let Err(e) = tmp_state.merge(std::mem::take(&mut from.1), mbh) {
+            if let Err(e) = tmp_state.merge(std::mem::take(&mut from.1), static_order, mbh) {
                 // since both state are not changed. we choose to keep `to` and drop `from`
                 return Err((to, from, e));
             }
             to.1 = tmp_state;
         } else {
-            if let Err(e) = to.1.merge(std::mem::take(&mut from.1), mbh) {
+            if let Err(e) = to.1.merge(std::mem::take(&mut from.1), static_order, mbh) {
                 panic!("Merge threads {:?} and {:?} failed for {e:?}(rollback not allowed)", to.0, from.0);
             }
         }

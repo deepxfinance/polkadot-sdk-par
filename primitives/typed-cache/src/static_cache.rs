@@ -1,5 +1,5 @@
 #![allow(unused)]
-use codec::{Encode, Output};
+use codec::{FullCodec, Output};
 use sp_std::boxed::Box;
 use sp_std::collections::btree_map::{BTreeMap, Entry::{Vacant, Occupied}};
 use sp_std::sync::Arc;
@@ -38,7 +38,8 @@ pub struct OverlayCache {
 
 #[cfg(feature = "std")]
 impl OverlayCache {
-    pub fn handle_mut<V: Clone + Encode + 'static, F, O>(&mut self, space: &[u8], f: F) -> O
+    /// Handle with `f` for mutable reference with create default space if not exist.
+    pub fn handle_mut_or_default<V: Clone + FullCodec + 'static, F, O>(&mut self, space: &[u8], f: F) -> O
     where
         F: FnOnce(&mut AnyStorage) -> O
     {
@@ -51,6 +52,15 @@ impl OverlayCache {
         f(&mut self.inner.get_mut(space).unwrap())
     }
 
+    /// Handle with `f` for mutable reference without create default space.
+    pub fn handle_mut<F, O>(&mut self, space: &[u8], f: F) -> Option<O>
+    where
+        F: FnOnce(&mut AnyStorage) -> O
+    {
+        self.inner.get_mut(space).map(|v| f(v))
+    }
+
+    /// Handle with `f` for immutable reference without create default space.
     pub fn handle_ref<F, O>(&self, space: &[u8], f: F) -> Option<O>
     where
         F: FnOnce(&AnyStorage) -> O
@@ -61,7 +71,7 @@ impl OverlayCache {
 
 #[cfg(feature = "std")]
 impl OverlayCache {
-    pub fn put<V: Clone + Encode + 'static>(&mut self, space: &[u8], key: &[u8], value: V) {
+    pub fn put<V: Clone + FullCodec + 'static>(&mut self, space: &[u8], key: &[u8], value: V) {
         #[cfg(all(feature = "std", feature = "dev-time"))]
         let start = std::time::Instant::now();
         let f = |storage: &mut AnyStorage| {
@@ -75,10 +85,38 @@ impl OverlayCache {
                 PUT.lock().unwrap().entry(space.to_vec()).or_default().push((time1, time));
             }
         };
-        self.handle_mut::<V, _, _>(space, f);
+        self.handle_mut_or_default::<V, _, _>(space, f);
     }
 
-    pub fn get<V: Clone + Encode + 'static, F>(&mut self, space: &[u8], key: &[u8], init: Option<F>) -> Option<Option<V>>
+    pub fn try_update_raw(&mut self, space: &[u8], key: &[u8], data: Vec<u8>) {
+        #[cfg(all(feature = "std", feature = "dev-time"))]
+        let start = std::time::Instant::now();
+        let f = |storage: &mut AnyStorage| {
+            storage.try_update_raw(space, key, data);
+            #[cfg(all(feature = "std", feature = "dev-time"))]
+            {
+                let time = start.elapsed();
+                PUT.lock().unwrap().entry(space.to_vec()).or_default().push((Default::default(), time));
+            }
+        };
+        self.handle_mut(space, f);
+    }
+
+    pub fn try_kill(&mut self, space: &[u8], key: &[u8]) {
+        #[cfg(all(feature = "std", feature = "dev-time"))]
+        let start = std::time::Instant::now();
+        let f = |storage: &mut AnyStorage| {
+            storage.try_kill(space, key);
+            #[cfg(all(feature = "std", feature = "dev-time"))]
+            {
+                let time = start.elapsed();
+                PUT.lock().unwrap().entry(space.to_vec()).or_default().push((Default::default(), time));
+            }
+        };
+        self.handle_mut(space, f);
+    }
+
+    pub fn get<V: Clone + FullCodec + 'static, F>(&mut self, space: &[u8], key: &[u8], init: Option<F>) -> Option<Option<V>>
     where
         F: Fn(&[u8]) -> Option<V>
     {
@@ -96,7 +134,7 @@ impl OverlayCache {
             }
             res
         };
-        self.handle_mut::<V, _, _>(space, f).unwrap_or(None)
+        self.handle_mut_or_default::<V, _, _>(space, f).unwrap_or(None)
     }
 
     pub fn get_change_encode(&self, space: &[u8], key: &[u8]) -> Option<Option<Vec<u8>>> {
@@ -114,7 +152,7 @@ impl OverlayCache {
         self.handle_ref::<_, _>(space, f)?
     }
 
-    pub fn get_change<V: Clone + Encode + 'static>(&self, space: &[u8], key: &[u8]) -> Option<Option<V>> {
+    pub fn get_change<V: Clone + FullCodec + 'static>(&self, space: &[u8], key: &[u8]) -> Option<Option<V>> {
         #[cfg(all(feature = "std", feature = "dev-time"))]
         let start = std::time::Instant::now();
         let f = |storage: &AnyStorage| {
@@ -132,7 +170,7 @@ impl OverlayCache {
         self.handle_ref::<_, _>(space, f)?.unwrap_or(None)
     }
 
-    pub fn take<V: Clone + Encode + 'static, F>(&mut self, space: &[u8], key: &[u8], init: Option<F>) -> Option<Option<V>>
+    pub fn take<V: Clone + FullCodec + 'static, F>(&mut self, space: &[u8], key: &[u8], init: Option<F>) -> Option<Option<V>>
     where
         F: Fn(&[u8]) -> Option<V>
     {
@@ -150,10 +188,10 @@ impl OverlayCache {
             }
             res
         };
-        self.handle_mut::<V, _, _>(space, f).unwrap_or(None)
+        self.handle_mut_or_default::<V, _, _>(space, f).unwrap_or(None)
     }
 
-    pub fn kill<V: Clone + Encode + 'static>(&mut self, space: &[u8], key: &[u8]) {
+    pub fn kill<V: Clone + FullCodec + 'static>(&mut self, space: &[u8], key: &[u8]) {
         #[cfg(all(feature = "std", feature = "dev-time"))]
         let start = std::time::Instant::now();
         let f = |storage: &mut AnyStorage| {
@@ -167,10 +205,10 @@ impl OverlayCache {
                 PUT.lock().unwrap().entry(space.to_vec()).or_default().push((time1, time));
             }
         };
-        self.handle_mut::<V, _, _>(space, f);
+        self.handle_mut_or_default::<V, _, _>(space, f);
     }
 
-    pub fn mutate<V: Clone + Encode + 'static, F, M>(&mut self, space: &[u8], key: &[u8], init: Option<F>, mutate: M) -> bool
+    pub fn mutate<V: Clone + FullCodec + 'static, F, M>(&mut self, space: &[u8], key: &[u8], init: Option<F>, mutate: M) -> bool
     where
         F: Fn(&[u8]) -> Option<V>,
         M: FnOnce(Option<&mut V>)
@@ -189,10 +227,10 @@ impl OverlayCache {
             }
             res
         };
-        self.handle_mut::<V, _, _>(space, f).unwrap_or(false)
+        self.handle_mut_or_default::<V, _, _>(space, f).unwrap_or(false)
     }
 
-    pub fn cache<V: Clone + Encode + 'static>(&mut self, space: &[u8], key: &[u8], value: Option<V>) {
+    pub fn cache<V: Clone + FullCodec + 'static>(&mut self, space: &[u8], key: &[u8], value: Option<V>) {
         #[cfg(all(feature = "std", feature = "dev-time"))]
         let start = std::time::Instant::now();
         let f = |storage: &mut AnyStorage| {
@@ -206,7 +244,7 @@ impl OverlayCache {
                 PUT.lock().unwrap().entry(space.to_vec()).or_default().push((time1, time));
             }
         };
-        self.handle_mut::<V, _, _>(space, f);
+        self.handle_mut_or_default::<V, _, _>(space, f);
     }
 }
 
@@ -271,10 +309,10 @@ pub mod test {
     use crate::{OverlayCache, StorageIO};
 
     pub mod a {
-        use codec::Encode;
+        use codec::{Decode, Encode};
         use crate::{OverlayCache, StorageIO};
 
-        #[derive(Clone, Default, Eq, PartialEq, Encode, Debug)]
+        #[derive(Clone, Default, Eq, PartialEq, Encode, Decode, Debug)]
         pub struct Account {
             pub address: Vec<u8>,
             pub nonce: u32,

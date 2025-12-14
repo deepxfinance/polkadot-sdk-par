@@ -39,6 +39,7 @@ impl MergeChange<StorageKey, Option<StorageValue>> for MergeBalances {
         &self,
         local: &mut BTreeMap<StorageKey, OverlayedEntry<Option<StorageValue>>>,
         other: &mut BTreeMap<StorageKey, OverlayedEntry<Option<StorageValue>>>,
+        _in_order: bool,
     ) -> Vec<StorageKey> {
         let offset: u32 = get_map_value(local, &EXTRINSIC_INDEX.to_vec()).unwrap_or_default();
         // Custom merge for "Balances TotalIssuance"

@@ -389,7 +389,7 @@ fn generate_runtime_api_base_structures() -> Result<TokenStream> {
 				std::cell::RefCell::borrow(&self.typed_cache).get_change_encode(space, key)
 			}
 
-			fn get_typed_change<T: Clone + codec::Encode + 'static>(&self, space: &[u8], key: &#crate_::StorageKey) -> std::option::Option<std::option::Option<T>>
+			fn get_typed_change<T: Clone + codec::FullCodec + 'static>(&self, space: &[u8], key: &#crate_::StorageKey) -> std::option::Option<std::option::Option<T>>
 			where
 				Self: Sized
 			{

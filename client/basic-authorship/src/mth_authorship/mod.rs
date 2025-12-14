@@ -14,7 +14,7 @@ use sp_consensus::Proposal;
 use sp_spot_api::SpotRuntimeApi;
 use sp_perp_api::PerpRuntimeApi;
 use sp_runtime::traits::Block as BlockT;
-use sp_state_machine::{MergeChange, OverlayedEntry, StorageKey, StorageValue};
+use sp_state_machine::{MergeChange, OverlayCache, OverlayedChanges, OverlayedEntry, StorageKey, StorageValue};
 pub use merge_system::*;
 pub use mth_authorship::*;
 use sp_core::ExecutionContext;
@@ -27,6 +27,8 @@ use crate::mth_authorship::execute_info::BlockExecuteInfo;
 pub trait MultiThreadBlockBuilder<B, Block: BlockT, Api>: MergeChange<StorageKey, Option<StorageValue>> + Default {
     /// Pre handle the state for future [MergeChange::merge_changes]
     fn prepare(&mut self, _backend: &Arc<B>, _parent: &Block::Hash, _api: &Api) {}
+
+    fn prepare_thread_in_order(&mut self, _thread: usize, _txs: usize, _cache: &mut OverlayCache, _changes: &mut OverlayedChanges) {}
 
     /// Copy a new Self for another spawn merge work.
     fn copy_state(&self) -> Self;

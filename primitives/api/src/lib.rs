@@ -613,7 +613,7 @@ pub trait ApiExt<Block: BlockT> {
 	where
 		Self: Sized;
 
-	fn get_typed_change<T: Clone + codec::Encode + 'static>(&self, space: &[u8], key: &StorageKey) -> Option<Option<T>>
+	fn get_typed_change<T: Clone + codec::FullCodec + 'static>(&self, space: &[u8], key: &StorageKey) -> Option<Option<T>>
 	where
 		Self: Sized;
 	

@@ -50,6 +50,7 @@ impl<B: Backend<Block>, Block: BlockT> MergeChange<StorageKey, Option<StorageVal
         &self,
         _local: &mut BTreeMap<StorageKey, OverlayedEntry<Option<StorageValue>>>,
         _other: &mut BTreeMap<StorageKey, OverlayedEntry<Option<StorageValue>>>,
+        _in_order: bool,
     ) -> Vec<StorageKey> {
         let _backend_init_total_issuance: u128 = self.backend.as_ref().map(|b| {
             self.parent.map(|h|
