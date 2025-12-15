@@ -764,13 +764,13 @@ where
         // if failed, return unchanged state.
         if allow_rollback {
             let mut tmp_state = to.1.clone();
-            if let Err(e) = tmp_state.merge(std::mem::take(&mut from.1), static_order, mbh) {
+            if let Err(e) = tmp_state.merge(&mut from.1, static_order, mbh) {
                 // since both state are not changed. we choose to keep `to` and drop `from`
                 return Err((to, from, e));
             }
             to.1 = tmp_state;
         } else {
-            if let Err(e) = to.1.merge(std::mem::take(&mut from.1), static_order, mbh) {
+            if let Err(e) = to.1.merge(&mut from.1, static_order, mbh) {
                 panic!("Merge threads {:?} and {:?} failed for {e:?}(rollback not allowed)", to.0, from.0);
             }
         }

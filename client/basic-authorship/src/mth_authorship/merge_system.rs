@@ -484,8 +484,8 @@ impl<RE: Encode + Decode + Debug + Clone> MergeChange<StorageKey, Option<Storage
         self.merge_event_count(local, other, offset, in_order);
         // update "System Events"
         self.merge_events(local, other, offset, in_order);
-        // update "System EventsMap"
-        self.merge_events_map(local, other, offset, in_order);
+        // update "System EventsMap"(disabled for not used before `finalize`)
+        // self.merge_events_map(local, other, offset, in_order);
         // update "System ExecutionPhase" u32
         self.merge_execution_phase(local, other, offset, in_order);
         // update "System ExtrinsicData"

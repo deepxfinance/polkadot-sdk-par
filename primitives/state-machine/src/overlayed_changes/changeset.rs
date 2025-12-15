@@ -478,11 +478,11 @@ impl<K: Ord + Hash + Clone, V: PartialEq> OverlayedMap<K, V> {
 		M::merge_weight(&self.changes)
 	}
 	
-	pub fn merge(&mut self, other: Self, in_order: bool) -> Result<(), Vec<K>> {
+	pub fn merge(&mut self, other: &mut Self, in_order: bool) -> Result<(), Vec<K>> {
 		self.merge_custom::<DefaultMerge>(other, in_order, None)
 	}
 	
-	pub fn merge_custom<M: MergeChange<K, V>>(&mut self, mut other: Self, in_order: bool, custom: Option<&M>) -> Result<(), Vec<K>> {
+	pub fn merge_custom<M: MergeChange<K, V>>(&mut self, other: &mut Self, in_order: bool, custom: Option<&M>) -> Result<(), Vec<K>> {
 		// 1. If local or other change set have dirty key, that means some transaction not closed or rollback.
 		// Unfinished change should not merge.
 		if self.transaction_depth() != 0 || other.transaction_depth() != 0 {
@@ -734,7 +734,7 @@ mod test {
 		changeset2.set(b"key6".to_vec(), Some(b"val6".to_vec()), Some(100));
 		changeset2.commit_transaction().unwrap();
 
-		changeset1.merge(changeset2, false).unwrap();
+		changeset1.merge(&mut changeset2, false).unwrap();
 		assert_changes(&changeset1, &all_changes);
 	}
 	#[test]
@@ -763,7 +763,7 @@ mod test {
 		];
 		assert_changes(&changeset2, &changes2);
 
-		assert_eq!(changeset1.merge(changeset2, false), Err(vec![b"key0".to_vec()]));
+		assert_eq!(changeset1.merge(&mut changeset2, false), Err(vec![b"key0".to_vec()]));
 	}
 
 	#[test]
