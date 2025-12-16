@@ -119,7 +119,9 @@ impl <'db, 'cache, H: Hasher> KVDBMut<'db, 'cache, H> {
 
     fn db_insert(&mut self, key: &[u8], pad: Option<u8>, value: DBValue) {
         let key_hash = H::hash(key);
-        self.cache.as_mut().map(|c| (*c.borrow_mut()).cache_value_for_key(key_hash, key, pad, value.to_vec()));
+        self.cache.as_mut().map(|c| (*c.borrow_mut()).cache_value_for_key(
+            &memory_db::prefixed_key::<H>(&key_hash, (key, pad)), value.to_vec())
+        );
         self.db.emplace(key_hash, (key, pad), value.clone());
         self.direct_changes.extend([key, &pad_encode(&pad), &value].concat());
     }
@@ -128,7 +130,9 @@ impl <'db, 'cache, H: Hasher> KVDBMut<'db, 'cache, H> {
     /// Notice!!! Do not support return removed value.
     fn db_remove(&mut self, key: &[u8], pad: Option<u8>) -> Option<DBValue> {
         let key_hash = H::hash(key);
-        self.cache.as_mut().map(|c| (*c.borrow_mut()).remove_value_for_key(key_hash, key, pad));
+        self.cache.as_mut().map(|c| (*c.borrow_mut()).remove_value_for_key(
+            &memory_db::prefixed_key::<H>(&key_hash, (key, pad)))
+        );
         self.db.remove(&key_hash, (key, pad));
         self.direct_changes.extend([key, &pad_encode(&pad), &NULL_DATA].concat());
         None
@@ -136,13 +140,14 @@ impl <'db, 'cache, H: Hasher> KVDBMut<'db, 'cache, H> {
 
     fn db_get(&self, key: &[u8], pad: Option<u8>, update_cache: bool) -> Option<DBValue> {
         if let Some(mut cache) = self.cache.as_ref().map(|c| c.borrow_mut()) {
-            let cache_result = (*cache).lookup_value_for_key(H::hash(key), key, pad);
+            let cache_key = memory_db::prefixed_key::<H>(&H::hash(key), (key, pad));
+            let cache_result = (*cache).lookup_value_for_key(&cache_key);
             match cache_result {
                 Some(value) => Some(value.clone()),
                 None => match self.db.get(&H::hash(key), (key, pad)) {
                     Some(value) => {
                         if update_cache {
-                            (*cache).cache_value_for_key(H::hash(key), key, pad, value.clone());
+                            (*cache).cache_value_for_key(&cache_key, value.clone());
                         }
                         Some(value)
                     }
@@ -169,10 +174,15 @@ impl <'db, 'cache, H: Hasher> KVDBMut<'db, 'cache, H> {
                 let key_hash = H::hash(prefix.0.as_slice());
                 if value == &NULL_DATA {
                     self.db.remove(&key_hash, (prefix.0.as_slice(), prefix.1));
-                    self.cache.as_mut().map(|c| (*c.borrow_mut()).remove_value_for_key(key_hash, &prefix.0, prefix.1));
+                    self.cache.as_mut().map(|c| (*c.borrow_mut()).remove_value_for_key(
+                        &memory_db::prefixed_key::<H>(&key_hash, (prefix.0.as_slice(), prefix.1))
+                    ));
                 } else {
                     self.db.emplace(key_hash, (prefix.0.as_slice(), prefix.1), value.clone());
-                    self.cache.as_mut().map(|c| (*c.borrow_mut()).cache_value_for_key(key_hash, &prefix.0, prefix.1, value));
+                    self.cache.as_mut().map(|c| (*c.borrow_mut()).cache_value_for_key(
+                        &memory_db::prefixed_key::<H>(&key_hash, (prefix.0.as_slice(), prefix.1)),
+                        value,
+                    ));
                 }
             }
             changes

@@ -7,7 +7,7 @@ use hash_db::{
 };
 #[cfg(feature = "std")]
 use std::{
-    borrow::Borrow, cmp::Eq, collections::btree_map::Entry, collections::BTreeMap as Map, hash,
+    borrow::Borrow, cmp::Eq, collections::btree_map::Entry, collections::BTreeMap as Map,
     marker::PhantomData, mem,
 };
 
@@ -228,11 +228,8 @@ where
         for (key, (value, rc)) in other.drain() {
             match self.data.entry(key) {
                 Entry::Occupied(mut entry) => {
-                    if entry.get().1 < 0 {
-                        entry.get_mut().0 = value;
-                    }
-
-                    entry.get_mut().1 = 1;
+                    entry.get_mut().0 = value;
+                    entry.get_mut().1 = rc;
                 },
                 Entry::Vacant(entry) => {
                     entry.insert((value, rc));

@@ -116,8 +116,7 @@ pub struct LocalKVCache<'a, H> {
 
 #[cfg(feature = "std")]
 impl<'a, H: Hasher> KVCache<H> for LocalKVCache<'a, H> {
-	fn lookup_value_for_key(&mut self, hash: H::Out, key: &[u8], pad: Option<u8>) -> Option<DBValue> {
-		let key = [hash.as_ref(), key, [pad.unwrap_or_default()].as_slice()].concat();
+	fn lookup_value_for_key(&mut self, key: &[u8]) -> Option<DBValue> {
 		match self.cache.peek(&key).cloned() {
 			Some(val) => if val.is_empty() {
 				None
@@ -128,24 +127,22 @@ impl<'a, H: Hasher> KVCache<H> for LocalKVCache<'a, H> {
 		}
 	}
 
-	fn cache_value_for_key(&mut self, hash: H::Out, key: &[u8], pad: Option<u8>, value: DBValue) {
-		let full_key = [hash.as_ref(), key, [pad.unwrap_or_default()].as_slice()].concat();
-		self.cache.insert(full_key, value);
+	fn cache_value_for_key(&mut self, key: &[u8], value: DBValue) {
+		self.cache.insert(key.to_vec(), value);
 	}
 
-	fn remove_value_for_key(&mut self, hash: H::Out, key: &[u8], pad: Option<u8>) {
-		let full_key = [hash.as_ref(), key, [pad.unwrap_or_default()].as_slice()].concat();
-		self.cache.insert(full_key, vec![]);
+	fn remove_value_for_key(&mut self, key: &[u8]) {
+		self.cache.insert(key.to_vec(), vec![]);
 	}
 }
 
 #[cfg(not(feature = "std"))]
 impl<H: Hasher> KVCache<H> for LocalKVCache {
-	fn lookup_value_for_key(&mut self, _hash: H::Out, _key: &[u8], _pad: Option<u8>) -> Option<DBValue> {
+	fn lookup_value_for_key(&mut self, _key: &[u8]) -> Option<DBValue> {
 		None
 	}
 
-	fn cache_value_for_key(&mut self, _hash: H::Out, _key: &[u8], _pad: Option<u8>, _value: DBValue) {}
+	fn cache_value_for_key(&mut self, _key: &[u8], _value: DBValue) {}
 
-	fn remove_value_for_key(&mut self, _hash: H::Out, _key: &[u8], _pad: Option<u8>) {}
+	fn remove_value_for_key(&mut self, _key: &[u8]) {}
 }

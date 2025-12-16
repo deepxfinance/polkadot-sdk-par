@@ -675,12 +675,11 @@ impl<'a, H: Hasher> trie_db::TrieCache<NodeCodec<H>> for TrieCache<'a, H> {
 
 #[cfg(feature = "kvdb")]
 impl<'a, H: Hasher> KVCache<H> for TrieCache<'a, H> {
-	fn lookup_value_for_key(&mut self, hash: H::Out, key: &[u8], pad: Option<u8>) -> Option<DBValue> {
-		let full_key = [hash.as_ref(), key, [pad.unwrap_or_default()].as_slice()].concat();
-		if let Some(value) = self.local_kv_cache.peek(&full_key) {
+	fn lookup_value_for_key(&mut self, key: &[u8]) -> Option<DBValue> {
+		if let Some(value) = self.local_kv_cache.peek(key) {
 			return Some(value.clone());
 		}
-		match self.shared_cache.peek_kv_value(full_key.as_slice()) {
+		match self.shared_cache.peek_kv_value(key) {
 			Some(val) => if val.is_empty() {
 				None
 			} else {
@@ -690,14 +689,12 @@ impl<'a, H: Hasher> KVCache<H> for TrieCache<'a, H> {
 		}
 	}
 
-	fn cache_value_for_key(&mut self, hash: H::Out, key: &[u8], pad: Option<u8>, value: DBValue) {
-		let full_key = [hash.as_ref(), key, [pad.unwrap_or_default()].as_slice()].concat();
-		self.local_kv_cache.insert(full_key, value);
+	fn cache_value_for_key(&mut self, key: &[u8], value: DBValue) {
+		self.local_kv_cache.insert(key.to_vec(), value);
 	}
 
-	fn remove_value_for_key(&mut self, hash: H::Out, key: &[u8], pad: Option<u8>) {
-		let full_key = [hash.as_ref(), key, [pad.unwrap_or_default()].as_slice()].concat();
-		self.local_kv_cache.insert(full_key, vec![]);
+	fn remove_value_for_key(&mut self, key: &[u8]) {
+		self.local_kv_cache.insert(key.to_vec(), vec![]);
 	}
 }
 

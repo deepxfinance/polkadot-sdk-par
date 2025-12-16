@@ -91,6 +91,8 @@ use sp_state_machine::{
 	UsageInfo as StateUsageInfo,
 };
 use sp_trie::{cache::SharedTrieCache, prefixed_key, MemoryDB, PrefixedMemoryDB};
+#[cfg(feature = "kvdb")]
+use sp_trie::KVCache;
 
 // Re-export the Database trait so that one can pass an implementation of it.
 pub use sc_state_db::PruningMode;
@@ -1455,6 +1457,8 @@ impl<Block: BlockT> Backend<Block> {
 			last_finalized_num = *block_header.number();
 		}
 
+		#[cfg(feature = "kvdb")]
+		let kv_cache = self.shared_trie_cache.as_ref().map(|cache| cache.local_cache());
 		let imported = if let Some(pending_block) = operation.pending_block {
 			let hash = pending_block.header.hash();
 
@@ -1524,9 +1528,13 @@ impl<Block: BlockT> Backend<Block> {
 				let mut bytes: u64 = 0;
 				let mut removal: u64 = 0;
 				let mut bytes_removal: u64 = 0;
+				#[cfg(feature = "kvdb")]
+				let mut kv_cache_lock = kv_cache.as_ref().map(|cache| cache.as_trie_db_mut_cache());
 				for (mut key, (val, rc)) in operation.db_updates.drain() {
 					self.storage.db.sanitize_key(&mut key);
 					if rc > 0 {
+						#[cfg(feature = "kvdb")]
+						kv_cache_lock.as_mut().map(|cache| cache.cache_value_for_key(&key, val.clone()));
 						ops += 1;
 						bytes += key.len() as u64 + val.len() as u64;
 						if rc == 1 {
@@ -1538,6 +1546,8 @@ impl<Block: BlockT> Backend<Block> {
 							}
 						}
 					} else if rc < 0 {
+						#[cfg(feature = "kvdb")]
+						kv_cache_lock.as_mut().map(|cache| cache.cache_value_for_key(&key, Vec::new()));
 						removal += 1;
 						bytes_removal += key.len() as u64;
 						if rc == -1 {
@@ -1549,6 +1559,8 @@ impl<Block: BlockT> Backend<Block> {
 						}
 					}
 				}
+				#[cfg(feature = "kvdb")]
+				drop(kv_cache_lock);
 				self.state_usage.tally_writes_nodes(ops, bytes);
 				self.state_usage.tally_removed_nodes(removal, bytes_removal);
 
@@ -1734,6 +1746,8 @@ impl<Block: BlockT> Backend<Block> {
 		}
 
 		self.storage.db.commit(transaction)?;
+		#[cfg(feature = "kvdb")]
+		drop(kv_cache);
 
 		// Apply all in-memory state changes.
 		// Code beyond this point can't fail.

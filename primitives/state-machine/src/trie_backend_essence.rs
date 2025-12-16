@@ -715,8 +715,8 @@ where
 		_state_version: StateVersion,
 	) -> (H::Out, S::Overlay) {
 		let mut write_overlay = S::Overlay::default();
-		self.with_kv_cache(|cache| {
-			let mut kvdb = KVDBMut::new(&mut write_overlay, &self.root, cache, true);
+		self.with_kv_cache(|_cache| {
+			let mut kvdb = KVDBMut::new(&mut write_overlay, &self.root, None, true);
 			for (k, v) in delta {
 				if let Some(v) = v {
 					kvdb.insert(k, v.to_vec());
@@ -795,8 +795,8 @@ where
 		_state_version: StateVersion,
 	) -> (H::Out, bool, S::Overlay) {
 		let mut write_overlay = S::Overlay::default();
-		self.with_kv_cache(|cache| {
-			let mut kvdb = KVDBMut::new(&mut write_overlay, &self.root, cache, true);
+		self.with_kv_cache(|_cache| {
+			let mut kvdb = KVDBMut::new(&mut write_overlay, &self.root, None, true);
 			for (k, v) in delta {
 				let k = [child_info.storage_key(), k].concat();
 				if let Some(v) = v {

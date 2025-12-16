@@ -188,31 +188,42 @@ where
 
         // TODO kv mode currently not support OTC.
         // 6. spawn a single execution check if env `MTH_CHECK` is true, this is just an extra check, weill not block main block build.
-        #[cfg(not(feature = "kvdb"))]
         let single_thread_check = std::env::var("MTH_CHECK").unwrap_or("false".into()).parse().unwrap_or(false);
-        #[cfg(not(feature = "kvdb"))]
         if single_thread_check && thread_number > 0 {
-            let client = self.client.clone();
-            let inherent_digests = inherent_digests.clone();
-            let block = block.clone();
-            let main_storage_changes = storage_changes.main_storage_changes.clone();
-            let child_storage_changes = storage_changes.child_storage_changes.clone();
-            let proof = proof.clone();
-            self.spawn_handle.spawn(
-                "mth-authorship-proposer",
-                None,
-                Box::pin(async move {
-                    Self::one_thread_build_check(
-                        client,
-                        inherent_digests,
-                        block,
-                        main_storage_changes,
-                        child_storage_changes,
-                        proof,
-                    )
-                        .await
-                })
-            );
+            #[cfg(feature = "kvdb")]
+            Self::one_thread_build_check(
+                self.client.clone(),
+                inherent_digests,
+                block.clone(),
+                storage_changes.main_storage_changes.clone(),
+                storage_changes.child_storage_changes.clone(),
+                proof.clone(),
+            )
+                .await;
+            #[cfg(not(feature = "kvdb"))]
+            {
+                let client = self.client.clone();
+                let inherent_digests = inherent_digests.clone();
+                let block = block.clone();
+                let main_storage_changes = storage_changes.main_storage_changes.clone();
+                let child_storage_changes = storage_changes.child_storage_changes.clone();
+                let proof = proof.clone();
+                self.spawn_handle.spawn(
+                    "mth-authorship-proposer",
+                    None,
+                    Box::pin(async move {
+                        Self::one_thread_build_check(
+                            client,
+                            inherent_digests,
+                            block,
+                            main_storage_changes,
+                            child_storage_changes,
+                            proof,
+                        )
+                            .await
+                    })
+                );
+            }
         }
 
         self.metrics.report(|metrics| {
@@ -831,7 +842,7 @@ where
                 let build_time = build_timer.elapsed().as_millis();
                 let (block_res, storage_changes_res, _proof_res) = res.into_inner();
                 // total block hash check
-                if block_res.hash() == block.hash() {
+                if block_res.header().state_root() == block.header().state_root() {
                     info!(target: LOG_TARGET, "[OTC Block {number}({block_time} ({init_time} {execute_time} {build_time}) ms)] Check Block Hash success");
                     return;
                 }

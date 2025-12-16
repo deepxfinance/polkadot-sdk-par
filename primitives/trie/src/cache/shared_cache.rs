@@ -617,6 +617,7 @@ impl SharedKVCache {
 			}
 		}
 
+		if add_count == 0 && remove_count == 0 { return; }
 		tracing::debug!(
 			target: super::KV_LOG_TARGET,
 			"Updated the shared kv cache: {} new values, {} removed, {}/{} evicted (length = {}, inline size={}/{}, heap size={}/{})",

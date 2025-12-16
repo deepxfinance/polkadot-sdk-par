@@ -55,6 +55,8 @@ pub use trie_db::{
 };
 /// The Substrate format implementation of `TrieStream`.
 pub use trie_stream::TrieStream;
+#[cfg(feature = "kvdb")]
+pub use kv_db::KVCache;
 
 /// substrate trie layout
 pub struct LayoutV0<H>(PhantomData<H>);

@@ -42,7 +42,7 @@ impl <'db, 'cache, H: Hasher> KVDB<'db, 'cache, H> {
     ) -> Result<DBValue, String> {
         let cache = self.cache.as_ref().map(|c| c.borrow_mut());
         if let Some(mut c) = cache {
-            if let Some(value) = (*c).lookup_value_for_key(hash, &prefix.0, prefix.1) {
+            if let Some(value) = (*c).lookup_value_for_key(&memory_db::prefixed_key::<H>(&hash, prefix)) {
                 return Ok(value.to_vec());
             }
         };
@@ -50,7 +50,7 @@ impl <'db, 'cache, H: Hasher> KVDB<'db, 'cache, H> {
             Some(value) => {
                 let cache = self.cache.as_ref().map(|c| c.borrow_mut());
                 cache.map(|mut c| {
-                    (*c).cache_value_for_key(hash, &prefix.0, prefix.1, value.clone())
+                    (*c).cache_value_for_key(&memory_db::prefixed_key::<H>(&hash, prefix), value.clone())
                 });
                 Ok(value.to_vec())
             },
@@ -75,7 +75,7 @@ impl <'db, 'cache, H: Hasher> KVDB<'db, 'cache, H> {
 impl<'db, 'cache, H: Hasher> KV<H> for KVDB<'db, 'cache, H> {
     fn get(&self, key: &[u8]) -> Option<DBValue> {
         match self.fetch_value(H::hash(key), (key, None)).ok() {
-            Some(v) => if v == [0u8].to_vec() {
+            Some(v) => if v.is_empty() {
                 None
             } else if v == [1u8].to_vec() {
                 Some([0u8].to_vec())
