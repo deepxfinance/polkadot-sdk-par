@@ -97,6 +97,7 @@ pub type OverlayedChangeSet = OverlayedMap<StorageKey, Option<StorageValue>>;
 #[derive(Debug, Clone)]
 pub struct OverlayedMap<K, V> {
 	/// Special ReadOnly data, not join any changes.
+	#[cfg(feature = "kvdb")]
 	pub read_only: BTreeMap<K, OverlayedEntry<V>>,
 	/// Stores the changes that this overlay constitutes.
 	pub changes: BTreeMap<K, OverlayedEntry<V>>,
@@ -115,6 +116,7 @@ pub struct OverlayedMap<K, V> {
 impl<K, V> Default for OverlayedMap<K, V> {
 	fn default() -> Self {
 		Self {
+			#[cfg(feature = "kvdb")]
 			read_only: BTreeMap::new(),
 			changes: BTreeMap::new(),
 			dirty_keys: SmallVec::new(),
@@ -128,6 +130,7 @@ impl<K, V> Default for OverlayedMap<K, V> {
 impl From<sp_core::storage::StorageMap> for OverlayedMap<StorageKey, Option<StorageValue>> {
 	fn from(storage: sp_core::storage::StorageMap) -> Self {
 		Self {
+			#[cfg(feature = "kvdb")]
 			read_only: BTreeMap::new(),
 			changes: storage
 				.into_iter()
@@ -154,6 +157,7 @@ impl From<sp_core::storage::StorageMap> for OverlayedMap<StorageKey, Option<Stor
 impl From<BTreeMap<Vec<u8>, Option<Vec<u8>>>> for OverlayedMap<StorageKey, Option<StorageValue>> {
 	fn from(storage: BTreeMap<Vec<u8>, Option<Vec<u8>>>) -> Self {
 		Self {
+			#[cfg(feature = "kvdb")]
 			read_only: BTreeMap::new(),
 			changes: storage
 				.into_iter()
@@ -252,6 +256,7 @@ fn insert_dirty<K: Ord + Hash>(set: &mut DirtyKeysSets<K>, key: K) -> bool {
 impl<K: Ord + Hash + Clone, V> OverlayedMap<K, V> {
 	/// Move current changes to read_only data.
 	/// This should be called only once.
+	#[cfg(feature = "kvdb")]
 	pub fn read_only(&mut self) {
 		self.dirty_keys.clear();
 		self.num_client_transactions = 0;
@@ -264,11 +269,16 @@ impl<K: Ord + Hash + Clone, V> OverlayedMap<K, V> {
 	}
 
 	/// Set changes data.
-	pub fn set_changes(&mut self, changes: BTreeMap<K, OverlayedEntry<V>>) {
-		self.changes = changes;
+	pub fn extend_changes(&mut self, mut changes: BTreeMap<K, OverlayedEntry<V>>) {
+		if self.changes.is_empty() {
+			core::mem::swap(&mut self.changes, &mut changes);
+		} else {
+			self.changes.extend(changes);
+		}
 	}
 
 	/// Merge read_only and changes into changes.
+	#[cfg(feature = "kvdb")]
 	pub fn merge_read_only(&mut self) {
 		let mut final_changes = std::mem::take(&mut self.read_only);
 		final_changes.extend(std::mem::take(&mut self.changes));
@@ -282,6 +292,7 @@ impl<K: Ord + Hash + Clone, V> OverlayedMap<K, V> {
 	pub fn spawn_child(&self) -> Self {
 		use sp_std::iter::repeat;
 		Self {
+			#[cfg(feature = "kvdb")]
 			read_only: Default::default(),
 			changes: Default::default(),
 			dirty_keys: repeat(Set::new()).take(self.transaction_depth()).collect(),
@@ -301,7 +312,10 @@ impl<K: Ord + Hash + Clone, V> OverlayedMap<K, V> {
 		K: sp_std::borrow::Borrow<Q>,
 		Q: Ord + ?Sized,
 	{
-		self.changes.get(key).or(self.read_only.get(key))
+		#[cfg(feature = "kvdb")]
+		{ self.changes.get(key).or(self.read_only.get(key)) }
+		#[cfg(not(feature = "kvdb"))]
+		self.changes.get(key)
 	}
 
 	/// Set a new value for the specified key.

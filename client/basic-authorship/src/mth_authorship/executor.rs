@@ -419,6 +419,7 @@ where
                         true,
                     );
                     let (_, mut overlay, stc, recorder) = thread_builder.api.take_all_changes();
+                    #[cfg(feature = "kvdb")]
                     overlay.set_storage(b":thread_root".to_vec(), Some(thread_root.encode()));
                     let changes = (vec![i + 1], overlay, stc, recorder, thread_builder.extrinsics.clone(), unqueue_invalid, end_reason);
                     if res_tx.start_send((changes, Some(thread_info))).is_err() {
@@ -518,6 +519,7 @@ where
         let _ = E::extend_extrinsic(&*block_builder.api, block_builder.parent_hash);
         thread_info.extend_time = extend_start.elapsed();
         thread_info.time = thread_start.elapsed();
+        #[cfg(feature = "kvdb")]
         if finish {
             // calculate current thread changes Root And TypedCache also be drained to OverlayedChanges.
             let finish_thread_start = time::Instant::now();
@@ -692,12 +694,15 @@ where
                     let _ = block_builder.api.take_all_changes();
                     // finalize merge
                     changes.1.finalize_merge(mbh);
-                    // move all merged changes as read_only.
-                    changes.1.read_only();
-                    // set block threads info to changes.
-                    set_threads_to_storage::<Block>(block, thread_number as u8, &mut conflict_top_changes);
+                    #[cfg(feature = "kvdb")]
+                    {
+                        // move all merged changes as read_only.
+                        changes.1.read_only();
+                        // set block threads info to changes.
+                        set_threads_to_storage::<Block>(block, thread_number as u8, &mut conflict_top_changes);
+                    }
                     // set conflict changes as new changes for following root calculation.
-                    changes.1.set_changes(conflict_top_changes, conflict_children_changes);
+                    changes.1.extend_changes(conflict_top_changes, conflict_children_changes);
                     // final main block builder state.
                     block_builder.api.set_changes(changes.1);
                     block_builder.api.set_storage_transaction_cache(changes.2);
@@ -897,6 +902,7 @@ where
                     return;
                 }
                 let change_diff = |mth: &Vec<(StorageKey, Option<StorageValue>)>, oth: &Vec<(StorageKey, Option<StorageValue>)>| {
+                    #[cfg(feature = "kvdb")]
                     let filter = vec![
                         // System Threads
                         [38, 170, 57, 78, 234, 86, 48, 224, 124, 72, 174, 12, 149, 88, 206, 247, 156, 181, 201, 244, 0, 171, 65, 57, 156, 107, 139, 81, 248, 209, 136, 25].to_vec(),
@@ -905,6 +911,8 @@ where
                         // b":thread_root",
                         [58, 116, 104, 114, 101, 97, 100, 95, 114, 111, 111, 116].to_vec(),
                     ];
+                    #[cfg(not(feature = "kvdb"))]
+                    let filter = vec![[58, 116, 104, 114, 101, 97, 100, 95, 114, 111, 111, 116].to_vec()];
                     // main_storage_changes check if block different.
                     let mut mth_changes = HashMap::new();
                     for (k, v) in mth.clone() {

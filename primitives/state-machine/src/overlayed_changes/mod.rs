@@ -147,30 +147,32 @@ impl sp_std::fmt::Debug for MergeErr {
 }
 
 impl OverlayedChanges {
+	#[cfg(feature = "kvdb")]
 	pub fn read_only(&mut self) {
 		self.top.read_only();
 		self.children.iter_mut().for_each(|(_, (child, _))| child.read_only());
 		self.offchain.overlay_mut().read_only();
 	}
 
-	pub fn set_changes(
+	pub fn extend_changes(
 		&mut self,
 		top: Changes,
 		children: Map<StorageKey, (Changes, ChildInfo)>,
 	) {
-		self.top.set_changes(top);
+		self.top.extend_changes(top);
 		for (key, (changes, child_info)) in children {
 			if let Some((child, ci)) = self.children.get_mut(&key) {
 				if *ci != child_info { continue; }
-				child.set_changes(changes);
+				child.extend_changes(changes);
 			} else {
 				let mut child = OverlayedChangeSet::default();
-				child.set_changes(changes);
+				child.extend_changes(changes);
 				self.children.insert(key, (child, child_info));
 			}
 		}
 	}
 
+	#[cfg(feature = "kvdb")]
 	pub fn merge_read_only(&mut self) {
 		self.top.merge_read_only();
 		self.children.iter_mut().for_each(|c| c.1.0.merge_read_only());
@@ -770,6 +772,7 @@ impl OverlayedChanges {
 			.take()
 			.and_then(|t| cache.transaction_storage_root.take().map(|tr| (t, tr)))
 			.expect("Transaction was be generated as part of `storage_root`; qed");
+		#[cfg(feature = "kvdb")]
 		self.merge_read_only();
 		let (main_storage_changes, child_storage_changes) = self.drain_committed();
 		let offchain_storage_changes = self.offchain_drain_committed().collect();
