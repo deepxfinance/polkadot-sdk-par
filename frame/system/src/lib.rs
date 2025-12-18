@@ -1364,8 +1364,6 @@ impl<T: Config> Pallet<T> {
 
 	/// Get thread changes root.
 	pub fn finish_thread(thread: u8) -> T::Hash {
-		#[cfg(feature = "std")]
-		let thread_finish_start = std::time::Instant::now();
 		let number = <Number<T>>::get();
 		// We have to store events by block number since `Events` keep change.
 		if let Some(events_raw) = storage::unhashed::take_raw(&Events::<T>::hashed_key()) {
@@ -1373,27 +1371,14 @@ impl<T: Config> Pallet<T> {
 		}
 
 		let version = T::Version::get().state_version();
-		#[cfg(feature = "std")]
-		let storage_root_start = std::time::Instant::now();
 		let storage_root = T::Hash::decode(&mut &sp_io::storage::root(version)[..])
 			.expect("Node is configured to use the same hash; qed");
-		#[cfg(feature = "std")]
-		let storage_root_time = storage_root_start.elapsed().as_micros();
-		#[cfg(feature = "std")]
-		log::debug!(
-			target: "authorship",
-			"finalize thread {} in {:?} micros(storage_root: {storage_root_time} micros)",
-			thread + 1,
-			thread_finish_start.elapsed(),
-		);
 		storage_root
 	}
 
 	/// Remove temporary "environment" entries in storage, compute the storage root and return the
 	/// resulting header for this block.
 	pub fn finalize() -> T::Header {
-		#[cfg(feature = "std")]
-		let finalize_start = std::time::Instant::now();
 		log::debug!(
 			target: LOG_TARGET,
 			"[{:?}] {} extrinsics, length: {} (normal {}%, op: {}%, mandatory {}%) / normal weight:\
@@ -1466,18 +1451,8 @@ impl<T: Config> Pallet<T> {
 		}
 
 		let version = T::Version::get().state_version();
-		#[cfg(feature = "std")]
-		let storage_root_start = std::time::Instant::now();
 		let storage_root = T::Hash::decode(&mut &sp_io::storage::root(version)[..])
 			.expect("Node is configured to use the same hash; qed");
-		#[cfg(feature = "std")]
-		let storage_root_time = storage_root_start.elapsed().as_micros();
-		#[cfg(feature = "std")]
-		log::debug!(
-			target: "authorship",
-			"finalize block {} micros(storage_root: {storage_root_time} micros)",
-			finalize_start.elapsed().as_micros(),
-		);
 		<T::Header as traits::Header>::new(
 			number,
 			Default::default(),

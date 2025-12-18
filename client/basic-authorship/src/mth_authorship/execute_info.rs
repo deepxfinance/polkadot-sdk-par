@@ -179,28 +179,76 @@ impl<B: BlockT> BlockExecuteInfo<B> {
 
     pub fn time_info(&self, limit_time: bool) -> String {
         let limit_time = if limit_time { format!("/{}", self.max_time.as_millis()) } else { "".to_string() };
+        let mut group_info = "".to_string();
+        if self.group.time > Default::default() {
+            group_info = format!(
+                "G{}{} ",
+                self.group.time.as_millis(),
+                if self.group.wait > Default::default() {
+                    format!("(W{})", self.group.wait.as_millis())
+                } else {
+                    "".into()
+                }
+            );
+        }
+        let mut merge_info = "".to_string();
+        if self.merge.mth_time > Default::default() {
+            merge_info = format!(
+                "M{}{} ",
+                self.merge.mth_time.as_millis(),
+                if self.merge.extra_merge_time > Default::default() {
+                    format!("(E{})", self.merge.extra_merge_time.as_millis())
+                } else {
+                    "".into()
+                }
+            );
+        }
+        let mut single_info = "".to_string();
+        let single_thread_time = self.threads.get(&0).map(|i| i.time).unwrap_or_default();
+        if single_thread_time > Default::default() {
+            single_info = format!("S{} ", single_thread_time.as_millis());
+        }
         format!(
-            "{}{limit_time} ms ({}({}) {}({}) {} {})ms",
+            "{}{limit_time}ms({group_info}{merge_info}{single_info}F{})ms",
             self.time.as_millis(),
-            self.group.time.as_millis(),
-            self.group.wait.as_millis(),
-            self.merge.mth_time.as_millis(),
-            self.merge.extra_merge_time.as_millis(),
-            self.threads.get(&0).map(|i| i.time.as_millis()).unwrap_or_default(),
             self.finalize.as_millis(),
         )
     }
 
     pub fn time_debug(&self, limit_time: bool) -> String {
         let limit_time = if limit_time { format!("/{:?}", self.max_time) } else { "".to_string() };
+        let mut group_info = "".to_string();
+        if self.group.time > Default::default() {
+            group_info = format!(
+                "G{:?}{} ",
+                self.group.time,
+                if self.group.wait > Default::default() {
+                    format!("(W{:?})", self.group.wait)
+                } else {
+                    "".into()
+                }
+            );
+        }
+        let mut merge_info = "".to_string();
+        if self.merge.mth_time > Default::default() {
+            merge_info = format!(
+                "M{:?}{} ",
+                self.merge.mth_time,
+                if self.merge.extra_merge_time > Default::default() {
+                    format!("(E{:?})", self.merge.extra_merge_time)
+                } else {
+                    "".into()
+                }
+            );
+        }
+        let mut single_info = "".to_string();
+        let single_thread_time = self.threads.get(&0).map(|i| i.time).unwrap_or_default();
+        if single_thread_time > Default::default() {
+            single_info = format!("S{:?} ", single_thread_time);
+        }
         format!(
-            "{:?}{limit_time} ms ({:?}({:?}) {:?}({:?}) {:?} {:?})",
+            "{:?}{limit_time}({group_info}{merge_info}{single_info}F{:?})",
             self.time,
-            self.group.time,
-            self.group.wait,
-            self.merge.mth_time,
-            self.merge.extra_merge_time,
-            self.threads.get(&0).map(|i| i.time).unwrap_or_default(),
             self.finalize,
         )
     }
@@ -296,7 +344,7 @@ impl GroupInfo {
             "".to_string()
         };
         format!(
-            "Group {} tx in {} ms({} {} micros){}(groups {}->{})(Input: {})",
+            "Group {} tx in {}ms(W{}μs S{}μs){}(groups {}->{})(Input: {})",
             self.tx_count,
             self.time.as_millis(),
             self.wait.as_micros(),

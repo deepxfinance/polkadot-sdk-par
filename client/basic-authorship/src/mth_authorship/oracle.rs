@@ -181,7 +181,7 @@ impl<B: BlockT> ExecutionOracle<B> {
 impl<B: BlockT> BlockOracle<B> for ExecutionOracle<B> {
     fn update_block_duration(&self, time: Duration) {
         *self.block_duration.lock().unwrap() = time;
-        debug!(target: "oracle_exec", "[Update] block_duration {:?} micros", time.as_micros());
+        debug!(target: "oracle_exec", "[Update] block_duration {:?}μs", time.as_micros());
     }
 
     fn update_execute_info(&self, info: &BlockExecuteInfo<B>) {
@@ -193,7 +193,7 @@ impl<B: BlockT> BlockOracle<B> for ExecutionOracle<B> {
         // debug info
         let mut update_info = "".to_string();
         if let Some((exe_avg, new_avg_tx)) = update_avg {
-            update_info += &format!(" exe_avg {} micros, new_avg_tx {} micros", exe_avg.as_micros(), new_avg_tx.as_micros());
+            update_info += &format!(" exe_avg {}μs, new_avg_tx {}μs", exe_avg.as_micros(), new_avg_tx.as_micros());
         }
         if !update_percent.is_empty() || !update_info.is_empty() {
             let full_millis = info.time.as_millis();

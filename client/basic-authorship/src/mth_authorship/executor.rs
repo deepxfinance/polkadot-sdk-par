@@ -592,7 +592,7 @@ where
                 let avg_w = time[3] as usize / tx_num;
                 (*txs, avg, avg.saturating_sub(avg_io), avg_io, avg_rb, avg_w)
             }).collect::<Vec<_>>();
-            trace!(target: LOG_TARGET, "[Execute Block {block}] Thread {thread_name} extra: {extra}({commit_time}/{rollback_time}) nanos, times(min/avg/max/count): {times:?}");
+            trace!(target: LOG_TARGET, "[Execute Block {block}] Thread {thread_name} extra: {extra}({commit_time}/{rollback_time})ns, times(min/avg/max/count): {times:?}");
             format!("([(num, avg, avg_exe, avg_io, avg_rb, avg_w)]: {round_with_times:?})")
         };
         #[cfg(not(feature = "dev-time"))]
@@ -614,7 +614,7 @@ where
         };
         debug!(
             target: LOG_TARGET,
-            "[Execute Block {block}] Thread {thread_name} {reason} {:?}({:?} {:?}){} {}/{}{invalid_info} executed in {} rounds{round_info}.",
+            "[Execute Block {block}] Thread {thread_name} {reason} {:?}(E{:?} F{:?}){} {}/{}{invalid_info} executed in {} rounds{round_info}.",
             thread_info.time,
             thread_info.extend_time,
             thread_info.finish_time,
@@ -760,16 +760,16 @@ where
             allow_rollback,
             static_order,
         );
-        let merge_time = exe_merge_start.elapsed().as_micros();
+        let merge_time = exe_merge_start.elapsed();
         let changes = match merge_result {
-            Ok((changes, to_threads, from_threads)) => {
-                debug!(target: LOG_TARGET, "[MergeCh Block {block}] Merge threads {to_threads:?} and {from_threads:?} in {merge_time} micros");
+            Ok((changes, to_threads, from_threads, merge_transaction_time)) => {
+                debug!(target: LOG_TARGET, "[MergeCh Block {block}] Merge threads {to_threads:?} and {from_threads:?} in {merge_time:?}(STC {merge_transaction_time:?})");
                 changes
             },
             Err((keep, drop, e)) => {
                 error!(
                     target: LOG_TARGET,
-                    "[MergeCh Block {block}] Merge threads keep {:?}, drop [threads {:?}, {} extrinsics] in {merge_time} micros for error: {e:?}",
+                    "[MergeCh Block {block}] Merge threads keep {:?}, drop [threads {:?}, {} extrinsics] in {merge_time:?} for error: {e:?}",
                     keep.0,
                     drop.0,
                     drop.4.len() + drop.5.len() - inherents_len,
@@ -791,7 +791,10 @@ where
         inherents_len: usize,
         allow_rollback: bool,
         static_order: bool,
-    ) -> Result<(MergeType<A, Block, C>, Vec<usize>, Vec<usize>), (MergeType<A, Block, C>, MergeType<A, Block, C>, MergeErr)> {
+    ) -> Result<
+        (MergeType<A, Block, C>, Vec<usize>, Vec<usize>, Duration),
+        (MergeType<A, Block, C>, MergeType<A, Block, C>, MergeErr)
+    > {
         if !static_order && to.1.merge_weight::<MBH>() < from.1.merge_weight::<MBH>() {
             std::mem::swap(&mut to, &mut from);
         }
@@ -830,7 +833,9 @@ where
         }
         let to_threads = to.0.clone();
         to.0.extend(from.0.clone());
+        let merge_transaction_start = time::Instant::now();
         to.2.consolidate(from.2);
+        let merge_transaction_time = merge_transaction_start.elapsed();
         to.2.clear_root();
         to.3 = match (to.3, from.3) {
             (Some(recorder1), Some(recorder2)) => {
@@ -844,7 +849,7 @@ where
         to.4.extend(from.4[inherents_len..].to_vec());
         to.5.extend(from.5.clone());
         to.6 = from.6;
-        Ok((to, to_threads, from.0))
+        Ok((to, to_threads, from.0, merge_transaction_time))
     }
 
     async fn one_thread_build_check(
@@ -1139,27 +1144,24 @@ where
             limit_execution_time,
         )
             .await?;
-        if log::log_enabled!(target: LOG_TARGET, log::Level::Info)
-            || log::log_enabled!(target: LOG_TARGET, log::Level::Warn)
-            || log::log_enabled!(target: LOG_TARGET, log::Level::Error) {
-            info!(
-                target: LOG_TARGET,
-                "🎁 [{source}] Prepared block {} [{}] \
-                [hash: {:?}; parent_hash: {}; {}, threads {thread_number}]",
-                info.number,
-                info.time_info(limit_execution_time),
-                <Block as BlockT>::Hash::from(proposal.block.header().hash()),
-                proposal.block.header().parent_hash(),
-                info.tx_info(),
-            );
-        } else if log::log_enabled!(target: LOG_TARGET, log::Level::Debug)
-            || log::log_enabled!(target: LOG_TARGET, log::Level::Trace) {
+        if log::log_enabled!(target: LOG_TARGET, log::Level::Debug) {
             debug!(
                 target: LOG_TARGET,
                 "🎁 [{source}] Prepared block {} [{}] \
                 [hash: {:?}; parent_hash: {}; {}, threads {thread_number}]",
                 info.number,
                 info.time_debug(limit_execution_time),
+                <Block as BlockT>::Hash::from(proposal.block.header().hash()),
+                proposal.block.header().parent_hash(),
+                info.tx_info(),
+            );
+        } else if log::log_enabled!(target: LOG_TARGET, log::Level::Info) {
+            info!(
+                target: LOG_TARGET,
+                "🎁 [{source}] Prepared block {} [{}] \
+                [hash: {:?}; parent_hash: {}; {}, threads {thread_number}]",
+                info.number,
+                info.time_info(limit_execution_time),
                 <Block as BlockT>::Hash::from(proposal.block.header().hash()),
                 proposal.block.header().parent_hash(),
                 info.tx_info(),
@@ -1249,27 +1251,24 @@ where
             Some(extrinsics_root) => proposal.block.header_mut().set_extrinsics_root(extrinsics_root),
             None => return Err(Self::Error::UnknownBlock("Failed to get extrinsiscs_root".to_string())),
         }
-        if log::log_enabled!(target: LOG_TARGET, log::Level::Info)
-            || log::log_enabled!(target: LOG_TARGET, log::Level::Warn)
-            || log::log_enabled!(target: LOG_TARGET, log::Level::Error) {
-            info!(
-                target: LOG_TARGET,
-                "🎁 [{source}] Prepared block {} [{}] \
-                [hash: {:?}; parent_hash: {}; {}, threads {thread_number}]",
-                info.number,
-                info.time_info(limit_execution_time),
-                <Block as BlockT>::Hash::from(proposal.block.header().hash()),
-                proposal.block.header().parent_hash(),
-                info.tx_info(),
-            );
-        } else if log::log_enabled!(target: LOG_TARGET, log::Level::Debug)
-            || log::log_enabled!(target: LOG_TARGET, log::Level::Trace) {
+        if log::log_enabled!(target: LOG_TARGET, log::Level::Debug) {
             debug!(
                 target: LOG_TARGET,
                 "🎁 [{source}] Prepared block {} [{}] \
                 [hash: {:?}; parent_hash: {}; {}, threads {thread_number}]",
                 info.number,
                 info.time_debug(limit_execution_time),
+                <Block as BlockT>::Hash::from(proposal.block.header().hash()),
+                proposal.block.header().parent_hash(),
+                info.tx_info(),
+            );
+        } else if log::log_enabled!(target: LOG_TARGET, log::Level::Info) {
+            info!(
+                target: LOG_TARGET,
+                "🎁 [{source}] Prepared block {} [{}] \
+                [hash: {:?}; parent_hash: {}; {}, threads {thread_number}]",
+                info.number,
+                info.time_info(limit_execution_time),
                 <Block as BlockT>::Hash::from(proposal.block.header().hash()),
                 proposal.block.header().parent_hash(),
                 info.tx_info(),

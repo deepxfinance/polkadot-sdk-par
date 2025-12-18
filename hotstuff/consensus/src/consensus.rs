@@ -129,7 +129,7 @@ where
             BlockCommit::empty()
         };
         let processed = aux_data.get_high_proposal().unwrap().unwrap_or(Proposal::empty());
-        info!(target: CLIENT_LOG_TARGET, "Start consensus worker with local_timer_duration: {local_timer_duration} millis, slot_duration: {} millis", slot_duration.as_millis());
+        info!(target: CLIENT_LOG_TARGET, "Start consensus worker with local_timer_duration: {local_timer_duration}ms, slot_duration: {}ms", slot_duration.as_millis());
         Self {
             state: consensus_state,
             network,
@@ -908,7 +908,7 @@ where
             (None, Default::default())
         };
         if let Some(payload) = &payload {
-            trace!(target: CLIENT_LOG_TARGET, "~~ get_proposal_payload. {info}({high_state}) next {}:#{} in {} micros", payload.stage, payload.block_number(), time.as_micros());
+            trace!(target: CLIENT_LOG_TARGET, "~~ get_proposal_payload. {info}({high_state}) next {}:#{} in {}μs", payload.stage, payload.block_number(), time.as_micros());
         }
         payload
     }
@@ -1104,7 +1104,7 @@ where
                 .filter(|(n, _)| *n > 0)
                 .map(|(n, time)| (n, time.as_millis())).collect::<Vec<_>>();
             threads_verify.sort_by(|a, b| b.1.cmp(&a.1));
-            warn!(target: CLIENT_LOG_TARGET, "check_payload extrinsic exceed slot_duration({} millis): {check_extrinsic_time} micros(each length & millis: {threads_verify:?})", self.slot_duration.as_millis());
+            warn!(target: CLIENT_LOG_TARGET, "check_payload extrinsic exceed slot_duration({}ms): {check_extrinsic_time}μs(each length & ms: {threads_verify:?})", self.slot_duration.as_millis());
         }
         Ok(false)
     }
