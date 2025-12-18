@@ -1,14 +1,12 @@
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use std::marker::PhantomData;
 use std::sync::Arc;
-use std::{cmp, time};
+use std::time;
 use std::time::Duration;
 use codec::Encode;
 use futures::{SinkExt, StreamExt};
 use futures::channel::mpsc::{Receiver, Sender, channel};
-use futures::task::SpawnExt;
 use log::{debug, error, info, trace, warn};
-use frame_support::storage;
 use sc_block_builder::{BlockBuilder, BlockBuilderApi, BlockBuilderProvider};
 use sc_client_api::{backend, ChildInfo, StorageProof};
 use sc_proposer_metrics::{EndProposingReason, MetricsLink as PrometheusMetrics};
@@ -112,6 +110,7 @@ where
         let thread_number = extrinsic_group.len();
         let max_duration = deadline.saturating_duration_since(propose_with_start);
         let mut recorder = InfoRecorder::<Block>::new()
+            .parent_hash(parent_hash)
             .number(parent_number + One::one())
             .max_time(max_duration)
             .start();
@@ -187,6 +186,8 @@ where
             let extrinsics_root = extrinsics_root::<<Block::Header as HeaderT>::Hashing, <Block as BlockT>::Extrinsic>(&block.extrinsics()[1..]);
             block.header_mut().set_extrinsics_root(extrinsics_root);
         }
+        recorder.set_state_hash(*block.header().state_root());
+        recorder.set_hash(block.header().hash());
         let info = recorder.finalize();
 
         // 6. spawn a single execution check if env `MTH_CHECK` is true, this is just an extra check.
@@ -354,7 +355,7 @@ where
             limit_execution_time,
             false,
         );
-        recorder.threads.insert(0, single_thread_info);
+        recorder.set_thread(single_thread_info);
         if !block_builder.extrinsics.is_empty() || !single_invalid.is_empty() {
             final_end_reason = end_reason;
         }
@@ -453,6 +454,7 @@ where
         }
         let thread_start = time::Instant::now();
         let thread_time = thread_deadline.saturating_duration_since(thread_start);
+        thread_info.time_limit = thread_time;
         if block_builder.extrinsics.is_empty() {
             for inherent in inherents.clone() {
                 block_builder.push(inherent).unwrap();
@@ -532,29 +534,17 @@ where
             };
             thread_info.finish_time = finish_thread_start.elapsed();
         }
-        Self::thread_finish_log(
-            block,
-            &thread_name,
-            thread_time,
-            reason,
-            &block_builder,
-            &thread_info,
-            round_execute_collect,
-            limit_execution_time,
-        );
-
+        thread_info.rounds = round_execute_collect;
+        thread_info.end_reason = reason.to_string();
+        Self::thread_finish_collect(block, &thread_name, &block_builder, &mut thread_info);
         (thread_root, unqueue_invalid, end_reason, thread_info)
     }
 
-    fn thread_finish_log(
-        block: <<Block as BlockT>::Header as HeaderT>::Number,
+    fn thread_finish_collect(
+        _block: <<Block as BlockT>::Header as HeaderT>::Number,
         thread_name: &String,
-        thread_time: Duration,
-        reason: &str,
         block_builder: &BlockBuilder<Block, C, B>,
-        thread_info: &ThreadExecutionInfo<Block>,
-        round_execute_collect: Vec<usize>,
-        limit_execution_time: bool,
+        thread_info: &mut ThreadExecutionInfo<Block>,
     ) {
         let times = |block_builder: &BlockBuilder<Block, C, B>, _thread: &String| -> (Vec<[u128; 4]>, Vec<(String, [u128; 4], usize)>, u128, u128, u128) {
             let mut execute_map: HashMap<String, ([u128; 4], usize)> = HashMap::new();
@@ -582,49 +572,14 @@ where
             (round_times, times, execute_time_count, commit_time, rollback_time)
         };
         #[cfg(feature = "dev-time")]
-        let round_info = {
+        {
             let (round_times, times, execute_time, commit_time, rollback_time) = times(&block_builder, &thread_name);
+            thread_info.round_times = round_times;
             let extra = thread_info.time.as_nanos().saturating_sub(execute_time);
-            let round_with_times = round_execute_collect.iter().zip(round_times.into_iter()).map(|(txs, time)| {
-                let tx_num = (*txs).max(1);
-                let io_time = time[1] + time[3];
-                let avg = time[0] as usize / tx_num;
-                let avg_io = io_time as usize / tx_num;
-                let avg_rb = time[2] as usize / tx_num;
-                let avg_w = time[3] as usize / tx_num;
-                (*txs, avg, avg.saturating_sub(avg_io), avg_io, avg_rb, avg_w)
-            }).collect::<Vec<_>>();
-            trace!(target: LOG_TARGET, "[Execute Block {block}] Thread {thread_name} extra: {extra}({commit_time}/{rollback_time})ns, times(min/avg/max/count): {times:?}");
-            format!("([(num, avg, avg_exe, avg_io, avg_rb, avg_w)]: {round_with_times:?})")
-        };
+            trace!(target: LOG_TARGET, "[Execute Block {_block}] Thread {thread_name} extra: {extra}({commit_time}/{rollback_time})ns, times(min/avg/max/count): {times:?}");
+        }
         #[cfg(not(feature = "dev-time"))]
-        let round_info = {
-            let (round_times, ..) = times(&block_builder, &thread_name);
-            let round_with_times = round_execute_collect
-                .iter()
-                .zip(round_times.into_iter())
-                .map(|(txs, time)| (*txs, time[0] as usize / (*txs).max(1)))
-                .collect::<Vec<_>>();
-            format!("([(num, avg)]: {round_with_times:?})")
-        };
-
-        let limit_millis_info = if limit_execution_time { format!("/{thread_time:?}") } else { "".to_string() };
-        let invalid_info = if thread_info.invalid > 0 || thread_info.future_or_exhausted > 0 {
-            format!("({}/{})", thread_info.invalid, thread_info.future_or_exhausted)
-        } else {
-            "".to_string()
-        };
-        debug!(
-            target: LOG_TARGET,
-            "[Execute Block {block}] Thread {thread_name} {reason} {:?}(E{:?} F{:?}){} {}/{}{invalid_info} executed in {} rounds{round_info}.",
-            thread_info.time,
-            thread_info.extend_time,
-            thread_info.finish_time,
-            limit_millis_info,
-            thread_info.applied(),
-            thread_info.total,
-            round_execute_collect.len(),
-        );
+        { thread_info.round_times = times(&block_builder, &thread_name).0; }
     }
 
     async fn merge_threads_result<'a>(
@@ -663,7 +618,7 @@ where
                 }
                 for (changes, thread_info) in all_changes {
                     if let Some(thread_info) = thread_info {
-                        recorder.threads.insert(thread_info.thread, thread_info);
+                        recorder.set_thread(thread_info);
                         extra_merge_count.1 -= 1;
                         if extra_merge_count.1 == 0 {
                             // all threads execute finished, initialize extra merge start time.
@@ -732,6 +687,7 @@ where
                             inherents_len,
                             allow_rollback,
                             merge_in_thread_order,
+                            &mut merge_info,
                         );
                         break;
                     } else {
@@ -753,6 +709,7 @@ where
         inherents_len: usize,
         allow_rollback: bool,
         static_order: bool,
+        merge_info: &mut MergeInfo,
     ) {
         let exe_merge_start = time::Instant::now();
         let merge_result = Self::merge_changes(
@@ -768,7 +725,7 @@ where
         let merge_time = exe_merge_start.elapsed();
         let changes = match merge_result {
             Ok((changes, to_threads, from_threads, merge_transaction_time)) => {
-                debug!(target: LOG_TARGET, "[MergeCh Block {block}] Merge threads {to_threads:?} and {from_threads:?} in {merge_time:?}(STC {merge_transaction_time:?})");
+                merge_info.records.push((to_threads, from_threads, merge_time, merge_transaction_time));
                 changes
             },
             Err((keep, drop, e)) => {
@@ -898,7 +855,7 @@ where
                 let (block_res, storage_changes_res, _proof_res) = res.into_inner();
                 // total block hash check
                 if block_res.header().state_root() == block.header().state_root() {
-                    info!(target: LOG_TARGET, "[OTC Block {number}({block_time} ({init_time} {execute_time} {build_time}) ms)] Check Block Hash success");
+                    info!(target: LOG_TARGET, "[OTC Block {number}({block_time}({init_time} {execute_time} {build_time}) ms)] Check Block Hash success");
                     return;
                 }
                 let change_diff = |mth: &Vec<(StorageKey, Option<StorageValue>)>, oth: &Vec<(StorageKey, Option<StorageValue>)>| {
@@ -941,7 +898,7 @@ where
                 // main_storage_changes check if block different.
                 let (oth_main_less, oth_main_diff, oth_main_extra) = change_diff(&main_storage_changes, &storage_changes_res.main_storage_changes);
                 if oth_main_less.is_empty() && oth_main_diff.is_empty() && oth_main_extra.is_empty() {
-                    info!(target: LOG_TARGET, "[OTC Block {number}({block_time} ({init_time} {execute_time} {build_time}) ms)] Check Block state success");
+                    info!(target: LOG_TARGET, "[OTC Block {number}({block_time}({init_time} {execute_time} {build_time}) ms)] Check Block state success");
                     return;
                 }
                 error!(
@@ -1170,29 +1127,20 @@ where
             limit_execution_time,
         )
             .await?;
-        if log::log_enabled!(target: LOG_TARGET, log::Level::Debug) {
-            debug!(
-                target: LOG_TARGET,
-                "🎁 [{source}] Prepared block {} [{}] \
-                [hash: {:?}; parent_hash: {}; {}, threads {thread_number}]",
-                info.number,
-                info.time_debug(limit_execution_time),
-                <Block as BlockT>::Hash::from(proposal.block.header().hash()),
-                proposal.block.header().parent_hash(),
-                info.tx_info(),
-            );
+        let block_execute_info = if log::log_enabled!(target: LOG_TARGET, log::Level::Debug) {
+            for thread_info in info.threads_debug(limit_execution_time) {
+                debug!(target: LOG_TARGET, "[Execute {}] {thread_info}", info.number);
+            }
+            for merge_info in info.merge.print_records() {
+                debug!(target: LOG_TARGET, "[MergeCh {}] {merge_info}", info.number);
+            }
+            info.debug(limit_execution_time)
         } else if log::log_enabled!(target: LOG_TARGET, log::Level::Info) {
-            info!(
-                target: LOG_TARGET,
-                "🎁 [{source}] Prepared block {} [{}] \
-                [hash: {:?}; parent_hash: {}; {}, threads {thread_number}]",
-                info.number,
-                info.time_info(limit_execution_time),
-                <Block as BlockT>::Hash::from(proposal.block.header().hash()),
-                proposal.block.header().parent_hash(),
-                info.tx_info(),
-            );
-        }
+            info.info(limit_execution_time)
+        } else {
+            unreachable!()
+        };
+        info!(target: LOG_TARGET, "🎁 [{source}] {block_execute_info}");
         telemetry!(
 			self.telemetry;
 			CONSENSUS_INFO;
@@ -1277,29 +1225,17 @@ where
             Some(extrinsics_root) => proposal.block.header_mut().set_extrinsics_root(extrinsics_root),
             None => return Err(Self::Error::UnknownBlock("Failed to get extrinsiscs_root".to_string())),
         }
-        if log::log_enabled!(target: LOG_TARGET, log::Level::Debug) {
-            debug!(
-                target: LOG_TARGET,
-                "🎁 [{source}] Prepared block {} [{}] \
-                [hash: {:?}; parent_hash: {}; {}, threads {thread_number}]",
-                info.number,
-                info.time_debug(limit_execution_time),
-                <Block as BlockT>::Hash::from(proposal.block.header().hash()),
-                proposal.block.header().parent_hash(),
-                info.tx_info(),
-            );
+        let block_execute_info = if log::log_enabled!(target: LOG_TARGET, log::Level::Debug) {
+            for merge_info in info.merge.print_records() {
+                debug!(target: LOG_TARGET, "[MergeCh Block {}] {merge_info}", info.number);
+            }
+            info.debug(limit_execution_time)
         } else if log::log_enabled!(target: LOG_TARGET, log::Level::Info) {
-            info!(
-                target: LOG_TARGET,
-                "🎁 [{source}] Prepared block {} [{}] \
-                [hash: {:?}; parent_hash: {}; {}, threads {thread_number}]",
-                info.number,
-                info.time_info(limit_execution_time),
-                <Block as BlockT>::Hash::from(proposal.block.header().hash()),
-                proposal.block.header().parent_hash(),
-                info.tx_info(),
-            );
-        }
+            info.info(limit_execution_time)
+        } else {
+            unreachable!()
+        };
+        info!(target: LOG_TARGET, "🎁 [{source}] {block_execute_info}");
         telemetry!(
 			self.telemetry;
 			CONSENSUS_INFO;
