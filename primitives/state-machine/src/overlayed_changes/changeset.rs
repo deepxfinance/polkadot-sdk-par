@@ -17,7 +17,7 @@
 
 //! Houses the code that implements the transactional overlay storage.
 
-use super::{Extrinsics, StorageKey, StorageValue};
+use super::{Changes, Extrinsics, StorageKey, StorageValue};
 
 #[cfg(not(feature = "std"))]
 use sp_std::collections::btree_set::BTreeSet as Set;
@@ -96,6 +96,8 @@ pub type OverlayedChangeSet = OverlayedMap<StorageKey, Option<StorageValue>>;
 /// Holds a set of changes with the ability modify them using nested transactions.
 #[derive(Debug, Clone)]
 pub struct OverlayedMap<K, V> {
+	/// Special ReadOnly data, not join any changes.
+	pub read_only: BTreeMap<K, OverlayedEntry<V>>,
 	/// Stores the changes that this overlay constitutes.
 	pub changes: BTreeMap<K, OverlayedEntry<V>>,
 	/// Stores which keys are dirty per transaction. Needed in order to determine which
@@ -113,6 +115,7 @@ pub struct OverlayedMap<K, V> {
 impl<K, V> Default for OverlayedMap<K, V> {
 	fn default() -> Self {
 		Self {
+			read_only: BTreeMap::new(),
 			changes: BTreeMap::new(),
 			dirty_keys: SmallVec::new(),
 			num_client_transactions: Default::default(),
@@ -125,6 +128,7 @@ impl<K, V> Default for OverlayedMap<K, V> {
 impl From<sp_core::storage::StorageMap> for OverlayedMap<StorageKey, Option<StorageValue>> {
 	fn from(storage: sp_core::storage::StorageMap) -> Self {
 		Self {
+			read_only: BTreeMap::new(),
 			changes: storage
 				.into_iter()
 				.map(|(k, v)| {
@@ -150,6 +154,7 @@ impl From<sp_core::storage::StorageMap> for OverlayedMap<StorageKey, Option<Stor
 impl From<BTreeMap<Vec<u8>, Option<Vec<u8>>>> for OverlayedMap<StorageKey, Option<StorageValue>> {
 	fn from(storage: BTreeMap<Vec<u8>, Option<Vec<u8>>>) -> Self {
 		Self {
+			read_only: BTreeMap::new(),
 			changes: storage
 				.into_iter()
 				.map(|(k, value)| {
@@ -245,6 +250,31 @@ fn insert_dirty<K: Ord + Hash>(set: &mut DirtyKeysSets<K>, key: K) -> bool {
 }
 
 impl<K: Ord + Hash + Clone, V> OverlayedMap<K, V> {
+	/// Move current changes to read_only data.
+	/// This should be called only once.
+	pub fn read_only(&mut self) {
+		self.dirty_keys.clear();
+		self.num_client_transactions = 0;
+		self.execution_mode = ExecutionMode::Client;
+		if self.read_only.is_empty() {
+			core::mem::swap(&mut self.read_only, &mut self.changes);
+		} else {
+			self.read_only.extend(core::mem::take(&mut self.changes));
+		}
+	}
+
+	/// Set changes data.
+	pub fn set_changes(&mut self, changes: BTreeMap<K, OverlayedEntry<V>>) {
+		self.changes = changes;
+	}
+
+	/// Merge read_only and changes into changes.
+	pub fn merge_read_only(&mut self) {
+		let mut final_changes = std::mem::take(&mut self.read_only);
+		final_changes.extend(std::mem::take(&mut self.changes));
+		self.changes = final_changes;
+	}
+
 	/// Create a new changeset at the same transaction state but without any contents.
 	///
 	/// This changeset might be created when there are already open transactions.
@@ -252,6 +282,7 @@ impl<K: Ord + Hash + Clone, V> OverlayedMap<K, V> {
 	pub fn spawn_child(&self) -> Self {
 		use sp_std::iter::repeat;
 		Self {
+			read_only: Default::default(),
 			changes: Default::default(),
 			dirty_keys: repeat(Set::new()).take(self.transaction_depth()).collect(),
 			num_client_transactions: self.num_client_transactions,
@@ -270,7 +301,7 @@ impl<K: Ord + Hash + Clone, V> OverlayedMap<K, V> {
 		K: sp_std::borrow::Borrow<Q>,
 		Q: Ord + ?Sized,
 	{
-		self.changes.get(key)
+		self.changes.get(key).or(self.read_only.get(key))
 	}
 
 	/// Set a new value for the specified key.
@@ -432,7 +463,7 @@ pub trait MergeChange<K, V> {
 		_local: &mut BTreeMap<K, OverlayedEntry<V>>,
 		_other: &mut BTreeMap<K, OverlayedEntry<V>>,
 		_in_order: bool,
-	) -> Vec<K>;
+	) -> Result<Changes, Vec<K>>;
 
 	/// Finalize state if after all merge finished.(e.g. delete tmp values when merge_changes).
 	fn finalize_merge(&self, _map: &mut BTreeMap<K, OverlayedEntry<V>>);
@@ -451,7 +482,7 @@ impl<K: Ord + Hash + Clone, V: PartialEq> MergeChange<K, V> for DefaultMerge {
 		local: &mut BTreeMap<K, OverlayedEntry<V>>, 
 		other: &mut BTreeMap<K, OverlayedEntry<V>>,
 		_in_order: bool,
-	) -> Vec<K>  {
+	) -> Result<Changes, Vec<K>>  {
 		let mut duplicate_keys = Vec::new();
 		for (k, v) in core::mem::replace(other, Default::default()) {
 			if let Some(entry) = local.get(&k) {
@@ -463,7 +494,10 @@ impl<K: Ord + Hash + Clone, V: PartialEq> MergeChange<K, V> for DefaultMerge {
 				local.insert(k, v);
 			}
 		}
-		duplicate_keys
+		if !duplicate_keys.is_empty() {
+			return Err(duplicate_keys);
+		}
+		Ok(Default::default())
 	}
 
 	fn finalize_merge(&self, _map: &mut BTreeMap<K, OverlayedEntry<V>>) {}
@@ -478,11 +512,11 @@ impl<K: Ord + Hash + Clone, V: PartialEq> OverlayedMap<K, V> {
 		M::merge_weight(&self.changes)
 	}
 	
-	pub fn merge(&mut self, other: &mut Self, in_order: bool) -> Result<(), Vec<K>> {
+	pub fn merge(&mut self, other: &mut Self, in_order: bool) -> Result<Changes, Vec<K>> {
 		self.merge_custom::<DefaultMerge>(other, in_order, None)
 	}
 	
-	pub fn merge_custom<M: MergeChange<K, V>>(&mut self, other: &mut Self, in_order: bool, custom: Option<&M>) -> Result<(), Vec<K>> {
+	pub fn merge_custom<M: MergeChange<K, V>>(&mut self, other: &mut Self, in_order: bool, custom: Option<&M>) -> Result<Changes, Vec<K>> {
 		// 1. If local or other change set have dirty key, that means some transaction not closed or rollback.
 		// Unfinished change should not merge.
 		if self.transaction_depth() != 0 || other.transaction_depth() != 0 {
@@ -490,19 +524,22 @@ impl<K: Ord + Hash + Clone, V: PartialEq> OverlayedMap<K, V> {
 		}
 		// 2. num_client_transactions and execution_mode will not be used, so we do not merge here.
 		// 3. merge changes.
-		let duplicate_keys = if let Some(m) = custom {
-			[
+		if let Some(m) = custom {
+			match (
 				m.merge_changes(&mut self.changes, &mut other.changes, in_order),
 				DefaultMerge::default().merge_changes(&mut self.changes, &mut other.changes, in_order),
-			]
-				.concat()
+			) {
+				(Ok(mut changes1), Ok(changes2)) => {
+					changes1.extend(changes2);
+					Ok(changes1)
+				}
+				(Err(duplicate_keys1), Err(duplicate_keys2)) => Err([duplicate_keys1, duplicate_keys2].concat()),
+				(Ok(_), Err(duplicate_keys)) => Err(duplicate_keys),
+				(Err(duplicate_keys), Ok(_)) => Err(duplicate_keys),
+			}
 		} else {
 			DefaultMerge::default().merge_changes(&mut self.changes, &mut other.changes, in_order)
-		};
-		if !duplicate_keys.is_empty() {
-			return Err(duplicate_keys);
 		}
-		Ok(())
 	}
 
 	pub fn finalize_merge(&mut self) {

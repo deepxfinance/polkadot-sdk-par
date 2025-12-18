@@ -165,6 +165,8 @@ where
 	///
 	/// Called when there are changes that likely will invalidate the storage root.
 	fn mark_dirty(&mut self) {
+		// Disable for feature `kvdb`
+		#[cfg(not(feature = "std"))]
 		self.storage_transaction_cache.reset();
 	}
 }
@@ -625,18 +627,28 @@ where
 			return root.encode()
 		}
 		#[cfg(feature = "std")]
-		// Merge changes to overlay
-		for (key, value) in self.cache
+		let cache_changes = self.cache
 			.as_mut()
 			.map(|overlay| overlay.drain_commited())
-			.unwrap_or_default()
+			.unwrap_or_default();
+		#[cfg(feature = "std")]
+		let cache_len = cache_changes.len();
+		#[cfg(feature = "std")]
+		// Merge changes to overlay
+		for (key, value) in cache_changes
 		{
 			self.overlay.top.set(key, value, None);
 		}
-
+		let top_changes_len = self.overlay.top.changes.len();
+		#[cfg(feature = "std")]
+		let start = std::time::Instant::now();
 		let root =
 			self.overlay
 				.storage_root(self.backend, self.storage_transaction_cache, state_version);
+		#[cfg(feature = "std")]
+		let root_time = start.elapsed();
+		#[cfg(feature = "std")]
+		log::debug!(target: "authorship", "calculate_root: {root:?} {cache_len} {top_changes_len} changes in {root_time:?}");
 		trace!(
 			target: "state",
 			method = "StorageRoot",

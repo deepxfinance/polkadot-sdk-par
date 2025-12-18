@@ -4,7 +4,7 @@ use std::sync::Arc;
 use node_template_runtime::RuntimeEvent;
 use sc_basic_authorship::{MergeSystem, MultiThreadBlockBuilder};
 use sc_client_api::Backend;
-use sp_api::{ApiExt, MergeChange, OverlayCache, OverlayedChanges, OverlayedEntry, StorageKey, StorageValue};
+use sp_api::{ApiExt, Changes, MergeChange, OverlayCache, OverlayedChanges, OverlayedEntry, StorageKey, StorageValue};
 use sp_runtime::traits::Block as BlockT;
 use crate::merge_backend::MergeBackend;
 use crate::merge_balances::MergeBalances;
@@ -60,11 +60,28 @@ impl<B: Backend<Block>, Block: BlockT> MergeChange<StorageKey, Option<StorageVal
         local: &mut BTreeMap<StorageKey, OverlayedEntry<Option<StorageValue>>>,
         other: &mut BTreeMap<StorageKey, OverlayedEntry<Option<StorageValue>>>,
         in_order: bool,
-    ) -> Vec<StorageKey> {
+    ) -> Result<Changes, Vec<StorageKey>> {
+        let mut changes_list = Vec::new();
         let mut duplicate_keys = Vec::new();
-        duplicate_keys.extend(self.balances.merge_changes(local, other, in_order));
-        duplicate_keys.extend(self.system.merge_changes(local, other, in_order));
-        duplicate_keys
+
+        match self.balances.merge_changes(local, other, in_order) {
+            Ok(changes) => changes_list.push(changes),
+            Err(duplicated) => duplicate_keys.extend(duplicated),
+        }
+        match self.system.merge_changes(local, other, in_order) {
+            Ok(changes) => changes_list.push(changes),
+            Err(duplicated) => duplicate_keys.extend(duplicated),
+        }
+        if !duplicate_keys.is_empty() {
+            return Err(duplicate_keys);
+        }
+        if !changes_list.is_empty() {
+            let first = changes_list.remove(0);
+            let changes = changes_list.into_iter().fold(first, |mut c, new| { c.extend(new); c });
+            Ok(changes)
+        } else {
+            Ok(Default::default())
+        }
     }
 
     fn finalize_merge(&self, map: &mut BTreeMap<StorageKey, OverlayedEntry<Option<StorageValue>>>) {

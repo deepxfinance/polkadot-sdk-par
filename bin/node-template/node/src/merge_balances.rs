@@ -4,7 +4,7 @@ use codec::{Encode, Decode};
 use frame_benchmarking::log;
 use sc_basic_authorship::{get_map_value, parse_entry_value, MultiThreadBlockBuilder};
 use sc_client_api::Backend;
-use sp_api::{ApiExt, MergeChange, StateBackend, OverlayedEntry, StorageKey, StorageValue};
+use sp_api::{ApiExt, MergeChange, StateBackend, OverlayedEntry, StorageKey, StorageValue, Changes};
 use sp_runtime::traits::Block as BlockT;
 
 const EXTRINSIC_INDEX: [u8; 16] = [58, 101, 120, 116, 114, 105, 110, 115, 105, 99, 95, 105, 110, 100, 101, 120];
@@ -35,12 +35,8 @@ where
 }
 
 impl MergeChange<StorageKey, Option<StorageValue>> for MergeBalances {
-    fn merge_changes(
-        &self,
-        local: &mut BTreeMap<StorageKey, OverlayedEntry<Option<StorageValue>>>,
-        other: &mut BTreeMap<StorageKey, OverlayedEntry<Option<StorageValue>>>,
-        _in_order: bool,
-    ) -> Vec<StorageKey> {
+    fn merge_changes(&self, local: &mut Changes, other: &mut Changes, _in_order: bool) -> Result<Changes, Vec<StorageKey>> {
+        let mut changes = Changes::default();
         let offset: u32 = get_map_value(local, &EXTRINSIC_INDEX.to_vec()).unwrap_or_default();
         // Custom merge for "Balances TotalIssuance"
         let init_total_issuance = self.init_total_issuance;
@@ -59,6 +55,10 @@ impl MergeChange<StorageKey, Option<StorageValue>> for MergeBalances {
                 };
                 log::trace!(target: "merge_balances", "merge Balances TotalIssuance init: {init_total_issuance} local: {local_total_issuance}, other: {other_total_issuance}, final: {final_total_issuance}, extrinsic: {final_extrinsic:?}");
                 entry_local.set(Some(final_total_issuance.encode()), false, final_extrinsic);
+                // update conflict changes
+                let mut new_entry = OverlayedEntry::default();
+                new_entry.set(Some(final_total_issuance.encode()), true, final_extrinsic);
+                changes.insert(BALANCE_TOTAL_ISSUANCE.to_vec(), new_entry);
             } else {
                 log::trace!(target: "merge_balances", "merge Balances TotalIssuance init: {init_total_issuance} local: None, other: {other_total_issuance}, final: {other_total_issuance}, extrinsic: {final_extrinsic:?}");
                 let mut new_entry = OverlayedEntry::default();
@@ -67,7 +67,7 @@ impl MergeChange<StorageKey, Option<StorageValue>> for MergeBalances {
             }
         }
 
-        Vec::new()
+        Ok(changes)
     }
 
     fn finalize_merge(&self, _map: &mut BTreeMap<StorageKey, OverlayedEntry<Option<StorageValue>>>) {}

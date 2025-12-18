@@ -379,6 +379,10 @@ impl_runtime_apis! {
 			Executive::apply_extrinsics(extrinsics, timeout, None)
 		}
 
+		fn finish_thread(thread: u8) -> <Block as BlockT>::Hash {
+			Executive::finish_thread(thread)
+		}
+
 		fn finalize_block() -> <Block as BlockT>::Header {
 			Executive::finalize_block()
 		}

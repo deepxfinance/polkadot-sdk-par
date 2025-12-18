@@ -362,3 +362,12 @@ pub fn put_raw(key: &[u8], value: &[u8]) {
 		}
 	}
 }
+
+/// Take raw byte slice from storage
+pub fn take_raw(key: &[u8])  -> Option<Vec<u8>> {
+	let res = get_raw(key);
+	if res.is_some() {
+		kill(key);
+	}
+	res
+}

@@ -103,7 +103,7 @@ pub use sp_runtime::{
 pub use sp_state_machine::{
 	backend::AsTrieBackend, Backend as StateBackend, InMemoryBackend, OverlayedChanges,
 	StorageProof, TrieBackend, TrieBackendBuilder, OverlayedEntry, MergeErr, MergeChange,
-	OverlayCache,
+	OverlayCache, Changes,
 };
 #[cfg(not(feature = "std"))]
 pub struct OverlayCache;

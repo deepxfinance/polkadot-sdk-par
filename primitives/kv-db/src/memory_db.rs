@@ -225,17 +225,7 @@ where
 
     /// Consolidate all the entries of `other` into `self`.
     pub fn consolidate(&mut self, mut other: Self) {
-        for (key, (value, rc)) in other.drain() {
-            match self.data.entry(key) {
-                Entry::Occupied(mut entry) => {
-                    entry.get_mut().0 = value;
-                    entry.get_mut().1 = rc;
-                },
-                Entry::Vacant(entry) => {
-                    entry.insert((value, rc));
-                },
-            }
-        }
+        self.data.extend(other.drain());
     }
 
     /// Get the keys in the database together with number of underlying references.

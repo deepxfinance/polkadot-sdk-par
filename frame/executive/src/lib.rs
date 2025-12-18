@@ -126,15 +126,11 @@ use frame_support::{
 	},
 	weights::Weight,
 };
-use sp_runtime::{
-	generic::Digest,
-	traits::{
-		self, Applyable, CheckEqual, Checkable, Dispatchable, Header, NumberFor, One,
-		ValidateUnsigned, Zero,
-	},
-	transaction_validity::{TransactionSource, TransactionValidity},
-	ApplyExtrinsicResult,
-};
+use frame_support::traits::Get;
+use sp_runtime::{generic::Digest, traits::{
+	self, Applyable, CheckEqual, Checkable, Dispatchable, Header, NumberFor, One,
+	ValidateUnsigned, Zero,
+}, transaction_validity::{TransactionSource, TransactionValidity}, ApplyExtrinsicResult, StateVersion};
 use sp_runtime::transaction_validity::TransactionValidityError;
 use sp_std::{marker::PhantomData, prelude::*};
 
@@ -621,6 +617,10 @@ where
 			result.push(res);
 		}
 		result
+	}
+
+	pub fn finish_thread(thread: u8) -> System::Hash {
+		<frame_system::Pallet<System>>::finish_thread(thread)
 	}
 
 	fn final_checks(header: &System::Header) {

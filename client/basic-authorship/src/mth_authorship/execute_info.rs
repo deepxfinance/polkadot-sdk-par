@@ -191,6 +191,20 @@ impl<B: BlockT> BlockExecuteInfo<B> {
         )
     }
 
+    pub fn time_debug(&self, limit_time: bool) -> String {
+        let limit_time = if limit_time { format!("/{:?}", self.max_time) } else { "".to_string() };
+        format!(
+            "{:?}{limit_time} ms ({:?}({:?}) {:?}({:?}) {:?} {:?})",
+            self.time,
+            self.group.time,
+            self.group.wait,
+            self.merge.mth_time,
+            self.merge.extra_merge_time,
+            self.threads.get(&0).map(|i| i.time).unwrap_or_default(),
+            self.finalize,
+        )
+    }
+
     pub fn tx_info(&self) -> String {
         let (mut single_applied, single_invalid) = self.threads
             .get(&0)
@@ -308,6 +322,8 @@ pub struct ThreadExecutionInfo<B: BlockT> {
     pub time: Duration,
     /// thread extra execution time.
     pub extend_time: Duration,
+    /// Finish thread time.
+    pub finish_time: Duration,
     /// transaction hashes(future transactions are not filtered).
     pub transactions: Vec<B::Hash>,
 }
@@ -321,6 +337,7 @@ impl<B: BlockT> Default for ThreadExecutionInfo<B> {
             future_or_exhausted: 0,
             time: Default::default(),
             extend_time: Default::default(),
+            finish_time: Default::default(),
             transactions: vec![],
         }
     }

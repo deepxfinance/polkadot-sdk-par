@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::marker::PhantomData;
 use std::sync::Arc;
 use std::{cmp, time};
@@ -8,12 +8,13 @@ use futures::{SinkExt, StreamExt};
 use futures::channel::mpsc::{Receiver, Sender, channel};
 use futures::task::SpawnExt;
 use log::{debug, error, info, trace, warn};
+use frame_support::storage;
 use sc_block_builder::{BlockBuilder, BlockBuilderApi, BlockBuilderProvider};
-use sc_client_api::{backend, StorageProof};
+use sc_client_api::{backend, ChildInfo, StorageProof};
 use sc_proposer_metrics::{EndProposingReason, MetricsLink as PrometheusMetrics};
 use sc_telemetry::{telemetry, TelemetryHandle, CONSENSUS_INFO};
 use sc_transaction_pool_api::TransactionPool;
-use sp_api::{ApiExt, BlockT, CallApiAt, HeaderT, ProofRecorder, ProvideRuntimeApi};
+use sp_api::{ApiExt, BlockT, CallApiAt, HeaderT, ProofRecorder, ProvideRuntimeApi, StorageTransactionCache};
 use sp_blockchain::ApplyExtrinsicFailed::Validity;
 use sp_blockchain::Error::ApplyExtrinsicFailed;
 use sp_blockchain::HeaderBackend;
@@ -23,17 +24,19 @@ use sp_core::traits::SpawnNamed;
 use sp_inherents::InherentData;
 use sp_perp_api::PerpRuntimeApi;
 use sp_runtime::{traits, Digest, Percent, SaturatedConversion, Saturating};
-use sp_runtime::traits::{Hash, Header, One};
+use sp_runtime::traits::{Hash, Header, NumberFor, One};
 use sp_spot_api::SpotRuntimeApi;
-use sp_state_machine::{MergeErr, OverlayedChanges, StorageKey, StorageValue};
+use sp_state_machine::{Changes, MergeErr, OverlayedChanges, OverlayedEntry, StorageKey, StorageValue};
+use sp_state_machine::backend::Consolidate;
 use crate::{BlockPropose, ExtendExtrinsic, MultiThreadBlockBuilder};
 use crate::mth_authorship::execute_info::{BlockExecuteInfo, InfoRecorder, MergeInfo, ThreadExecutionInfo};
 
 const LOG_TARGET: &str = "authorship";
 
-type MergeType<A, B> = (
+type MergeType<A, B, C> = (
     Vec<usize>,
     OverlayedChanges,
+    StorageTransactionCache<B, <<C as ProvideRuntimeApi<B>>::Api as ApiExt<B>>::StateBackend>,
     Option<ProofRecorder<B>>,
     Vec<<B as BlockT>::Extrinsic>,
     Vec<<A as TransactionPool>::Hash>,
@@ -186,8 +189,7 @@ where
         }
         let info = recorder.finalize();
 
-        // TODO kv mode currently not support OTC.
-        // 6. spawn a single execution check if env `MTH_CHECK` is true, this is just an extra check, weill not block main block build.
+        // 6. spawn a single execution check if env `MTH_CHECK` is true, this is just an extra check.
         let single_thread_check = std::env::var("MTH_CHECK").unwrap_or("false".into()).parse().unwrap_or(false);
         if single_thread_check && thread_number > 0 {
             #[cfg(feature = "kvdb")]
@@ -283,7 +285,7 @@ where
         let thread_number = multi_groups.len();
         trace!(
             target: LOG_TARGET,
-            "[Execute Block {}] ExecuteLimits: threads {thread_number}, mth_exe(mth_merge) {}({}) ms, single_exe {} ms, total execute_deadline {} ms",
+            "[Execute Block {}] ExecuteLimits: threads {thread_number}, mth {}({}) ms, single {} ms, total execute_deadline {} ms",
             parent_number + One::one(),
             mth_execute_time.as_millis(),
             mth_merge_time.as_millis(),
@@ -341,7 +343,7 @@ where
         };
 
         // 6. execute all single thread transactions.
-        let (single_invalid, end_reason, single_thread_info) = Self::execute_one_thread_txs(
+        let (_, single_invalid, end_reason, single_thread_info) = Self::execute_one_thread_txs(
             parent_number + One::one(),
             single_deadline,
             block_builder,
@@ -350,6 +352,7 @@ where
             0,
             round_tx,
             limit_execution_time,
+            false,
         );
         recorder.threads.insert(0, single_thread_info);
         if !block_builder.extrinsics.is_empty() || !single_invalid.is_empty() {
@@ -366,7 +369,7 @@ where
         mth_execute_deadline: time::Instant,
         inherents: Vec<<Block as BlockT>::Extrinsic>,
         extrinsic_group: Vec<Vec<(usize, <A as TransactionPool>::Hash, Block::Extrinsic)>>,
-        merge_tx: Sender<(MergeType<A, Block>, Option<ThreadExecutionInfo<Block>>)>,
+        merge_tx: Sender<(MergeType<A, Block, C>, Option<ThreadExecutionInfo<Block>>)>,
         round_tx: usize,
         merge_in_thread_order: bool,
         limit_execution_time: bool,
@@ -404,7 +407,7 @@ where
                             return;
                         }
                     };
-                    let (unqueue_invalid, end_reason, thread_info) = Self::execute_one_thread_txs(
+                    let (thread_root, unqueue_invalid, end_reason, thread_info) = Self::execute_one_thread_txs(
                         block.clone(),
                         mth_execute_deadline,
                         &mut thread_builder,
@@ -413,15 +416,11 @@ where
                         i + 1,
                         round_tx,
                         limit_execution_time,
+                        true,
                     );
-
-                    let (mut cache, mut overlay, _, recorder) = thread_builder.api.take_all_changes();
-                    // TODO more check when merge cache to overlay.top?
-                    for (k, v) in cache.drain_commited() {
-                        overlay.top.changes.entry(k).or_default().set(v, true, None);
-                    }
-
-                    let changes = (vec![i + 1], overlay, recorder, thread_builder.extrinsics.clone(), unqueue_invalid, end_reason);
+                    let (_, mut overlay, stc, recorder) = thread_builder.api.take_all_changes();
+                    overlay.set_storage(b":thread_root".to_vec(), Some(thread_root.encode()));
+                    let changes = (vec![i + 1], overlay, stc, recorder, thread_builder.extrinsics.clone(), unqueue_invalid, end_reason);
                     if res_tx.start_send((changes, Some(thread_info))).is_err() {
                         trace!("Could not send block production result to proposer!");
                     }
@@ -439,11 +438,13 @@ where
         thread: usize,
         round_tx: usize,
         limit_execution_time: bool,
-    ) -> (Vec<<A as TransactionPool>::Hash>, EndProposingReason, ThreadExecutionInfo<Block>) {
+        finish: bool,
+    ) -> (Block::Hash, Vec<<A as TransactionPool>::Hash>, EndProposingReason, ThreadExecutionInfo<Block>) {
         let mut thread_info = ThreadExecutionInfo::new(thread);
+        let mut thread_root = Default::default();
         let mut filter_transactions: HashSet<Block::Hash> = pending_txs.iter().map(|(_, tx, _)| tx.clone()).collect();
         if pending_txs.is_empty() {
-            return (Vec::new(), EndProposingReason::NoMoreTransactions, thread_info);
+            return (thread_root, Vec::new(), EndProposingReason::NoMoreTransactions, thread_info);
         }
         let mut thread_name = "single".to_string();
         if thread > 0 {
@@ -517,6 +518,18 @@ where
         let _ = E::extend_extrinsic(&*block_builder.api, block_builder.parent_hash);
         thread_info.extend_time = extend_start.elapsed();
         thread_info.time = thread_start.elapsed();
+        if finish {
+            // calculate current thread changes Root And TypedCache also be drained to OverlayedChanges.
+            let finish_thread_start = time::Instant::now();
+            match block_builder.api.finish_thread(
+                block_builder.parent_hash,
+                thread.saturating_sub(1) as u8,
+            ) {
+                Ok(root) => thread_root = root,
+                Err(e) => panic!("Could not get root for thread {thread} for error: {e:?}"),
+            };
+            thread_info.finish_time = finish_thread_start.elapsed();
+        }
         Self::thread_finish_log(
             block,
             &thread_name,
@@ -528,7 +541,7 @@ where
             limit_execution_time,
         );
 
-        (unqueue_invalid, end_reason, thread_info)
+        (thread_root, unqueue_invalid, end_reason, thread_info)
     }
 
     fn thread_finish_log(
@@ -593,11 +606,7 @@ where
             format!("([(num, avg)]: {round_with_times:?})")
         };
 
-        let limit_millis_info = if limit_execution_time {
-            format!("/{}", thread_time.as_millis())
-        } else {
-            "".to_string()
-        };
+        let limit_millis_info = if limit_execution_time { format!("/{thread_time:?}") } else { "".to_string() };
         let invalid_info = if thread_info.invalid > 0 || thread_info.future_or_exhausted > 0 {
             format!("({}/{})", thread_info.invalid, thread_info.future_or_exhausted)
         } else {
@@ -605,9 +614,10 @@ where
         };
         debug!(
             target: LOG_TARGET,
-            "[Execute Block {block}] Thread {thread_name} {reason} {}({}){} ms {}/{}{invalid_info} executed in {} rounds{round_info}.",
-            thread_info.time.as_millis(),
-            thread_info.extend_time.as_millis(),
+            "[Execute Block {block}] Thread {thread_name} {reason} {:?}({:?} {:?}){} {}/{}{invalid_info} executed in {} rounds{round_info}.",
+            thread_info.time,
+            thread_info.extend_time,
+            thread_info.finish_time,
             limit_millis_info,
             thread_info.applied(),
             thread_info.total,
@@ -624,23 +634,19 @@ where
         inherents_len: usize,
         mth_finish_deadline: time::Instant,
         thread_number: usize,
-        merge_tx: Sender<(MergeType<A, Block>, Option<ThreadExecutionInfo<Block>>)>,
-        mut merge_rx: Receiver<(MergeType<A, Block>, Option<ThreadExecutionInfo<Block>>)>,
+        merge_tx: Sender<(MergeType<A, Block, C>, Option<ThreadExecutionInfo<Block>>)>,
+        mut merge_rx: Receiver<(MergeType<A, Block, C>, Option<ThreadExecutionInfo<Block>>)>,
         merge_in_thread_order: bool,
         limit_execution_time: bool,
         recorder: &mut InfoRecorder<Block>,
     ) -> Result<(Vec<<A as TransactionPool>::Hash>, EndProposingReason), sp_blockchain::Error> {
         let mut merge_info = MergeInfo::default();
-        let mut mth_merge = std::env::var("MTH_MERGE").unwrap_or("false".into()).parse().unwrap_or(false);
-        if merge_in_thread_order { mth_merge = false; }
         let allow_rollback = std::env::var("MTH_MERGE_ROLLBACK").unwrap_or("false".into()).parse().unwrap_or(false);
         let mut merge_count = 0usize;
         let mut extra_merge_count = (time::Instant::now(), thread_number);
-        let mut merge_box: Vec<(u32, MergeType<A, Block>)> = vec![];
-        let pool = futures::executor::ThreadPoolBuilder::new()
-            .pool_size(cmp::min(thread_number / 2, num_cpus::get()))
-            .create()
-            .expect("Failed to build groups merge pool");
+        let mut merge_box: Vec<(u32, MergeType<A, Block, C>)> = vec![];
+        let mut conflict_top_changes = Changes::new();
+        let mut conflict_children_changes = HashMap::new();
         loop {
             if let Some(res) = merge_rx.next().await {
                 // try collect all changes in channel.
@@ -660,9 +666,6 @@ where
                         if extra_merge_count.1 == 0 {
                             // all threads execute finished, initialize extra merge start time.
                             extra_merge_count.0 = time::Instant::now();
-                            // all threads execute finished, single thread merge is faster.
-                            // we do not need to merge same keys multi times(`mth_merge` actually merge much more changes).
-                            mth_merge = false;
                         }
                     } else {
                         // empty thread_info means merge result.
@@ -689,13 +692,20 @@ where
                     let _ = block_builder.api.take_all_changes();
                     // finalize merge
                     changes.1.finalize_merge(mbh);
+                    // move all merged changes as read_only.
+                    changes.1.read_only();
+                    // set block threads info to changes.
+                    set_threads_to_storage::<Block>(block, thread_number as u8, &mut conflict_top_changes);
+                    // set conflict changes as new changes for following root calculation.
+                    changes.1.set_changes(conflict_top_changes, conflict_children_changes);
                     // final main block builder state.
                     block_builder.api.set_changes(changes.1);
-                    block_builder.api.set_recorder(changes.2);
-                    block_builder.extrinsics = changes.3;
+                    block_builder.api.set_storage_transaction_cache(changes.2);
+                    block_builder.api.set_recorder(changes.3);
+                    block_builder.extrinsics = changes.4;
                     merge_info.extra_merge_time = extra_merge_count.0.elapsed();
                     recorder.merge = Some(merge_info);
-                    return Ok((changes.4, changes.5));
+                    return Ok((changes.5, changes.6));
                 }
                 loop {
                     if merge_box.len() >= 2 {
@@ -706,17 +716,19 @@ where
                             merge_box.push((changes_weight_weight, pre_changes));
                             break;
                         }
-                        if !mth_merge {
-                            Self::merge_process(merge_tx.clone(), block, &mbh, pre_changes, changes, inherents_len, allow_rollback, merge_in_thread_order);
-                            break;
-                        } else {
-                            let merge_tx = merge_tx.clone();
-                            let mbh = mbh.copy_state();
-                            pool.spawn(async move {
-                                Self::merge_process(merge_tx, block, &mbh, pre_changes, changes, inherents_len, allow_rollback, merge_in_thread_order);
-                            })
-                                .expect("Failed to spawn merge thread");
-                        }
+                        Self::merge_process(
+                            merge_tx.clone(),
+                            block,
+                            &mbh,
+                            pre_changes,
+                            changes,
+                            &mut conflict_top_changes,
+                            &mut conflict_children_changes,
+                            inherents_len,
+                            allow_rollback,
+                            merge_in_thread_order,
+                        );
+                        break;
                     } else {
                         break;
                     }
@@ -726,17 +738,28 @@ where
     }
 
     fn merge_process(
-        mut merge_tx: Sender<(MergeType<A, Block>, Option<ThreadExecutionInfo<Block>>)>,
+        mut merge_tx: Sender<(MergeType<A, Block, C>, Option<ThreadExecutionInfo<Block>>)>,
         block: <<Block as BlockT>::Header as HeaderT>::Number,
         mbh: &MBH,
-        changes1: MergeType<A, Block>,
-        changes2: MergeType<A, Block>,
+        changes1: MergeType<A, Block, C>,
+        changes2: MergeType<A, Block, C>,
+        collect_top: &mut Changes,
+        collect_children: &mut HashMap<StorageKey, (Changes, ChildInfo)>,
         inherents_len: usize,
         allow_rollback: bool,
         static_order: bool,
     ) {
         let exe_merge_start = time::Instant::now();
-        let merge_result = Self::merge_changes(&mbh, changes1, changes2, inherents_len, allow_rollback, static_order);
+        let merge_result = Self::merge_changes(
+            &mbh,
+            changes1,
+            changes2,
+            collect_top,
+            collect_children,
+            inherents_len,
+            allow_rollback,
+            static_order,
+        );
         let merge_time = exe_merge_start.elapsed().as_micros();
         let changes = match merge_result {
             Ok((changes, to_threads, from_threads)) => {
@@ -749,7 +772,7 @@ where
                     "[MergeCh Block {block}] Merge threads keep {:?}, drop [threads {:?}, {} extrinsics] in {merge_time} micros for error: {e:?}",
                     keep.0,
                     drop.0,
-                    drop.3.len() + drop.4.len() - inherents_len,
+                    drop.4.len() + drop.5.len() - inherents_len,
                 );
                 keep
             }
@@ -761,12 +784,14 @@ where
 
     fn merge_changes(
         mbh: &MBH,
-        mut to: MergeType<A, Block>,
-        mut from: MergeType<A, Block>,
+        mut to: MergeType<A, Block, C>,
+        mut from: MergeType<A, Block, C>,
+        collect_top: &mut Changes,
+        collect_children: &mut HashMap<StorageKey, (Changes, ChildInfo)>,
         inherents_len: usize,
         allow_rollback: bool,
         static_order: bool,
-    ) -> Result<(MergeType<A, Block>, Vec<usize>, Vec<usize>), (MergeType<A, Block>, MergeType<A, Block>, MergeErr)> {
+    ) -> Result<(MergeType<A, Block, C>, Vec<usize>, Vec<usize>), (MergeType<A, Block, C>, MergeType<A, Block, C>, MergeErr)> {
         if !static_order && to.1.merge_weight::<MBH>() < from.1.merge_weight::<MBH>() {
             std::mem::swap(&mut to, &mut from);
         }
@@ -775,19 +800,39 @@ where
         // if failed, return unchanged state.
         if allow_rollback {
             let mut tmp_state = to.1.clone();
-            if let Err(e) = tmp_state.merge(&mut from.1, static_order, mbh) {
+            match tmp_state.merge(&mut from.1, static_order, mbh) {
+                Ok((top_changes, children_changes)) => {
+                    collect_top.extend(top_changes);
+                    for (child_key, (children, info)) in children_changes {
+                        if let Some((c, ci)) = collect_children.get_mut(&child_key) {
+                            if *ci != info { continue; }
+                            c.extend(children);
+                        }
+                    }
+                },
+                Err(e) => return Err((to, from, e)),
                 // since both state are not changed. we choose to keep `to` and drop `from`
-                return Err((to, from, e));
             }
             to.1 = tmp_state;
         } else {
-            if let Err(e) = to.1.merge(&mut from.1, static_order, mbh) {
-                panic!("Merge threads {:?} and {:?} failed for {e:?}(rollback not allowed)", to.0, from.0);
+            match to.1.merge(&mut from.1, static_order, mbh) {
+                Ok((top_changes, children_changes)) => {
+                    collect_top.extend(top_changes);
+                    for (child_key, (children, info)) in children_changes {
+                        if let Some((c, ci)) = collect_children.get_mut(&child_key) {
+                            if *ci != info { continue; }
+                            c.extend(children);
+                        }
+                    }
+                },
+                Err(e) => panic!("Merge threads {:?} and {:?} failed for {e:?}(rollback not allowed)", to.0, from.0),
             }
         }
         let to_threads = to.0.clone();
         to.0.extend(from.0.clone());
-        to.2 = match (to.2, from.2) {
+        to.2.consolidate(from.2);
+        to.2.clear_root();
+        to.3 = match (to.3, from.3) {
             (Some(recorder1), Some(recorder2)) => {
                 recorder1.merge(&recorder2);
                 Some(recorder1)
@@ -796,9 +841,9 @@ where
             (None, Some(recorder2)) => Some(recorder2),
             (None, None) => None,
         };
-        to.3.extend(from.3[inherents_len..].to_vec());
-        to.4.extend(from.4.clone());
-        to.5 = from.5;
+        to.4.extend(from.4[inherents_len..].to_vec());
+        to.5.extend(from.5.clone());
+        to.6 = from.6;
         Ok((to, to_threads, from.0))
     }
 
@@ -1094,16 +1139,32 @@ where
             limit_execution_time,
         )
             .await?;
-        info!(
-            target: LOG_TARGET,
-			"🎁 [{source}] Prepared block {} [{}] \
-			[hash: {:?}; parent_hash: {}; {}, threads {thread_number}]",
-			info.number,
-			info.time_info(limit_execution_time),
-			<Block as BlockT>::Hash::from(proposal.block.header().hash()),
-			proposal.block.header().parent_hash(),
-            info.tx_info(),
-		);
+        if log::log_enabled!(target: LOG_TARGET, log::Level::Info)
+            || log::log_enabled!(target: LOG_TARGET, log::Level::Warn)
+            || log::log_enabled!(target: LOG_TARGET, log::Level::Error) {
+            info!(
+                target: LOG_TARGET,
+                "🎁 [{source}] Prepared block {} [{}] \
+                [hash: {:?}; parent_hash: {}; {}, threads {thread_number}]",
+                info.number,
+                info.time_info(limit_execution_time),
+                <Block as BlockT>::Hash::from(proposal.block.header().hash()),
+                proposal.block.header().parent_hash(),
+                info.tx_info(),
+            );
+        } else if log::log_enabled!(target: LOG_TARGET, log::Level::Debug)
+            || log::log_enabled!(target: LOG_TARGET, log::Level::Trace) {
+            debug!(
+                target: LOG_TARGET,
+                "🎁 [{source}] Prepared block {} [{}] \
+                [hash: {:?}; parent_hash: {}; {}, threads {thread_number}]",
+                info.number,
+                info.time_debug(limit_execution_time),
+                <Block as BlockT>::Hash::from(proposal.block.header().hash()),
+                proposal.block.header().parent_hash(),
+                info.tx_info(),
+            );
+        }
         telemetry!(
 			self.telemetry;
 			CONSENSUS_INFO;
@@ -1188,16 +1249,32 @@ where
             Some(extrinsics_root) => proposal.block.header_mut().set_extrinsics_root(extrinsics_root),
             None => return Err(Self::Error::UnknownBlock("Failed to get extrinsiscs_root".to_string())),
         }
-        info!(
-            target: LOG_TARGET,
-			"🎁 [{source}] Prepared block {} [{}] \
-			[hash: {:?}; parent_hash: {}; {}, threads {thread_number}]",
-			info.number,
-			info.time_info(limit_execution_time),
-			<Block as BlockT>::Hash::from(proposal.block.header().hash()),
-			proposal.block.header().parent_hash(),
-            info.tx_info(),
-		);
+        if log::log_enabled!(target: LOG_TARGET, log::Level::Info)
+            || log::log_enabled!(target: LOG_TARGET, log::Level::Warn)
+            || log::log_enabled!(target: LOG_TARGET, log::Level::Error) {
+            info!(
+                target: LOG_TARGET,
+                "🎁 [{source}] Prepared block {} [{}] \
+                [hash: {:?}; parent_hash: {}; {}, threads {thread_number}]",
+                info.number,
+                info.time_info(limit_execution_time),
+                <Block as BlockT>::Hash::from(proposal.block.header().hash()),
+                proposal.block.header().parent_hash(),
+                info.tx_info(),
+            );
+        } else if log::log_enabled!(target: LOG_TARGET, log::Level::Debug)
+            || log::log_enabled!(target: LOG_TARGET, log::Level::Trace) {
+            debug!(
+                target: LOG_TARGET,
+                "🎁 [{source}] Prepared block {} [{}] \
+                [hash: {:?}; parent_hash: {}; {}, threads {thread_number}]",
+                info.number,
+                info.time_debug(limit_execution_time),
+                <Block as BlockT>::Hash::from(proposal.block.header().hash()),
+                proposal.block.header().parent_hash(),
+                info.tx_info(),
+            );
+        }
         telemetry!(
 			self.telemetry;
 			CONSENSUS_INFO;
@@ -1217,4 +1294,19 @@ pub fn extrinsics_root<H: Hash, E: codec::Encode>(extrinsics: &[E]) -> H::Output
 /// Same with `frame_system::extrinsics_data_root`.
 pub fn extrinsics_data_root<H: Hash>(xts: Vec<Vec<u8>>) -> H::Output {
     H::ordered_trie_root(xts, sp_core::storage::StateVersion::V0)
+}
+
+pub fn set_threads_to_storage<Block: BlockT>(block: NumberFor<Block>, threads: u8, changes: &mut Changes) {
+    use sp_core::blake2_128;
+
+    const SYSTEM_THREADS_PREFIX: [u8; 32] = [38, 170, 57, 78, 234, 86, 48, 224, 124, 72, 174, 12, 149, 88, 206, 247, 156, 181, 201, 244, 0, 171, 65, 57, 156, 107, 139, 81, 248, 209, 136, 25];
+
+    let threads_key = [SYSTEM_THREADS_PREFIX.to_vec(), blake2_128(&block.encode()).to_vec()].concat();
+    if let Some(entry) = changes.get_mut(&threads_key) {
+        entry.set(Some(threads.encode()), false, None);
+    } else {
+        let mut new_entry = OverlayedEntry::default();
+        new_entry.set(Some(threads.encode()), true, None);
+        changes.insert(threads_key, new_entry);
+    }
 }
