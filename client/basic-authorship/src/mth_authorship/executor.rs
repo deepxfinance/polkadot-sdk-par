@@ -897,6 +897,14 @@ where
                     return;
                 }
                 let change_diff = |mth: &Vec<(StorageKey, Option<StorageValue>)>, oth: &Vec<(StorageKey, Option<StorageValue>)>| {
+                    let filter = vec![
+                        // System Threads
+                        [38, 170, 57, 78, 234, 86, 48, 224, 124, 72, 174, 12, 149, 88, 206, 247, 156, 181, 201, 244, 0, 171, 65, 57, 156, 107, 139, 81, 248, 209, 136, 25].to_vec(),
+                        // System EventsMap
+                        [38, 170, 57, 78, 234, 86, 48, 224, 124, 72, 174, 12, 149, 88, 206, 247, 49, 208, 128, 228, 214, 125, 178, 100, 12, 86, 17, 66, 220, 220, 32, 101].to_vec(),
+                        // b":thread_root",
+                        [58, 116, 104, 114, 101, 97, 100, 95, 114, 111, 111, 116].to_vec(),
+                    ];
                     // main_storage_changes check if block different.
                     let mut mth_changes = HashMap::new();
                     for (k, v) in mth.clone() {
@@ -907,17 +915,27 @@ where
                     for (k, v_res) in oth.iter() {
                         if let Some(v) = mth_changes.remove(k) {
                             if &v != v_res {
+                                if filter.iter().any(|f| k.starts_with(f)) { continue; }
                                 oth_diff.push(k.clone());
                             }
                         } else {
+                            if filter.iter().any(|f| k.starts_with(f)) { continue; }
                             oth_extra.push(k.clone());
                         }
                     }
-                    let oth_less: Vec<_> = mth_changes.keys().cloned().collect();
+                    let oth_less: Vec<_> = mth_changes
+                        .keys()
+                        .filter(|k| !filter.iter().any(|f| k.starts_with(f)))
+                        .cloned()
+                        .collect();
                     (oth_less, oth_diff, oth_extra)
                 };
                 // main_storage_changes check if block different.
                 let (oth_main_less, oth_main_diff, oth_main_extra) = change_diff(&main_storage_changes, &storage_changes_res.main_storage_changes);
+                if oth_main_less.is_empty() && oth_main_diff.is_empty() && oth_main_extra.is_empty() {
+                    info!(target: LOG_TARGET, "[OTC Block {number}({block_time} ({init_time} {execute_time} {build_time}) ms)] Check Block state success");
+                    return;
+                }
                 error!(
                     target: LOG_TARGET,
                     "[OTC Block {number}({block_time} ({init_time} {execute_time} {build_time}) ms)] [one thread/multi threads] main change differences, less: {oth_main_less:?}, diff: {oth_main_diff:?}, extra: {oth_main_extra:?}",
