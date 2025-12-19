@@ -66,6 +66,18 @@ where
         .slot_duration(parent_hash).map_err(|err| err.into())
 }
 
+pub fn max_empty<A, B, C>(client: &C) -> sp_blockchain::Result<u32>
+where
+    A: Codec,
+    B: BlockT,
+    C: AuxStore + ProvideRuntimeApi<B> + UsageProvider<B>,
+    C::Api: HotstuffApi<B, A>,
+{
+    client
+        .runtime_api()
+        .max_empty(client.usage_info().chain.best_hash).map_err(|err| err.into())
+}
+
 /// Hotstuff Errors
 #[derive(Debug, thiserror::Error)]
 pub enum Error<B: BlockT> {

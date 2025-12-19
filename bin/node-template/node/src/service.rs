@@ -245,6 +245,7 @@ pub fn new_full(config: Configuration) -> Result<TaskManager, ServiceError> {
 		<ExecutorDispatch as sc_executor::NativeExecutionDispatch>::native_version(),
 	);
 	let slot_duration = hotstuff_consensus::slot_duration(&*client)?;
+	let max_empty = hotstuff_consensus::max_empty(&*client)?;
 	let (voter, hotstuff_network, block_authorship_task) = hotstuff_consensus::consensus::start_hotstuff(
 		network,
 		hotstuff_link,
@@ -267,6 +268,7 @@ pub fn new_full(config: Configuration) -> Result<TaskManager, ServiceError> {
 		},
 		select_chain,
 		slot_duration,
+		max_empty,
 		None,
 	)?;
 

@@ -69,6 +69,7 @@ pub struct ConsensusWorker<
     sync: S,
     local_timer: Timer,
     slot_duration: SlotDuration,
+    max_empty: u32,
     aux_data: AuxDataStore<B, C>,
     consensus_msg_tx: Sender<(bool, ConsensusMessage<B>)>,
     consensus_msg_rx: Receiver<(bool, ConsensusMessage<B>)>,
@@ -109,6 +110,7 @@ where
         proposer_factory: Arc<RwLock<PF>>,
         local_timer_duration: u64,
         slot_duration: SlotDuration,
+        max_empty: u32,
         oracle: Arc<O>,
         consensus_msg_tx: Sender<(bool, ConsensusMessage<B>)>,
         consensus_msg_rx: Receiver<(bool, ConsensusMessage<B>)>,
@@ -135,6 +137,7 @@ where
             network,
             local_timer: Timer::new(local_timer_duration),
             slot_duration,
+            max_empty,
             consensus_msg_tx,
             consensus_msg_rx,
             executor_tx,
@@ -150,6 +153,13 @@ where
             network_notification_limit,
             phantom: PhantomData,
         }
+    }
+
+    pub fn should_propose_empty(&self) -> bool {
+        // if time passed since last commit time greater than `(max_empty - 1) * slot_duration`
+        // we should propose block even empty.
+        Timestamp::current().as_millis().saturating_sub(self.state.commit_qc.timestamp.as_millis())
+        > self.max_empty.saturating_sub(1) as u64 * self.slot_duration.as_millis()
     }
 
     // Try recover all unapplied commit.
@@ -648,8 +658,13 @@ where
                 return Err(HotstuffError::GetProposal(format!("No proposal for commit qc of proposal {}, skip for can't check timestamp", qc.proposal_hash)));
             }
         };
-        let parent_commit_hash = match self.aux_data.get_proposal_ancestors(&qc_proposal)? {
-            Some((_, grandpa)) => grandpa.qc.proposal_hash,
+        let (parent_commit_hash, is_empty_block) = match self.aux_data.get_proposal_ancestors(&qc_proposal)? {
+            Some((_, grandpa)) => (
+                grandpa.qc.proposal_hash,
+                grandpa.payload.extrinsics
+                    .map(|e| e.iter().flatten().all(|es| es.is_empty()))
+                    .unwrap_or(true),
+            ),
             None => {
                 return Err(HotstuffError::GetProposal(format!("No ancestor proposals for commit qc of proposal {}, skip for can't check timestamp", qc.proposal_hash)));
             }
@@ -688,7 +703,11 @@ where
         } else {
             return Err(HotstuffError::ClientError(format!("Can't get last commit time for new block {} slot. skip ", new_block_number)));
         };
-        let min_qc_time = last_commit_time.as_millis() + self.slot_duration.as_millis();
+        let min_qc_time = if is_empty_block {
+            last_commit_time.as_millis() + self.slot_duration.as_millis() * self.max_empty as u64
+        } else {
+            last_commit_time.as_millis() + self.slot_duration.as_millis()
+        };
         if qc.timestamp.as_millis() < min_qc_time {
             qc.timestamp = Timestamp::from(min_qc_time);
             trace!(target: CLIENT_LOG_TARGET, "~~ handle_qc from local. QC.round {} set timestamp {min_qc_time} for next slot", qc.round());
@@ -885,8 +904,7 @@ where
                 // restart consensus for a new block
                 let block_number = best_next
                     .max(self.commit.block_number().saturating_add(1u32.into()));
-                let (next_payload, time) = self.get_new_block_payload(block_number).await;
-                (Some(next_payload), time)
+                self.get_new_block_payload(block_number).await
             }
         } else if self.state.round.view == high_proposal.view {
             if let Some(next_payload) = high_proposal.payload.next() {
@@ -899,8 +917,7 @@ where
                     // high_proposal.payload.next() is none, this means the high_proposal block is finished, continue for next block.
                     .max(high_proposal.payload.block_number().saturating_add(1u32.into()))
                     .max(self.commit.block_number().saturating_add(1u32.into()));
-                let (next_payload, time) = self.get_new_block_payload(block_number).await;
-                (Some(next_payload), time)
+                self.get_new_block_payload(block_number).await
             } else {
                 (None, Default::default())
             }
@@ -931,7 +948,7 @@ where
         self.network.set_view(self.state.view());
     }
 
-    async fn get_new_block_payload(&self, block_number: <B::Header as HeaderT>::Number) -> (Payload<B>, Duration) {
+    async fn get_new_block_payload(&self, block_number: <B::Header as HeaderT>::Number) -> (Option<Payload<B>>, Duration) {
         let start = std::time::Instant::now();
         let info = self.client.info();
         let parent_header = self.client.header(info.best_hash).expect("failed to get best_hash").expect("no expected header");
@@ -951,11 +968,15 @@ where
                 let multi_length: Vec<_> = multi.iter().map(|g| g.len()).collect();
                 let groups = vec![multi_length, vec![single.len()]];
                 debug!(target: CLIENT_LOG_TARGET, "GroupTransaction for #{block_number} base on #{}({}) {groups:?}", parent_header.number(), parent_header.hash());
+                if multi.is_empty() && single.is_empty() && !self.should_propose_empty() {
+                    // for empty transaction block and not exceed max_empty block. we don't need to propose.
+                    return (None, start.elapsed());
+                }
                 (multi, single, info)
             },
             Err(e) => {
                 warn!(target: CLIENT_LOG_TARGET, "GroupTransaction base on {} failed for {e:?}", parent_header.number());
-                return (Payload::empty(), start.elapsed());
+                return (None, start.elapsed());
             }
         };
         self.oracle.update_group_info(&group_info);
@@ -968,11 +989,11 @@ where
             .collect::<Vec<Vec<u8>>>();
         extrinsic_data.extend(single.iter().map(|e| e.encode()).collect::<Vec<Vec<u8>>>());
         (
-            Payload {
+            Some(Payload {
                 stage: ConsensusStage::Prepare,
                 block: (block_number, extrinsics_data_root::<<B::Header as HeaderT>::Hashing>(extrinsic_data)).into(),
                 extrinsics: Some(vec![multi, vec![single]]),
-            },
+            }),
             start.elapsed(),
         )
     }
@@ -1053,8 +1074,12 @@ where
         }
         // verify extrinsic
         let start = std::time::Instant::now();
-        // spawn extrinsics_root check thread.
         let extrinsics = payload.extrinsics.clone().unwrap();
+        if extrinsics.iter().flatten().all(|v| v.is_empty()) && !self.should_propose_empty() {
+            // for empty transaction block and not exceed max_empty block. we don't need to propose.
+            return Err(PayloadError::ExtrinsicErr("No need to propose empty block since not reach MaxEmpty".to_string()).into());
+        }
+        // spawn extrinsics_root check thread.
         let extrinsics_root = std::thread::spawn(|| {
             let extrinsic_data: Vec<_> = extrinsics
                 .into_iter()
@@ -1245,6 +1270,7 @@ pub fn start_hotstuff<B, BE, C, N, S, SC, PF, Error, O, L, I, CIDP>(
     create_inherent_data_providers: CIDP,
     select_chain: SC,
     slot_duration: SlotDuration,
+    max_empty: u32,
     max_notification_size: Option<usize>,
 ) -> sp_blockchain::Result<(
     impl Future<Output = ()> + Send,
@@ -1302,6 +1328,7 @@ where
         proposer_factory.clone(),
         local_timer_duration,
         slot_duration,
+        max_empty,
         oracle.clone(),
         consensus_msg_tx.clone(),
         consensus_msg_rx,

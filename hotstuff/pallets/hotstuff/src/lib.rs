@@ -69,6 +69,10 @@ pub mod pallet {
 	pub trait Config: pallet_timestamp::Config + frame_system::Config {
 		type WeightInfo: WeightInfo;
 
+		/// For normal hotstuff will not generate block if there is no transaction.
+		/// But we still generate empty block for duration `MaxEmpty` * `SLOT_DURATION`.
+		type MaxEmpty: Get<u32>;
+
 		/// The identifier type for an authority.
 		type AuthorityId: Member
 			+ Parameter
@@ -306,6 +310,10 @@ impl<T: pallet::Config> Pallet<T> {
 			// the majority of its slot.
 			<T as pallet_timestamp::Config>::MinimumPeriod::get().saturating_mul(2u32.into())
 		}
+	}
+
+	pub fn max_empty() -> u32 {
+		T::MaxEmpty::get()
 	}
 
 	/// Ensure the correctness of the state of this pallet.

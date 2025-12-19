@@ -154,6 +154,10 @@ sp_api::decl_runtime_apis! {
 		/// Currently, only the value provided by this type at genesis will be used.
 		fn slot_duration() -> SlotDuration;
 
+		/// Return max empty block interval for hotstuff.
+		/// `SlotDuration` * `MaxEmpty`.
+		fn max_empty() -> u32;
+
 		/// Return current slot.
 		fn current_slot() -> Slot;
 
