@@ -64,7 +64,7 @@ where
 
         let mut skipped = 0;
         let mut filtered = 0;
-        let mut tx_count = 0usize;
+        let mut raw_tx_count = 0usize;
         // collect transactions' group info and dispatch to different groups.
         let mut grouper = ConflictGroup::new();
         // loop for
@@ -72,18 +72,18 @@ where
         // 2. spawn mission for every transaction:
         //      parse transaction runtime call group info and return by channel.
         loop {
-            if tx_count >= total_tx_limit {
-                debug!(target: LOG_TARGET, "[GroupTx B {block}] Reach tx_limit {}/{} ms (total {tx_count}, block size: {}/{block_size_limit})", start.elapsed().as_millis(), max_time.as_millis(), block_size + proof_size);
+            if raw_tx_count >= total_tx_limit {
+                debug!(target: LOG_TARGET, "[GroupTx B {block}] Reach tx_limit {}/{} ms (total {raw_tx_count}, block size: {}/{block_size_limit})", start.elapsed().as_millis(), max_time.as_millis(), block_size + proof_size);
                 break;
             }
             if Instant::now() > deadline {
-                debug!(target: LOG_TARGET, "[GroupTx B {block}] Reach deadline {}/{} ms (total {tx_count}, block size: {}/{block_size_limit})", start.elapsed().as_millis(), max_time.as_millis(), block_size + proof_size);
+                debug!(target: LOG_TARGET, "[GroupTx B {block}] Reach deadline {}/{} ms (total {raw_tx_count}, block size: {}/{block_size_limit})", start.elapsed().as_millis(), max_time.as_millis(), block_size + proof_size);
                 break;
             }
             let pending_tx = if let Some(pending_tx) = pending_iterator.next() {
                 pending_tx
             } else {
-                debug!(target: LOG_TARGET, "[GroupTx B {block}] Out of transactions({} ms, total {tx_count}, block size: {}/{block_size_limit})", start.elapsed().as_millis(), block_size + proof_size);
+                debug!(target: LOG_TARGET, "[GroupTx B {block}] Out of transactions({} ms, total {raw_tx_count}, block size: {}/{block_size_limit})", start.elapsed().as_millis(), block_size + proof_size);
                 break;
             };
             if filter.remove(pending_tx.hash()) {
@@ -103,7 +103,7 @@ where
                 } else {
                     debug!(
                         target: LOG_TARGET,
-                        "[GroupTx B {block}] Reached block size limit({}/{block_size_limit}) with extrinsic: {tx_count} in {} ms. start execute transactions.",
+                        "[GroupTx B {block}] Reached block size limit({}/{block_size_limit}) with extrinsic: {raw_tx_count} in {} ms. start execute transactions.",
                         block_size + proof_size,
                         start.elapsed().as_millis(),
                     );
@@ -111,9 +111,9 @@ where
                 }
             }
             block_size += pending_tx.data().encoded_size();
-            grouper.insert(pending_tx.group_info().to_vec(), (tx_count, pending_tx));
+            grouper.insert(pending_tx.group_info().to_vec(), (raw_tx_count, pending_tx));
             // TODO update proof_size with new extrinsic. This is hard since we do not actually execute the extrinsic.
-            tx_count += 1;
+            raw_tx_count += 1;
         }
         let (mut groups, raw_groups, max_group_length, sort) = grouper.group(thread_limit, linear_tx_limit, single_tx_min);
         for group in & mut groups {
@@ -125,11 +125,13 @@ where
             single = [groups.pop().unwrap(), single].concat();
         }
         single.sort_by(|a, b| a.0.cmp(&b.0));
+        let tx_count = groups.iter().map(|g| g.len()).sum::<usize>() + single.len();
         Ok(GroupTxOutput {
             info: GroupInfo {
                 input,
                 tx_count,
                 filtered,
+                raw_tx_count,
                 raw_groups,
                 groups: groups.len(),
                 time: start.elapsed(),

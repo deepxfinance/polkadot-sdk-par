@@ -403,6 +403,8 @@ pub struct GroupInfo {
     pub tx_count: usize,
     /// Filtered transaction
     pub filtered: usize,
+    /// Raw transactions number before sorted/filtered by limits.
+    pub raw_tx_count: usize,
     /// Raw groups number for parallel groups(then it is merged to `groups` by `thread_limit`)  .
     pub raw_groups: usize,
     /// Final groups length.
@@ -426,8 +428,9 @@ impl GroupInfo {
             "".to_string()
         };
         format!(
-            "Group {} tx in {}ms(W{}μs S{}μs){}(groups {}->{})(Input: {})",
+            "Group {}({}) tx in {}ms(W{}μs S{}μs){}(groups {}->{})(Input: {})",
             self.tx_count,
+            self.raw_tx_count,
             self.time.as_millis(),
             self.wait.as_micros(),
             self.sort.as_micros(),

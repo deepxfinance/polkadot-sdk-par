@@ -1053,19 +1053,30 @@ where
         }
         // verify extrinsic
         let start = std::time::Instant::now();
-        let groups: Vec<_> = payload.extrinsics.clone().unwrap().into_iter().flatten().collect();
-        let mut extrinsic_data = vec![];
+        // spawn extrinsics_root check thread.
+        let extrinsics = payload.extrinsics.clone().unwrap();
+        let extrinsics_root = std::thread::spawn(|| {
+            let extrinsic_data: Vec<_> = extrinsics
+                .into_iter()
+                .flatten()
+                .flatten()
+                .map(|e| e.encode())
+                .collect();
+            extrinsics_data_root::<<B::Header as HeaderT>::Hashing>(extrinsic_data)
+        });
+        // spawn threads for transactions check
+        let thread_verify_limit = self.oracle.thread_verify_limit().unwrap_or(1000);
+        let groups = payload.extrinsics.as_ref().unwrap().iter().flatten();
         let extrinsic: Vec<_> = groups
-            .into_iter()
-            .map(|e| e.into_iter().map(|e| {
-                extrinsic_data.push(e.encode());
-                (TransactionSource::External, e)
-            }).collect::<Vec<_>>())
+            .map(|e|
+                // limit each verify_thread's extrinsic number.
+                e.chunks(thread_verify_limit)
+                    .map(|chunk|
+                        chunk.iter().map(|e| { (TransactionSource::External, e.clone()) }).collect::<Vec<_>>()
+                    )
+            )
+            .flatten()
             .collect();
-        let extrinsics_root = extrinsics_data_root::<<B::Header as HeaderT>::Hashing>(extrinsic_data);
-        if extrinsics_root != payload.block.extrinsics_root {
-            return Err(PayloadError::ExtrinsicErr(format!("Incorrect extrinsics_root/payload: {extrinsics_root}/{})", payload.block.extrinsics_root)).into());
-        }
         let mut check_tasks: Vec<JoinHandle<Result<(usize, Duration), HotstuffError>>> = vec![];
         for thread_extrinsic in extrinsic {
             let client = self.client.clone();
@@ -1095,6 +1106,12 @@ where
                 .join()
                 .map_err(|e| HotstuffError::Payload(PayloadError::ExtrinsicErr(format!("validate_transactions meet err: {e:?}"))))??;
             threads_verify.push(res);
+        }
+        match extrinsics_root.join() {
+            Ok(root) => if root != payload.block.extrinsics_root {
+                return Err(PayloadError::ExtrinsicErr(format!("Incorrect extrinsics_root/payload: {root}/{})", payload.block.extrinsics_root)).into());
+            },
+            Err(e) => return Err(HotstuffError::Other(format!("Failed to calculate extrinsics_root for {e:?}"))),
         }
         self.oracle.update_verify_times(&threads_verify);
         let check_extrinsic_time = start.elapsed().as_micros();
