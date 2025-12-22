@@ -486,7 +486,7 @@ impl<RE: Encode + Decode + Debug + Clone, B, Block: BlockT, Api: ApiExt<Block>> 
     }
 
     fn prepare_thread_in_order(&mut self, thread: usize, txs: usize, cache: &mut OverlayCache, changes: &mut OverlayedChanges) {
-        let typed_cache: bool = std::env::var("TYPED_CACHE").unwrap_or("false".into()).parse().unwrap_or(false);
+        let typed_cache: bool = std::env::var("TYPED_CACHE").unwrap_or("true".into()).parse().unwrap_or(true);
 
         // 1. update EventIndex for thread start index. For fast event merge.
         if thread > 1 {

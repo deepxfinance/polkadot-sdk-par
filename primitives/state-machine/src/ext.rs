@@ -147,7 +147,7 @@ where
 		backend: &'a B,
 		extensions: Option<&'a mut sp_externalities::Extensions>,
 	) -> Self {
-		let typed_cache: bool = std::env::var("TYPED_CACHE").unwrap_or("false".into()).parse().unwrap_or(false);
+		let typed_cache: bool = std::env::var("TYPED_CACHE").unwrap_or("true".into()).parse().unwrap_or(true);
 		Self {
 			cache: if typed_cache { cache } else { None },
 			overlay,
