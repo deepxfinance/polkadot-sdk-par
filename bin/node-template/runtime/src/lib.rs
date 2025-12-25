@@ -62,7 +62,7 @@ pub type AccountId = <<Signature as Verify>::Signer as IdentifyAccount>::Account
 pub type Balance = u128;
 
 /// Index of a transaction in the chain.
-pub type Index = u32;
+pub type Index = u64;
 
 /// A hash of some data used by the chain.
 pub type Hash = sp_core::H256;
@@ -195,6 +195,7 @@ impl frame_system::Config for Runtime {
 	/// The set code logic, just the default since we're not a parachain.
 	type OnSetCode = ();
 	type MaxConsumers = frame_support::traits::ConstU32<16>;
+	type CallLimits = (ConstU64<10000>, ConstU64<3600000>, ConstU64<3600000>, ConstU32<100>);
 }
 
 impl pallet_hotstuff::Config for Runtime {
@@ -214,6 +215,11 @@ impl pallet_timestamp::Config for Runtime {
 	type OnTimestampSet = Hotstuff;
 	type MinimumPeriod = ConstU64<{ SLOT_DURATION / 2 }>;
 	type WeightInfo = ();
+}
+
+impl pallet_quota::Config for Runtime {
+	type RuntimeEvent = RuntimeEvent;
+	type ActivateQuota = ConstU32<100001>;
 }
 
 /// Existential deposit.
@@ -271,6 +277,7 @@ construct_runtime!(
 		UncheckedExtrinsic = UncheckedExtrinsic,
 	{
 		System: frame_system,
+		Quota: pallet_quota,
 		Timestamp: pallet_timestamp,
 		Hotstuff: pallet_hotstuff,
 		Balances: pallet_balances,
@@ -294,9 +301,9 @@ pub type SignedExtra = (
 	frame_system::CheckTxVersion<Runtime>,
 	frame_system::CheckGenesis<Runtime>,
 	frame_system::CheckEra<Runtime>,
-	frame_system::CheckNonce<Runtime>,
+	frame_system::CheckQuotaNonce<Runtime>,
 	frame_system::CheckWeight<Runtime>,
-	pallet_transaction_payment::ChargeTransactionPayment<Runtime>,
+	pallet_transaction_payment::EmptyTransactionPayment<Runtime>,
 );
 
 /// Unchecked extrinsic type as expected by this runtime.

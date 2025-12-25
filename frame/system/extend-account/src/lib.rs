@@ -1,10 +1,13 @@
 #![cfg_attr(not(feature = "std"), no_std)]
 
+pub mod limits;
+use sp_std::fmt::Debug;
+use limits::CallLimits;
 use codec::{Decode, Encode, MaxEncodedLen};
-use frame_support::RuntimeDebug;
-use frame_support::sp_runtime::{traits::One, Saturating, transaction_validity::InvalidTransaction};
+use frame_support::{log, RuntimeDebug};
+use frame_support::sp_runtime::{traits::One, Saturating, transaction_validity::InvalidTransaction, SaturatedConversion};
 use scale_info::TypeInfo;
-use sp_core::Get;
+use frame_support::sp_runtime::traits::{UniqueSaturatedInto, Zero};
 use sp_std::vec::Vec;
 
 /// Special TimeNonce with latest used list.
@@ -20,12 +23,22 @@ impl<Index: Encode> MaxEncodedLen for TimeNonce<Index> {
 }
 
 impl<Index> TimeNonce<Index> {
+	pub fn init(&mut self)
+	where
+		Index: Zero,
+	{
+		if self.0.is_empty() {
+			self.0.push(Zero::zero());
+		}
+	}
+
 	pub fn find_index(&self, nonce: &Index) -> Result<usize, InvalidTransaction>
 	where
-		Index: Ord,
+		Index: Ord + Debug,
 	{
 		if let Some(first_nonce) = self.0.first() {
 			if nonce <= first_nonce {
+				log::trace!(target: "account", "Stale for smaller than first_nonce {nonce:?}/{first_nonce:?}");
 				return Err(InvalidTransaction::Stale);
 			}
 		}
@@ -38,25 +51,28 @@ impl<Index> TimeNonce<Index> {
 			} else if nonce > &self.0[i] {
 				break;
 			} else {
+				log::trace!(target: "account", "Stale for duplicated time nonce");
 				return Err(InvalidTransaction::Stale);
 			}
 		}
 		Ok(index)
 	}
 
-	pub fn try_update<S: Get<u32>>(&mut self, nonce: Index) -> Result<(), InvalidTransaction>
+	pub fn try_update<Limit: CallLimits>(&mut self, nonce: Index) -> Result<bool, InvalidTransaction>
 	where
-		Index: Ord,
+		Index: Ord + Debug,
 	{
-		self.update::<S>(self.find_index(&nonce)?, nonce);
-		Ok(())
+		Ok(self.update::<Limit>(self.find_index(&nonce)?, nonce))
 	}
 
-	pub fn update<S: Get<u32>>(&mut self, index: usize, nonce: Index) {
+	/// Insert nonce to window and return `true` if first value changed for window.
+	pub fn update<Limit: CallLimits>(&mut self, index: usize, nonce: Index) -> bool {
 		self.0.insert(index, nonce);
-		if self.0.len() > S::get() as usize {
+		if self.0.len() > Limit::window_size() as usize {
 			self.0.remove(0);
+			return true;
 		}
+		index == 0
 	}
 }
 
@@ -113,39 +129,39 @@ impl<Index, AccountData> AccountInfo<Index, AccountData> {
 	}
 
 	/// Check if account can do transaction with quota check and nonce check.
-	/// `time` should be the estimated execute timestamp or actual block timestamp
-	pub fn check_extrinsic_nonce<Free: Get<u64>>(&self, time: u64, nonce: Index) -> Result<(), InvalidTransaction>
+	/// `now` should be the estimated execute timestamp or actual block timestamp
+	pub fn check_extrinsic_nonce<Limit: CallLimits>(&self, now: u64, nonce: Index) -> Result<(), InvalidTransaction>
 	where
-		Index: Ord
+		Index: Ord + Debug
 	{
 		if nonce < self.nonce {
 			return Err(InvalidTransaction::Stale);
 		}
-		self.check_quota::<Free>(time)
+		self.check_quota::<Limit>(now)
 	}
 
 	/// Check if account can do transaction with quota check and time_nonce check.
 	/// `time` should be the estimated execute timestamp or actual block timestamp
-	pub fn check_extrinsic_time_nonce<Free: Get<u64>>(&self, time: u64, nonce: Index) -> Result<(), InvalidTransaction>
+	pub fn check_extrinsic_time_nonce<Limit: CallLimits>(&self, now: u64, nonce: Index) -> Result<(), InvalidTransaction>
 	where
-		Index: Ord,
+		Index: Ord + Debug + UniqueSaturatedInto<u64> + Clone,
 	{
-		self.check_quota::<Free>(time)?;
-		self.check_time_nonce(&nonce)
+		self.check_quota::<Limit>(now)?;
+		self.check_time_nonce::<Limit>(now, &nonce)
 	}
 
 	/// Apply account transaction with quota update and nonce update.
 	/// `time` should be the actual executing block timestamp.
 	/// `nonce` should be normal nonce.
-	pub fn apply_extrinsic_nonce<Free: Get<u64>>(&mut self, time: u64, nonce: Index) -> Result<(), InvalidTransaction>
+	pub fn apply_extrinsic_nonce<Limit: CallLimits>(&mut self, now: u64, nonce: Index) -> Result<(), InvalidTransaction>
 	where
-		Index: Ord + One + Saturating
+		Index: Ord + Debug + One + Saturating
 	{
-		if self.quota == 0 {
+		if self.quota == 0 || self.quota == u32::MAX {
 			Err(InvalidTransaction::BadSigner)
-		} else if self.update + Free::get() <= time {
+		} else if self.update + Limit::free_interval() <= now {
 			if self.nonce == nonce {
-				self.update = time;
+				self.update = now;
 				self.nonce = nonce.saturating_add(One::one());
 				Ok(())
 			} else if self.nonce > nonce {
@@ -155,7 +171,7 @@ impl<Index, AccountData> AccountInfo<Index, AccountData> {
 			}
 		} else if self.quota > 1 {
 			if self.nonce == nonce {
-				self.update = time;
+				self.update = now;
 				self.quota -= 1;
 				self.nonce = nonce.saturating_add(One::one());
 				Ok(())
@@ -170,33 +186,83 @@ impl<Index, AccountData> AccountInfo<Index, AccountData> {
 	}
 
 	/// Apply account transaction with quota update and time_nonce update.
-	/// `time` should be the actual executing block timestamp.
+	/// `now` should be the actual executing block timestamp.
 	/// `nonce` should be the singed timestamp.
-	pub fn apply_extrinsic_time_nonce<Free: Get<u64>, S: Get<u32>>(&mut self, time: u64, nonce: Index) -> Result<(), InvalidTransaction>
+	pub fn apply_extrinsic_time_nonce<Limit: CallLimits>(&mut self, now: u64, nonce: Index) -> Result<(), InvalidTransaction>
 	where
-		Index: Ord,
+		Index: Ord + Debug + UniqueSaturatedInto<u64> + Clone,
 	{
-		if self.quota == 0 {
+		if self.quota == 0 || self.quota == u32::MAX {
 			Err(InvalidTransaction::BadSigner)
-		} else if self.update + Free::get() <= time {
+		} else if self.update + Limit::free_interval() <= now {
+			self.check_time_nonce_range::<Limit>(now, &nonce)?;
 			let index = self.time_nonce.find_index(&nonce)?;
-			self.update = time;
-			self.time_nonce.update::<S>(index, nonce);
+			self.update = now;
+			if self.time_nonce.update::<Limit>(index, nonce) {
+				log::trace!(target: "account", "Free time_nonce {:?} update_first_nonce {:?}", self.time_nonce.0[index.saturating_sub(1)], self.time_nonce.0[0]);
+			} else {
+				log::trace!(target: "account", "Free time_nonce {:?}", self.time_nonce.0[index]);
+			}
 			Ok(())
 		} else if self.quota > 1 {
+			self.check_time_nonce_range::<Limit>(now, &nonce)?;
 			let index = self.time_nonce.find_index(&nonce)?;
-			self.update = time;
+			self.update = now;
 			self.quota -= 1;
-			self.time_nonce.update::<S>(index, nonce);
+			if self.time_nonce.update::<Limit>(index, nonce) {
+				log::trace!(target: "account", "Charge time_nonce {:?} update_first_nonce {:?}", self.time_nonce.0[index.saturating_sub(1)], self.time_nonce.0[0]);
+			} else {
+				log::trace!(target: "account", "Charge time_nonce {:?}", self.time_nonce.0[index]);
+			}
 			Ok(())
 		} else {
 			Err(InvalidTransaction::Payment)
 		}
 	}
 
+	/// Apply account transaction with nonce update.
+	/// `time` should be the actual executing block timestamp.
+	/// `nonce` should be normal nonce.
+	pub fn apply_extrinsic_nonce_free(&mut self, time: u64, nonce: Index) -> Result<(), InvalidTransaction>
+	where
+		Index: Ord + Debug + One + Saturating
+	{
+		if self.quota == 0 || self.quota == u32::MAX {
+			Err(InvalidTransaction::BadSigner)
+		} else {
+			if self.nonce == nonce {
+				self.update = time;
+				self.nonce = nonce.saturating_add(One::one());
+				Ok(())
+			} else if self.nonce > nonce {
+				Err(InvalidTransaction::Stale)
+			} else {
+				Err(InvalidTransaction::Future)
+			}
+		}
+	}
+
+	/// Apply account transaction with time_nonce update.
+	/// `time` should be the actual executing block timestamp.
+	/// `nonce` should be the singed timestamp.
+	pub fn apply_extrinsic_time_nonce_free<Limit: CallLimits>(&mut self, now: u64, nonce: Index) -> Result<(), InvalidTransaction>
+	where
+		Index: Ord + Debug + UniqueSaturatedInto<u64> + Clone,
+	{
+		if self.quota == 0 || self.quota == u32::MAX {
+			Err(InvalidTransaction::BadSigner)
+		} else {
+			self.check_time_nonce_range::<Limit>(now, &nonce)?;
+			let index = self.time_nonce.find_index(&nonce)?;
+			self.update = now;
+			self.time_nonce.update::<Limit>(index, nonce);
+			Ok(())
+		}
+	}
+
 	/// Check if quota is enough.
-	pub fn check_quota<Free: Get<u64>>(&self, time: u64) -> Result<(), InvalidTransaction> {
-		if self.update + Free::get() <= time {
+	pub fn check_quota<Limit: CallLimits>(&self, time: u64) -> Result<(), InvalidTransaction> {
+		if self.update + Limit::free_interval() <= time {
 			Ok(())
 		} else {
 			if self.quota > 1 {
@@ -208,10 +274,10 @@ impl<Index, AccountData> AccountInfo<Index, AccountData> {
 	}
 
 	/// Update `quota` and `update`.
-	pub fn try_apply_quota<Free: Get<u64>>(&mut self, time: u64) -> Result<(), InvalidTransaction> {
+	pub fn try_apply_quota<Limit: CallLimits>(&mut self, time: u64) -> Result<(), InvalidTransaction> {
 		if self.quota == 0 {
 			Err(InvalidTransaction::BadSigner)
-		} else if self.update + Free::get() <= time {
+		} else if self.update + Limit::free_interval() <= time {
 			Ok(())
 		} else if self.quota > 1 {
 			self.update = time;
@@ -223,37 +289,56 @@ impl<Index, AccountData> AccountInfo<Index, AccountData> {
 	}
 
 	/// Check if transaction time nonce is valid.
-	pub fn check_time_nonce(&self, nonce: &Index) -> Result<(), InvalidTransaction>
+	pub fn check_time_nonce<Limit: CallLimits>(&self, now: u64, nonce: &Index) -> Result<(), InvalidTransaction>
 	where
-		Index: Ord,
+		Index: Ord + Debug + UniqueSaturatedInto<u64> + Clone,
 	{
+		self.check_time_nonce_range::<Limit>(now, nonce)?;
 		self.time_nonce.find_index(nonce).map(|_| ())
 	}
 
 	/// Try to apply new transaction time_nonce.
-	pub fn try_apply_time_nonce<S: Get<u32>>(&mut self, nonce: Index) -> Result<(), InvalidTransaction>
+	pub fn try_apply_time_nonce<Limit: CallLimits>(&mut self, nonce: Index) -> Result<bool, InvalidTransaction>
 	where
-		Index: Ord,
+		Index: Ord + Debug,
 	{
-		self.time_nonce.try_update::<S>(nonce)
+		self.time_nonce.try_update::<Limit>(nonce)
+	}
+
+	fn check_time_nonce_range<Limit: CallLimits>(&self, now: u64, nonce: &Index) -> Result<(), InvalidTransaction>
+	where
+		Index: Ord + Debug + UniqueSaturatedInto<u64> + Clone,
+	{
+		let time_nonce: u64 = nonce.clone().saturated_into();
+		if time_nonce < now && time_nonce.saturating_add(Limit::time_range().0) <= now {
+			log::trace!(target: "account", "Stale for now {now} time_nonce {time_nonce} limit: {}", Limit::time_range().0);
+			Err(InvalidTransaction::Stale)
+		} else if time_nonce > now && time_nonce.saturating_sub(Limit::time_range().1) >= now {
+			Err(InvalidTransaction::Future)
+		} else {
+			Ok(())
+		}
 	}
 }
 
 #[test]
 fn test_time_nonce() {
 	use sp_timestamp::Timestamp;
+	use sp_core::{ConstU64, ConstU32};
+
+	type Limit = (ConstU64<10000>, ConstU64<3600000>, ConstU64<3600000>, ConstU32<5>);
 
 	let mut time_nonce: TimeNonce<u64> = TimeNonce::default();
 	let current_time = Timestamp::current().as_millis();
-	time_nonce.try_update::<sp_core::ConstU32<5>>(current_time + 5000).unwrap();
-	time_nonce.try_update::<sp_core::ConstU32<5>>(current_time + 10000).unwrap();
-	time_nonce.try_update::<sp_core::ConstU32<5>>(current_time + 15000).unwrap();
-	time_nonce.try_update::<sp_core::ConstU32<5>>(current_time + 15000).unwrap();
-	time_nonce.try_update::<sp_core::ConstU32<5>>(current_time + 20000).unwrap();
-	time_nonce.try_update::<sp_core::ConstU32<5>>(current_time + 25000).unwrap();
-	time_nonce.try_update::<sp_core::ConstU32<5>>(current_time + 30000).unwrap();
-	time_nonce.try_update::<sp_core::ConstU32<5>>(current_time + 30000).unwrap();
-	time_nonce.try_update::<sp_core::ConstU32<5>>(current_time + 35000).unwrap();
+	time_nonce.try_update::<Limit>(current_time + 5000).unwrap();
+	time_nonce.try_update::<Limit>(current_time + 10000).unwrap();
+	time_nonce.try_update::<Limit>(current_time + 15000).unwrap();
+	time_nonce.try_update::<Limit>(current_time + 15000).unwrap();
+	time_nonce.try_update::<Limit>(current_time + 20000).unwrap();
+	time_nonce.try_update::<Limit>(current_time + 25000).unwrap();
+	time_nonce.try_update::<Limit>(current_time + 30000).unwrap();
+	time_nonce.try_update::<Limit>(current_time + 30000).unwrap();
+	time_nonce.try_update::<Limit>(current_time + 35000).unwrap();
 	assert_eq!(
 		time_nonce.0,
 		vec![
@@ -270,6 +355,8 @@ fn test_time_nonce() {
 fn test_account() {
 	use sp_timestamp::Timestamp;
 	use sp_core::{ConstU64, ConstU32};
+
+	type Limit = (ConstU64<10000>, ConstU64<3600000>, ConstU64<3600000>, ConstU32<100>);
 
 	#[derive(Encode, Decode, Clone, PartialEq, Eq, Default)]
 	pub struct AccountData<Balance> {
@@ -305,7 +392,7 @@ fn test_account() {
 	let mut failed = 0usize;
 	let mut current = base_time + 2000;
 	for time in set {
-		if account.apply_extrinsic_time_nonce::<ConstU64<10000>, ConstU32<100>>(current, time).is_ok() {
+		if account.apply_extrinsic_time_nonce::<Limit>(current, time).is_ok() {
 			applied += 1;
 		} else {
 			failed += 1;

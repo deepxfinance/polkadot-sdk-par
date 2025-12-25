@@ -140,11 +140,12 @@ pub enum CallType {
 	#[default]
 	Nonce,
 	/// A call type which use `timestamp` as `nonce`.
-	TimestampNonce,
+	Timestamp,
 	/// Free quota check. Transaction only need account is activated.
+	/// This is for legacy transaction type.
 	NonceQuotaFree,
 	/// Free quota check and use `timestamp` as `nonce`. Transaction only need account is activated.
-	TimestampNonceQuotaFree,
+	TimestampQuotaFree,
 }
 
 /// A generalized group of dispatch types.
@@ -385,7 +386,7 @@ impl<Call: Encode + GetDispatchInfo, Extra: Encode> GetDispatchInfo
 		// for testing: weight == size.
 		DispatchInfo {
 			weight: Weight::from_parts(self.encode().len() as _, 0),
-			call_type: CallType::Normal,
+			call_type: CallType::Nonce,
 			pays_fee: Pays::Yes,
 			class: self.call.get_dispatch_info().class,
 		}

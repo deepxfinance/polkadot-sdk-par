@@ -38,6 +38,7 @@ sp-session = { version = "4.0.0-dev", default-features = false, path = "../../..
 sp-std = { version = "5.0.0", default-features = false, path = "../../../primitives/std" }
 sp-transaction-pool = { version = "4.0.0-dev", default-features = false, path = "../../../primitives/transaction-pool" }
 sp-version = { version = "5.0.0", default-features = false, path = "../../../primitives/version" }
+pallet-quota = { default-features = false, path	= "../../../frame/quota" }
 
 # Hotstuff Consensus
 pallet-hotstuff = { default-features = false, path = "../../../hotstuff/pallets/hotstuff" }
@@ -73,6 +74,7 @@ std = [
 	"pallet-aura/std",
 	"pallet-balances/std",
 	"pallet-sudo/std",
+	"pallet-quota/std",
 	"pallet-template/std",
 	"pallet-timestamp/std",
 	"pallet-transaction-payment-rpc-runtime-api/std",
@@ -104,6 +106,7 @@ runtime-benchmarks = [
 	"pallet-template/runtime-benchmarks",
 	"pallet-timestamp/runtime-benchmarks",
 	"sp-runtime/runtime-benchmarks",
+	"pallet-quota/runtime-benchmarks",
 ]
 try-runtime = [
 	"frame-try-runtime/try-runtime",
@@ -116,4 +119,5 @@ try-runtime = [
 	"pallet-template/try-runtime",
 	"pallet-timestamp/try-runtime",
 	"pallet-transaction-payment/try-runtime",
+	"pallet-quota/try-runtime",
 ]

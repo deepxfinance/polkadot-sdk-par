@@ -1,6 +1,6 @@
 use node_template_runtime::{
 	AccountId, BalancesConfig, GenesisConfig, Signature, SudoConfig,
-	SystemConfig, WASM_BINARY,
+	SystemConfig, QuotaConfig, WASM_BINARY,
 };
 use sc_service::ChainType;
 use hotstuff_consensus::AuthorityId as HotstuffId;
@@ -164,6 +164,9 @@ fn testnet_genesis(
 		system: SystemConfig {
 			// Add Wasm runtime to storage.
 			code: wasm_binary.to_vec(),
+		},
+		quota: QuotaConfig {
+			quotas: endowed_accounts.iter().cloned().map(|k| (k, u32::MAX - 1)).collect(),
 		},
 		balances: BalancesConfig {
 			// Configure endowed accounts with initial balance of 1 << 60.

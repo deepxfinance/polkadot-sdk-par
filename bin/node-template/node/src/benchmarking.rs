@@ -121,9 +121,9 @@ pub fn create_benchmark_extrinsic(
 			period,
 			best_block.saturated_into(),
 		)),
-		frame_system::CheckNonce::<runtime::Runtime>::from(nonce),
+		frame_system::CheckQuotaNonce::<runtime::Runtime>::from(nonce as u64),
 		frame_system::CheckWeight::<runtime::Runtime>::new(),
-		pallet_transaction_payment::ChargeTransactionPayment::<runtime::Runtime>::from(0),
+		pallet_transaction_payment::EmptyTransactionPayment::<runtime::Runtime>::from(0),
 	);
 
 	let raw_payload = runtime::SignedPayload::from_raw(

@@ -119,12 +119,12 @@ pub mod weights;
 
 pub mod migrations;
 
-pub use extend_account::{AccountInfo, TimeNonce};
+pub use extend_account::{AccountInfo, TimeNonce, limits::CallLimits};
 pub use extensions::{
 	check_genesis::CheckGenesis, check_mortality::CheckMortality,
 	check_non_zero_sender::CheckNonZeroSender, check_nonce::CheckNonce,
 	check_spec_version::CheckSpecVersion, check_tx_version::CheckTxVersion,
-	check_weight::CheckWeight,
+	check_weight::CheckWeight, check_quota_nonce::CheckQuotaNonce,
 };
 // Backward compatible re-export.
 pub use extensions::check_mortality::CheckMortality as CheckEra;
@@ -358,6 +358,9 @@ pub mod pallet {
 
 		/// The maximum number of consumers allowed on a single account.
 		type MaxConsumers: ConsumerLimits;
+		
+		/// Get all call limits for account.
+		type CallLimits: CallLimits;
 	}
 
 	#[pallet::pallet]

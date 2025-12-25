@@ -42,6 +42,7 @@ sp-keyring = { version = "7.0.0", path = "../../../primitives/keyring" }
 frame-system = { version = "4.0.0-dev", path = "../../../frame/system" }
 frame-support = { version = "4.0.0-dev", path = "../../../frame/support" }
 pallet-transaction-payment = { version = "4.0.0-dev", default-features = false, path = "../../../frame/transaction-payment" }
+pallet-quota = { default-features = false, path	= "../../../frame/quota" }
 
 # Hotstuff Consensus
 hotstuff-consensus = { path = "../../../hotstuff/consensus" }
