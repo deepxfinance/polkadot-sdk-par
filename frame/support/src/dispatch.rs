@@ -131,6 +131,22 @@ impl From<Pays> for PostDispatchInfo {
 	}
 }
 
+/// A generalized group of dispatch call types.
+#[cfg_attr(feature = "std", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "std", serde(rename_all = "camelCase"))]
+#[derive(PartialEq, Eq, Clone, Copy, Default, Encode, Decode, RuntimeDebug, TypeInfo)]
+pub enum CallType {
+	/// A normal call type use normal `nonce`.
+	#[default]
+	Nonce,
+	/// A call type which use `timestamp` as `nonce`.
+	TimestampNonce,
+	/// Free quota check. Transaction only need account is activated.
+	NonceQuotaFree,
+	/// Free quota check and use `timestamp` as `nonce`. Transaction only need account is activated.
+	TimestampNonceQuotaFree,
+}
+
 /// A generalized group of dispatch types.
 ///
 /// NOTE whenever upgrading the enum make sure to also update
@@ -207,6 +223,8 @@ impl<'a> OneOrMany<DispatchClass> for &'a [DispatchClass] {
 pub struct DispatchInfo {
 	/// Weight of this transaction.
 	pub weight: Weight,
+	/// Call type of this transaction.
+	pub call_type: CallType,
 	/// Class of this transaction.
 	pub class: DispatchClass,
 	/// Does this transaction pay fees.
@@ -367,6 +385,7 @@ impl<Call: Encode + GetDispatchInfo, Extra: Encode> GetDispatchInfo
 		// for testing: weight == size.
 		DispatchInfo {
 			weight: Weight::from_parts(self.encode().len() as _, 0),
+			call_type: CallType::Normal,
 			pays_fee: Pays::Yes,
 			class: self.call.get_dispatch_info().class,
 		}
@@ -1802,6 +1821,7 @@ macro_rules! decl_module {
 		[ $( $dispatchables:tt )* ]
 		$(#[doc = $doc_attr:tt])*
 		#[weight = $weight:expr]
+		#[call_type = $fn_call_type:expr]
 		$(#[$fn_attr:meta])*
 		$fn_vis:vis fn $fn_name:ident(
 			$origin:ident $( , $(#[$codec_attr:ident])* $param_name:ident : $param:ty )* $(,)?
@@ -1829,6 +1849,7 @@ macro_rules! decl_module {
 				$( $dispatchables )*
 				$(#[doc = $doc_attr])*
 				#[weight = $weight]
+				#[call_type = $fn_call_type]
 				$(#[$fn_attr])*
 				$fn_vis fn $fn_name(
 					$origin $( , $(#[$codec_attr])* $param_name : $param )*
@@ -1890,6 +1911,7 @@ macro_rules! decl_module {
 		[ $( $dispatchables:tt )* ]
 		$(#[doc = $doc_attr:tt])*
 		$(#[weight = $weight:expr])?
+		$(#[call_type = $fn_call_type:expr])?
 		$(#[$fn_attr:meta])*
 		$fn_vis:vis fn $fn_name:ident(
 			$origin:ident : T::RuntimeOrigin $( , $( #[$codec_attr:ident] )* $param_name:ident : $param:ty )* $(,)?
@@ -1920,6 +1942,7 @@ macro_rules! decl_module {
 		[ $( $dispatchables:tt )* ]
 		$(#[doc = $doc_attr:tt])*
 		$(#[weight = $weight:expr])?
+		$(#[call_type = $fn_call_type:expr])?
 		$(#[$fn_attr:meta])*
 		$fn_vis:vis fn $fn_name:ident(
 			origin : $origin:ty $( , $( #[$codec_attr:ident] )* $param_name:ident : $param:ty )* $(,)?
@@ -1950,6 +1973,7 @@ macro_rules! decl_module {
 		[ $( $dispatchables:tt )* ]
 		$(#[doc = $doc_attr:tt])*
 		$(#[weight = $weight:expr])?
+		$(#[call_type = $fn_call_type:expr])?
 		$(#[$fn_attr:meta])*
 		$fn_vis:vis fn $fn_name:ident(
 			$( $(#[$codec_attr:ident])* $param_name:ident : $param:ty ),* $(,)?
@@ -2567,6 +2591,7 @@ macro_rules! decl_module {
 			$(
 				$(#[doc = $doc_attr:tt])*
 				#[weight = $weight:expr]
+				#[call_type = $fn_call_type:expr]
 				$(#[$fn_attr:meta])*
 				$fn_vis:vis fn $fn_name:ident(
 					$from:ident $( , $(#[$codec_attr:ident])* $param_name:ident : $param:ty)*
@@ -2741,10 +2766,13 @@ macro_rules! decl_module {
 					$(
 						$call_type::$fn_name { $( ref $param_name ),* } => {
 							let __pallet_base_weight = $weight;
+							let __pallet_call_type = $fn_call_type;
+
 							let __pallet_weight = <dyn $crate::dispatch::WeighData<( $( & $param, )* )>>::weigh_data(
 								&__pallet_base_weight,
 								($( $param_name, )*)
 							);
+							// let __pallet_call_type = <dyn $crate::dispatch::GetCallType::call_type(&__pallet_call_type);
 							let __pallet_class = <dyn $crate::dispatch::ClassifyDispatch<( $( & $param, )* )>>::classify_dispatch(
 								&__pallet_base_weight,
 								($( $param_name, )*)
@@ -2755,6 +2783,7 @@ macro_rules! decl_module {
 							);
 							$crate::dispatch::DispatchInfo {
 								weight: __pallet_weight,
+								call_type: __pallet_call_type,
 								class: __pallet_class,
 								pays_fee: __pallet_pays_fee,
 							}
@@ -3491,6 +3520,7 @@ mod tests {
 			Call::<TraitImpl>::operational {}.get_dispatch_info(),
 			DispatchInfo {
 				weight: Weight::from_parts(5, 0),
+				call_type: Default::default(),
 				class: DispatchClass::Operational,
 				pays_fee: Pays::Yes
 			},
@@ -3500,6 +3530,7 @@ mod tests {
 			Call::<TraitImpl>::aux_3 {}.get_dispatch_info(),
 			DispatchInfo {
 				weight: Weight::from_parts(3, 0),
+				call_type: Default::default(),
 				class: DispatchClass::Normal,
 				pays_fee: Pays::Yes
 			},

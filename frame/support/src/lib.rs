@@ -1527,7 +1527,7 @@ pub mod pallet_prelude {
 	pub use crate::{
 		dispatch::{
 			DispatchClass, DispatchError, DispatchResult, DispatchResultWithPostInfo, Parameter,
-			Pays,
+			Pays, CallType,
 		},
 		ensure,
 		inherent::{InherentData, InherentIdentifier, ProvideInherent},
