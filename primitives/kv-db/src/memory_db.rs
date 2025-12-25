@@ -129,7 +129,7 @@ where
     KF: KeyFunction<H>,
 {
     fn default() -> Self {
-        Self::from_null_node(&[0u8][..], [0u8][..].into())
+        Self::from_null_node(&[0u8][..], [][..].into())
     }
 }
 
