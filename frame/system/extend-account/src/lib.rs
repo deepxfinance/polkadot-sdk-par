@@ -159,9 +159,10 @@ impl<Index, AccountData> AccountInfo<Index, AccountData> {
 	{
 		if self.quota == 0 || self.quota == u32::MAX {
 			Err(InvalidTransaction::BadSigner)
-		} else if self.update + Limit::free_interval() <= now {
+		} else if self.quota > 1 {
 			if self.nonce == nonce {
 				self.update = now;
+				self.quota -= 1;
 				self.nonce = nonce.saturating_add(One::one());
 				Ok(())
 			} else if self.nonce > nonce {
@@ -169,10 +170,9 @@ impl<Index, AccountData> AccountInfo<Index, AccountData> {
 			} else {
 				Err(InvalidTransaction::Future)
 			}
-		} else if self.quota > 1 {
+		} else if self.update + Limit::free_interval() <= now {
 			if self.nonce == nonce {
 				self.update = now;
-				self.quota -= 1;
 				self.nonce = nonce.saturating_add(One::one());
 				Ok(())
 			} else if self.nonce > nonce {
@@ -194,16 +194,6 @@ impl<Index, AccountData> AccountInfo<Index, AccountData> {
 	{
 		if self.quota == 0 || self.quota == u32::MAX {
 			Err(InvalidTransaction::BadSigner)
-		} else if self.update + Limit::free_interval() <= now {
-			self.check_time_nonce_range::<Limit>(now, &nonce)?;
-			let index = self.time_nonce.find_index(&nonce)?;
-			self.update = now;
-			if self.time_nonce.update::<Limit>(index, nonce) {
-				log::trace!(target: "account", "Free time_nonce {:?} update_first_nonce {:?}", self.time_nonce.0[index.saturating_sub(1)], self.time_nonce.0[0]);
-			} else {
-				log::trace!(target: "account", "Free time_nonce {:?}", self.time_nonce.0[index]);
-			}
-			Ok(())
 		} else if self.quota > 1 {
 			self.check_time_nonce_range::<Limit>(now, &nonce)?;
 			let index = self.time_nonce.find_index(&nonce)?;
@@ -213,6 +203,16 @@ impl<Index, AccountData> AccountInfo<Index, AccountData> {
 				log::trace!(target: "account", "Charge time_nonce {:?} update_first_nonce {:?}", self.time_nonce.0[index.saturating_sub(1)], self.time_nonce.0[0]);
 			} else {
 				log::trace!(target: "account", "Charge time_nonce {:?}", self.time_nonce.0[index]);
+			}
+			Ok(())
+		} else if self.update + Limit::free_interval() <= now {
+			self.check_time_nonce_range::<Limit>(now, &nonce)?;
+			let index = self.time_nonce.find_index(&nonce)?;
+			self.update = now;
+			if self.time_nonce.update::<Limit>(index, nonce) {
+				log::trace!(target: "account", "Free time_nonce {:?} update_first_nonce {:?}", self.time_nonce.0[index.saturating_sub(1)], self.time_nonce.0[0]);
+			} else {
+				log::trace!(target: "account", "Free time_nonce {:?}", self.time_nonce.0[index]);
 			}
 			Ok(())
 		} else {
@@ -262,26 +262,24 @@ impl<Index, AccountData> AccountInfo<Index, AccountData> {
 
 	/// Check if quota is enough.
 	pub fn check_quota<Limit: CallLimits>(&self, time: u64) -> Result<(), InvalidTransaction> {
-		if self.update + Limit::free_interval() <= time {
+		if self.quota == 0 || self.quota == u32::MAX {
+			Err(InvalidTransaction::BadSigner)
+		} else if self.quota > 1 || self.update + Limit::free_interval() <= time {
 			Ok(())
 		} else {
-			if self.quota > 1 {
-				Ok(())
-			} else {
-				Err(InvalidTransaction::Payment)
-			}
+			Err(InvalidTransaction::Payment)
 		}
 	}
 
 	/// Update `quota` and `update`.
 	pub fn try_apply_quota<Limit: CallLimits>(&mut self, time: u64) -> Result<(), InvalidTransaction> {
-		if self.quota == 0 {
+		if self.quota == 0 || self.quota == u32::MAX {
 			Err(InvalidTransaction::BadSigner)
-		} else if self.update + Limit::free_interval() <= time {
-			Ok(())
 		} else if self.quota > 1 {
 			self.update = time;
 			self.quota -= 1;
+			Ok(())
+		} else if self.update + Limit::free_interval() <= time {
 			Ok(())
 		} else {
 			Err(InvalidTransaction::Payment)
