@@ -38,8 +38,8 @@ impl<Index> TimeNonce<Index> {
 	{
 		if let Some(first_nonce) = self.0.first() {
 			if nonce <= first_nonce {
-				log::trace!(target: "account", "Stale for smaller than first_nonce {nonce:?}/{first_nonce:?}");
-				return Err(InvalidTransaction::Stale);
+				log::trace!(target: "account", "TimeStale for smaller than first_nonce {nonce:?}/{first_nonce:?}");
+				return Err(InvalidTransaction::TimeStale);
 			}
 		}
 		let mut index = self.0.len();
@@ -51,8 +51,8 @@ impl<Index> TimeNonce<Index> {
 			} else if nonce > &self.0[i] {
 				break;
 			} else {
-				log::trace!(target: "account", "Stale for duplicated time nonce");
-				return Err(InvalidTransaction::Stale);
+				log::trace!(target: "account", "TimeStale for duplicated time nonce");
+				return Err(InvalidTransaction::TimeStale);
 			}
 		}
 		Ok(index)
@@ -311,8 +311,8 @@ impl<Index, AccountData> AccountInfo<Index, AccountData> {
 	{
 		let time_nonce: u64 = nonce.clone().saturated_into();
 		if time_nonce < now && time_nonce.saturating_add(Limit::time_range().0) <= now {
-			log::trace!(target: "account", "Stale for now {now} time_nonce {time_nonce} limit: {}", Limit::time_range().0);
-			Err(InvalidTransaction::Stale)
+			log::trace!(target: "account", "TimeStale for now {now} time_nonce {time_nonce} limit: {}", Limit::time_range().0);
+			Err(InvalidTransaction::TimeStale)
 		} else if time_nonce > now && time_nonce.saturating_sub(Limit::time_range().1) >= now {
 			Err(InvalidTransaction::Future)
 		} else {

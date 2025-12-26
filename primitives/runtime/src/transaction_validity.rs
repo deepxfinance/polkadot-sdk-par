@@ -46,6 +46,8 @@ pub enum InvalidTransaction {
 	Future,
 	/// General error to do with the transaction being outdated (e.g. nonce too low).
 	Stale,
+	/// General error to do with the transaction being outdated(special for time nonce).
+	TimeStale,
 	/// General error to do with the transaction's proofs (e.g. signature).
 	///
 	/// # Possible causes
@@ -98,6 +100,10 @@ impl InvalidTransaction {
 		self == &Self::Stale
 	}
 
+	pub fn time_stale(&self) -> bool {
+		self == &Self::TimeStale
+	}
+
 	pub fn future(&self) -> bool {
 		self == &Self::Future
 	}
@@ -114,6 +120,7 @@ impl From<InvalidTransaction> for &'static str {
 			InvalidTransaction::Call => "Transaction call is not expected",
 			InvalidTransaction::Future => "Transaction will be valid in the future",
 			InvalidTransaction::Stale => "Transaction is outdated",
+			InvalidTransaction::TimeStale => "Transaction is outdated(time)",
 			InvalidTransaction::BadProof => "Transaction has a bad signature",
 			InvalidTransaction::AncientBirthBlock => "Transaction has an ancient birth block",
 			InvalidTransaction::ExhaustsResources => "Transaction would exhaust the block limits",
@@ -181,7 +188,14 @@ impl TransactionValidityError {
 
 	pub fn stale(&self) -> bool {
 		match self {
-			Self::Invalid(e) => e.future(),
+			Self::Invalid(e) => e.stale(),
+			Self::Unknown(_) => false,
+		}
+	}
+
+	pub fn time_stale(&self) -> bool {
+		match self {
+			Self::Invalid(e) => e.time_stale(),
 			Self::Unknown(_) => false,
 		}
 	}
