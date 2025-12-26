@@ -535,6 +535,7 @@ pub mod pallet {
 		///
 		/// The dispatch origin for this call must be `Signed` by the transactor.
 		#[pallet::call_index(0)]
+		#[pallet::call_type(CallType::Timestamp)]
 		pub fn transfer_allow_death(
 			origin: OriginFor<T>,
 			dest: AccountIdLookupOf<T>,
@@ -616,6 +617,7 @@ pub mod pallet {
 		///
 		/// [`transfer_allow_death`]: struct.Pallet.html#method.transfer
 		#[pallet::call_index(3)]
+		#[pallet::call_type(CallType::Timestamp)]
 		pub fn transfer_keep_alive(
 			origin: OriginFor<T>,
 			dest: AccountIdLookupOf<T>,
@@ -717,6 +719,7 @@ pub mod pallet {
 		///
 		/// WARNING: DEPRECATED! Will be released in approximately 3 months.
 		#[pallet::call_index(7)]
+		#[pallet::call_type(CallType::Timestamp)]
 		#[pallet::weight(T::WeightInfo::transfer_allow_death())]
 		pub fn transfer(
 			origin: OriginFor<T>,

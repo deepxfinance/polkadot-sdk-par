@@ -59,7 +59,7 @@ pub enum ValidatedTransaction<Hash, Ex, Error> {
 
 impl<Hash, Ex, Error> ValidatedTransaction<Hash, Ex, Error> {
 	/// Consume validity result, transaction data and produce ValidTransaction.
-	pub fn valid_at<RCG: crate::graph::RCGroup<Ex, Error=Error>>(
+	pub fn valid_at(
 		at: u64,
 		hash: Hash,
 		source: TransactionSource,
@@ -68,7 +68,7 @@ impl<Hash, Ex, Error> ValidatedTransaction<Hash, Ex, Error> {
 		validity: ValidTransaction,
 	) -> Result<Self, Error> {
 		Ok(Self::Valid(base::Transaction {
-			group_info: RCG::call_dependent_data(&mut data, source)?,
+			group_info: validity.groups.unwrap_or_default(),
 			data,
 			bytes,
 			hash,

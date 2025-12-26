@@ -39,6 +39,7 @@ use std::{
 	fmt::{self, Debug},
 	ops::Deref,
 };
+use crate::transaction_validity::RCGroup;
 
 /// A dummy type which can be used instead of regular cryptographic primitives.
 ///
@@ -373,19 +374,33 @@ where
 {
 	type Call = Call;
 
+	type AccountId = u64;
+
 	/// Checks to see if this is a valid *transaction*. It returns information on it if so.
-	fn validate<U: ValidateUnsigned<Call = Self::Call>>(
+	fn validate<U: ValidateUnsigned<Call = Self::Call>, RCG: RCGroup<u64, Call>>(
 		&self,
 		source: TransactionSource,
 		info: &DispatchInfoOf<Self::Call>,
 		len: usize,
+		groups: bool,
 	) -> TransactionValidity {
 		if let Some((ref id, ref extra)) = self.signature {
-			Extra::validate(extra, id, &self.call, info, len)
+			let valid = Extra::validate(extra, id, &self.call, info, len)?;
+			let call_group = if groups {
+				RCG::call_groups(Some(id), &self.call, source)?
+			} else {
+				<() as RCGroup<u64, Call>>::call_groups(Some(id), &self.call, source)?
+			};
+			Ok(valid.combine_with(call_group))
 		} else {
 			let valid = Extra::validate_unsigned(&self.call, info, len)?;
 			let unsigned_validation = U::validate_unsigned(source, &self.call)?;
-			Ok(valid.combine_with(unsigned_validation))
+			let call_group = if groups {
+				RCG::call_groups(None, &self.call, source)?
+			} else {
+				<() as RCGroup<u64, Call>>::call_groups(None, &self.call, source)?
+			};
+			Ok(valid.combine_with(unsigned_validation).combine_with(call_group))
 		}
 	}
 

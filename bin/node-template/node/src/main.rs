@@ -10,7 +10,6 @@ mod command;
 mod rpc;
 mod merge_handler;
 mod merge_balances;
-mod transaction_group;
 mod extend_extrinsic;
 mod merge_backend;
 

@@ -2,6 +2,8 @@
 // `construct_runtime!` does a lot of recursion and requires us to increase the limit to 256.
 #![recursion_limit = "256"]
 
+mod call_grouper;
+
 // Make the WASM binary available.
 #[cfg(feature = "std")]
 include!(concat!(env!("OUT_DIR"), "/wasm_binary.rs"));
@@ -196,6 +198,7 @@ impl frame_system::Config for Runtime {
 	type OnSetCode = ();
 	type MaxConsumers = frame_support::traits::ConstU32<16>;
 	type CallLimits = (ConstU64<10000>, ConstU64<3600000>, ConstU64<3600000>, ConstU32<100>);
+	type CallGrouper = call_grouper::DefaultRCGroup;
 }
 
 impl pallet_hotstuff::Config for Runtime {
@@ -418,7 +421,7 @@ impl_runtime_apis! {
 			txs: Vec<(TransactionSource, <Block as BlockT>::Extrinsic)>,
 			block_hash: <Block as BlockT>::Hash,
 		) -> Vec<TransactionValidity> {
-			Executive::validate_transactions(txs, block_hash)
+			Executive::validate_transactions(txs, block_hash, true)
 		}
 	}
 
@@ -449,7 +452,7 @@ impl_runtime_apis! {
 			txs: sp_std::vec::Vec<(TransactionSource, <Block as BlockT>::Extrinsic)>,
 			block_hash: <Block as BlockT>::Hash,
 		) -> Vec<TransactionValidity> {
-			Executive::validate_transactions(txs, block_hash)
+			Executive::validate_transactions(txs, block_hash, false)
 		}
 	}
 

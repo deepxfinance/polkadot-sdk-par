@@ -201,6 +201,7 @@ impl<MaxNormal: Get<u32>, MaxOverflow: Get<u32>> ConsumerLimits for (MaxNormal, 
 pub mod pallet {
 	use crate::{self as frame_system, pallet_prelude::*, *};
 	use frame_support::pallet_prelude::*;
+	use frame_support::dispatch::RCGroup;
 
 	/// System configuration trait. Implemented by runtime.
 	#[pallet::config]
@@ -361,6 +362,9 @@ pub mod pallet {
 		
 		/// Get all call limits for account.
 		type CallLimits: CallLimits;
+
+		/// Runtime call grouper for handle RuntimeCall.
+		type CallGrouper: RCGroup<Self::AccountId, Self::RuntimeCall>;
 	}
 
 	#[pallet::pallet]

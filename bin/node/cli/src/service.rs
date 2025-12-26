@@ -51,7 +51,7 @@ type FullGrandpaBlockImport =
 	grandpa::GrandpaBlockImport<FullBackend, Block, FullClient, FullSelectChain>;
 
 /// The transaction pool type defintion.
-pub type TransactionPool = sc_transaction_pool::FullPool<Block, FullClient, sc_transaction_pool::DefaultRCGroup>;
+pub type TransactionPool = sc_transaction_pool::FullPool<Block, FullClient>;
 
 /// Fetch the nonce of the given `account` from the chain state.
 ///

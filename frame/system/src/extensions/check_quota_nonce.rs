@@ -29,8 +29,6 @@ use sp_runtime::{
 	},
 };
 use sp_std::{vec::Vec, vec};
-#[cfg(not(feature = "std"))]
-use sp_core::Get;
 
 /// Nonce check and increment to give replay protection for transactions.
 ///
@@ -119,9 +117,9 @@ where
 
 		#[cfg(feature = "std")]
 		let timestamp_now = sp_timestamp::Timestamp::current().as_millis();
-		// TODO no_std env can't get actual timestamp. We just pass it by set timestamp as last update + FreeInterval.
 		#[cfg(not(feature = "std"))]
-		let timestamp_now = account.update.saturating_add(T::CallLimits::free_interval());
+		let timestamp_now = get_timestamp()
+			.ok_or(TransactionValidityError::Invalid(InvalidTransaction::AncientBirthBlock))?;
 		let mut requires = Vec::new();
 		match info.call_type {
 			CallType::Nonce => {
@@ -150,6 +148,7 @@ where
 		}
 
 		Ok(ValidTransaction {
+			groups: None,
 			priority: 0,
 			requires,
 			provides: vec![Encode::encode(&(who, self.0))],

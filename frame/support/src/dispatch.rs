@@ -40,7 +40,7 @@ use sp_runtime::{
 	traits::SignedExtension,
 };
 pub use sp_runtime::{
-	traits::Dispatchable, transaction_validity::TransactionPriority, DispatchError, RuntimeDebug,
+	traits::Dispatchable, transaction_validity::{TransactionPriority, RCGroup}, DispatchError, RuntimeDebug,
 };
 pub use sp_weights::Weight;
 

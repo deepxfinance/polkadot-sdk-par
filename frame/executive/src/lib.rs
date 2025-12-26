@@ -126,12 +126,11 @@ use frame_support::{
 	},
 	weights::Weight,
 };
-use frame_support::traits::Get;
 use sp_runtime::{generic::Digest, traits::{
 	self, Applyable, CheckEqual, Checkable, Dispatchable, Header, NumberFor, One,
 	ValidateUnsigned, Zero,
-}, transaction_validity::{TransactionSource, TransactionValidity}, ApplyExtrinsicResult, StateVersion};
-use sp_runtime::transaction_validity::TransactionValidityError;
+}, transaction_validity::{TransactionSource, TransactionValidity}, ApplyExtrinsicResult};
+use sp_runtime::transaction_validity::{RCGroup, TransactionValidityError};
 use sp_std::{marker::PhantomData, prelude::*};
 
 #[cfg(feature = "try-runtime")]
@@ -394,6 +393,7 @@ where
 		Dispatchable<Info = DispatchInfo, PostInfo = PostDispatchInfo>,
 	OriginOf<Block::Extrinsic, Context>: From<Option<System::AccountId>>,
 	UnsignedValidator: ValidateUnsigned<Call = CallOf<Block::Extrinsic, Context>>,
+	System::CallGrouper: RCGroup<<CheckedOf<Block::Extrinsic, Context> as Applyable>::AccountId, <CheckedOf<Block::Extrinsic, Context> as Applyable>::Call>,
 {
 	/// Execute all `OnRuntimeUpgrade` of this runtime, and return the aggregate weight.
 	pub fn execute_on_runtime_upgrade() -> Weight {
@@ -690,13 +690,14 @@ where
 
 		within_span! {
 			sp_tracing::Level::TRACE, "validate";
-			xt.validate::<UnsignedValidator>(source, &dispatch_info, encoded_len)
+			xt.validate::<UnsignedValidator, System::CallGrouper>(source, &dispatch_info, encoded_len, true)
 		}
 	}
 	
 	pub fn validate_transactions(
 		uxts: Vec<(TransactionSource, Block::Extrinsic)>,
 		block_hash: Block::Hash,
+		with_groups: bool,
 	) -> Vec<TransactionValidity> {
 		sp_io::init_tracing();
 		use sp_tracing::{enter_span, within_span};
@@ -727,7 +728,7 @@ where
 					} else {
 						within_span! {
 							sp_tracing::Level::TRACE, "validate";
-							xt.validate::<UnsignedValidator>(source, &dispatch_info, encoded_len)
+							xt.validate::<UnsignedValidator, System::CallGrouper>(source, &dispatch_info, encoded_len, with_groups)
 						}
 					}
 				},
@@ -959,6 +960,8 @@ mod tests {
 		type SS58Prefix = ();
 		type OnSetCode = ();
 		type MaxConsumers = ConstU32<16>;
+		type CallLimits = ();
+		type CallGrouper = ();
 	}
 
 	type Balance = u64;

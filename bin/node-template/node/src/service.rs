@@ -14,7 +14,6 @@ use sp_consensus::DisableProofRecording;
 use sp_timestamp::Timestamp;
 use crate::extend_extrinsic::ExtendTx;
 use crate::merge_handler::MergeHandler;
-use crate::transaction_group::DefaultRCGroup;
 
 // Our native executor instance.
 pub struct ExecutorDispatch;
@@ -40,7 +39,7 @@ pub(crate) type FullClient =
 	sc_service::TFullClient<Block, RuntimeApi, NativeElseWasmExecutor<ExecutorDispatch>>;
 type FullBackend = sc_service::TFullBackend<Block>;
 type FullSelectChain = sc_consensus::LongestChain<FullBackend, Block>;
-type FullPool = sc_transaction_pool::FullPool<Block, FullClient, DefaultRCGroup>;
+type FullPool = sc_transaction_pool::FullPool<Block, FullClient>;
 type Oracle = HotstuffOracle<Block, ExecutionOracle<Block>>;
 type ProposerFactory = sc_basic_authorship::MTHProposerFactory<
 	FullPool,
