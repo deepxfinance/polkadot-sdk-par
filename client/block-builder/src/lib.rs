@@ -281,7 +281,8 @@ where
 	}
 
 	/// Push onto the block's list of extrinsics.
-	pub fn push_batch(&mut self, xts: Vec<<Block as BlockT>::Extrinsic>, timeout: std::time::Duration)
+	/// TODO currently `transactional` is not valid since all result is Committed.
+	pub fn push_batch(&mut self, xts: Vec<<Block as BlockT>::Extrinsic>, timeout: std::time::Duration, transactional: bool)
 		-> (Vec<Result<(), Error>>, Vec<(usize, Error)>, Vec<(usize, Error)>)
 	{
 		let parent_hash = self.parent_hash;
@@ -291,7 +292,7 @@ where
 		let mut future_or_exhausted = Vec::new();
         let mut batch_results = Vec::with_capacity(xts.len());
 
-		self.api.execute_in_transaction(|api| {
+		let execute = |api: &<A as ProvideRuntimeApi<Block>>::Api| {
 			let res = if version < 6 {
 				let start = std::time::Instant::now();
 				for (i, xt) in xts.clone().into_iter().enumerate() {
@@ -303,15 +304,15 @@ where
 					)
 						.map(legacy::byte_sized_error::convert_to_latest) {
 						Ok(result) => {
-                            if let Err(e) = &result {
+							if let Err(e) = &result {
 								if e.exhausted_resources() || e.future() {
 									future_or_exhausted.push((i, ApplyExtrinsicFailed::Validity(*e).into()));
 								} else {
 									invalid.push((i, ApplyExtrinsicFailed::Validity(*e).into()));
 								}
-                            }
+							}
 							batch_results.push(result.map_err(|e| ApplyExtrinsicFailed::Validity(e).into()));
-                        },
+						},
 						Err(e) => {
 							invalid.push((i, Error::from(e)));
 							break;
@@ -330,17 +331,17 @@ where
 					timeout.as_nanos(),
 				) {
 					Ok(results) => {
-                        for (i, result) in results.into_iter().enumerate() {
-                            if let Err(e) = &result {
+						for (i, result) in results.into_iter().enumerate() {
+							if let Err(e) = &result {
 								if e.exhausted_resources() || e.future() {
 									future_or_exhausted.push((i, ApplyExtrinsicFailed::Validity(*e).into()));
 								} else {
 									invalid.push((i, ApplyExtrinsicFailed::Validity(*e).into()));
 								}
-                            }
+							}
 							batch_results.push(result.map_err(|e| ApplyExtrinsicFailed::Validity(e).into()));
-                        }
-                        batch_results
+						}
+						batch_results
 					},
 					Err(e) => {
 						invalid.push((0, Error::from(e)));
@@ -353,8 +354,17 @@ where
 				extrinsics.push(xt.clone());
 				results.push(res.map(|_| ()));
 			}
-			TransactionOutcome::Commit((results, invalid, future_or_exhausted))
-		})
+			(results, invalid, future_or_exhausted)
+		};
+
+		if transactional {
+			self.api.execute_in_transaction(|api| {
+				let (results, invalid, future_or_exhausted) = execute(api);
+				TransactionOutcome::Commit((results, invalid, future_or_exhausted))
+			})
+		} else {
+			execute(&self.api)
+		}
 	}
 
 	/// Consume the builder to build a valid `Block` containing all pushed extrinsics.
