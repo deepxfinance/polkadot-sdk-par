@@ -59,9 +59,8 @@ pub fn open<H: Clone + AsRef<[u8]>>(
 			}
 
 			let state_col = &mut config.columns[columns::STATE as usize];
-			let kv_mode =
-				std::env::var("DB_KV_MODE").map(|s| s.parse().unwrap_or(false)).unwrap_or(false);
-			if !kv_mode {
+			#[cfg(not(feature = "kvdb"))]
+			{
 				state_col.ref_counted = true;
 				state_col.preimage = true;
 			}

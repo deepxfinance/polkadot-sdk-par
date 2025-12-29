@@ -24,8 +24,10 @@ use hash_db::Hasher;
 use crate::rstd::vec::Vec;
 pub use kvdb::KVDB;
 pub use kvdbmut::KVDBMut;
+pub use memory_db::*;
 pub mod kvdb;
 pub mod kvdbmut;
+pub mod memory_db;
 
 /// Database value
 pub type DBValue = Vec<u8>;
@@ -72,13 +74,13 @@ pub trait KVMut<'db, H: Hasher> {
 pub trait KVCache<H: Hasher> {
     /// Lookup value for the given `key`.
     // TODO return reference for less copy.
-    fn lookup_value_for_key(&mut self, hash: H::Out, key: &[u8], pad: Option<u8>) -> Option<DBValue>;
+    fn lookup_value_for_key(&mut self, key: &[u8]) -> Option<DBValue>;
 
     /// Cache the given `value` for the given `key`.
-    fn cache_value_for_key(&mut self, hash: H::Out, key: &[u8], pad: Option<u8>, value: DBValue);
+    fn cache_value_for_key(&mut self, key: &[u8], value: DBValue);
 
     /// remove the given `value` for the given `key`.
-    fn remove_value_for_key(&mut self, hash: H::Out, key: &[u8], pad: Option<u8>);
+    fn remove_value_for_key(&mut self, key: &[u8]);
 }
 
 

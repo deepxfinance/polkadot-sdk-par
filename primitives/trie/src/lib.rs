@@ -55,6 +55,8 @@ pub use trie_db::{
 };
 /// The Substrate format implementation of `TrieStream`.
 pub use trie_stream::TrieStream;
+#[cfg(feature = "kvdb")]
+pub use kv_db::KVCache;
 
 /// substrate trie layout
 pub struct LayoutV0<H>(PhantomData<H>);
@@ -156,13 +158,22 @@ pub type HashDB<'a, H> = dyn hash_db::HashDB<H, trie_db::DBValue> + 'a;
 /// Reexport from `hash_db`, with genericity set for `Hasher` trait.
 /// This uses a `KeyFunction` for prefixing keys internally (avoiding
 /// key conflict for non random keys).
+#[cfg(not(feature = "kvdb"))]
 pub type PrefixedMemoryDB<H> = memory_db::MemoryDB<H, memory_db::PrefixedKey<H>, trie_db::DBValue>;
+#[cfg(feature = "kvdb")]
+pub type PrefixedMemoryDB<H> = kv_db::MemoryDB<H, memory_db::PrefixedKey<H>, trie_db::DBValue>;
 /// Reexport from `hash_db`, with genericity set for `Hasher` trait.
 /// This uses a noops `KeyFunction` (key addressing must be hashed or using
 /// an encoding scheme that avoid key conflict).
+#[cfg(not(feature = "kvdb"))]
 pub type MemoryDB<H> = memory_db::MemoryDB<H, memory_db::HashKey<H>, trie_db::DBValue>;
+#[cfg(feature = "kvdb")]
+pub type MemoryDB<H> = kv_db::MemoryDB<H, memory_db::HashKey<H>, trie_db::DBValue>;
 /// Reexport from `hash_db`, with genericity set for `Hasher` trait.
+#[cfg(not(feature = "kvdb"))]
 pub type GenericMemoryDB<H, KF> = memory_db::MemoryDB<H, KF, trie_db::DBValue>;
+#[cfg(feature = "kvdb")]
+pub type GenericMemoryDB<H, KF> = kv_db::MemoryDB<H, KF, trie_db::DBValue>;
 
 /// Persistent trie database read-access interface for the a given hasher.
 pub type TrieDB<'a, 'cache, L> = trie_db::TrieDB<'a, 'cache, L>;

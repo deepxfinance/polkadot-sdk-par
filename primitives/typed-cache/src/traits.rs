@@ -40,6 +40,10 @@ pub trait StorageApi: DowncastSync {
     fn drain_commited(&mut self) -> Vec<(StorageKey, Option<Vec<u8>>)>;
     /// Get another copy with actual data, not just pointer(e.g. Arc).
     fn copy_data(&self) -> sp_std::boxed::Box<dyn StorageApi>;
+    /// Try to update by raw data if exists.
+    fn try_update_raw(&mut self, space: &[u8], key: &[u8], data: Vec<u8>);
+    /// Try to update by raw data if exists.
+    fn try_kill(&mut self, space: &[u8], key: &[u8]);
 }
 
 #[cfg(feature = "std")]

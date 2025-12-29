@@ -38,6 +38,9 @@ sp_api::decl_runtime_apis! {
 		/// this block or not.
 		fn apply_extrinsics(extrinsics: sp_std::vec::Vec<<Block as BlockT>::Extrinsic>, _timeout: u128) -> sp_std::vec::Vec<ApplyExtrinsicResult>;
 
+		/// finish thread to get changes root.
+		fn finish_thread(thread: u8) -> <Block as BlockT>::Hash;
+
 		#[changed_in(6)]
 		fn apply_extrinsic(
 			extrinsic: <Block as BlockT>::Extrinsic,

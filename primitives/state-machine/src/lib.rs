@@ -130,7 +130,7 @@ pub use crate::{
 	overlayed_changes::{
 		ChildStorageCollection, IndexOperation, OffchainChangesCollection,
 		OffchainOverlayedChanges, OverlayedChanges, StorageChanges, StorageCollection, StorageKey,
-		StorageTransactionCache, StorageValue, OverlayedEntry, MergeErr, MergeChange,
+		StorageTransactionCache, StorageValue, OverlayedEntry, MergeErr, MergeChange, Changes,
 	},
 	stats::{StateMachineStats, UsageInfo, UsageUnit},
 	trie_backend::{TrieBackend, TrieBackendBuilder},

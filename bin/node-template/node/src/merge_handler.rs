@@ -4,7 +4,7 @@ use std::sync::Arc;
 use node_template_runtime::RuntimeEvent;
 use sc_basic_authorship::{MergeSystem, MultiThreadBlockBuilder};
 use sc_client_api::Backend;
-use sp_api::{ApiExt, MergeChange, OverlayedEntry, StorageKey, StorageValue};
+use sp_api::{ApiExt, Changes, MergeChange, OverlayCache, OverlayedChanges, OverlayedEntry, StorageKey, StorageValue};
 use sp_runtime::traits::Block as BlockT;
 use crate::merge_backend::MergeBackend;
 use crate::merge_balances::MergeBalances;
@@ -38,6 +38,12 @@ where
         <MergeBackend<B, Block> as MultiThreadBlockBuilder<B, Block, Api>>::prepare(&mut self.backend, backend, parent, api);
     }
 
+    fn prepare_thread_in_order(&mut self, thread: usize, txs: usize, cache: &mut OverlayCache, changes: &mut OverlayedChanges) {
+        <MergeBalances as MultiThreadBlockBuilder<B, Block, Api>>::prepare_thread_in_order(&mut self.balances, thread, txs, cache, changes);
+        <MergeSystem<RuntimeEvent> as MultiThreadBlockBuilder<B, Block, Api>>::prepare_thread_in_order(&mut self.system, thread, txs, cache, changes);
+        <MergeBackend<B, Block> as MultiThreadBlockBuilder<B, Block, Api>>::prepare_thread_in_order(&mut self.backend, thread, txs, cache, changes);
+    }
+
     fn copy_state(&self) -> Self {
         Self {
             balances: <MergeBalances as MultiThreadBlockBuilder<B, Block, Api>>::copy_state(&self.balances),
@@ -53,11 +59,29 @@ impl<B: Backend<Block>, Block: BlockT> MergeChange<StorageKey, Option<StorageVal
         &self,
         local: &mut BTreeMap<StorageKey, OverlayedEntry<Option<StorageValue>>>,
         other: &mut BTreeMap<StorageKey, OverlayedEntry<Option<StorageValue>>>,
-    ) -> Vec<StorageKey> {
+        in_order: bool,
+    ) -> Result<Changes, Vec<StorageKey>> {
+        let mut changes_list = Vec::new();
         let mut duplicate_keys = Vec::new();
-        duplicate_keys.extend(self.balances.merge_changes(local, other));
-        duplicate_keys.extend(self.system.merge_changes(local, other));
-        duplicate_keys
+
+        match self.balances.merge_changes(local, other, in_order) {
+            Ok(changes) => changes_list.push(changes),
+            Err(duplicated) => duplicate_keys.extend(duplicated),
+        }
+        match self.system.merge_changes(local, other, in_order) {
+            Ok(changes) => changes_list.push(changes),
+            Err(duplicated) => duplicate_keys.extend(duplicated),
+        }
+        if !duplicate_keys.is_empty() {
+            return Err(duplicate_keys);
+        }
+        if !changes_list.is_empty() {
+            let first = changes_list.remove(0);
+            let changes = changes_list.into_iter().fold(first, |mut c, new| { c.extend(new); c });
+            Ok(changes)
+        } else {
+            Ok(Default::default())
+        }
     }
 
     fn finalize_merge(&self, map: &mut BTreeMap<StorageKey, OverlayedEntry<Option<StorageValue>>>) {

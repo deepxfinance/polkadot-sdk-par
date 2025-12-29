@@ -584,6 +584,11 @@ pub mod pallet {
 	#[pallet::getter(fn digest)]
 	pub(super) type Digest<T: Config> = StorageValue<_, generic::Digest, ValueQuery>;
 
+	/// Digest of the current block, also part of the block header.
+	#[pallet::storage]
+	#[pallet::getter(fn threads)]
+	pub(super) type Threads<T: Config> = StorageMap<_, Blake2_128, T::BlockNumber, u8, ValueQuery>;
+
 	/// Events deposited for the current block.
 	///
 	/// NOTE: The item is unbound and should therefore never be read on chain.
@@ -607,7 +612,7 @@ pub mod pallet {
 	#[pallet::storage]
 	#[pallet::unbounded]
 	pub(super) type EventsMap<T: Config> =
-	StorageMap<_, Blake2_128Concat, T::BlockNumber, Vec<Box<EventRecord<T::RuntimeEvent, T::Hash>>>, ValueQuery>;
+		StorageDoubleMap<_, Blake2_128, T::BlockNumber, Blake2_128, u8, Vec<Box<EventRecord<T::RuntimeEvent, T::Hash>>>, ValueQuery>;
 
 	/// The number of events in the `Events<T>` list.
 	#[pallet::storage]
@@ -1290,10 +1295,7 @@ impl<T: Config> Pallet<T> {
 			old_event_count
 		};
 
-		#[cfg(feature = "std")]
-		Events::<T>::append(Box::new(event));
-		#[cfg(not(feature = "std"))]
-		Events::<T>::append(event);
+		storage::unhashed::append(&Events::<T>::hashed_key(), event);
 
 		for topic in topics {
 			<EventTopics<T>>::append(topic, (block_number, event_idx));
@@ -1360,11 +1362,23 @@ impl<T: Config> Pallet<T> {
 		BlockWeight::<T>::kill();
 	}
 
+	/// Get thread changes root.
+	pub fn finish_thread(thread: u8) -> T::Hash {
+		let number = <Number<T>>::get();
+		// We have to store events by block number since `Events` keep change.
+		if let Some(events_raw) = storage::unhashed::take_raw(&Events::<T>::hashed_key()) {
+			storage::unhashed::put_raw(&EventsMap::<T>::hashed_key_for(number, thread), &events_raw);
+		}
+
+		let version = T::Version::get().state_version();
+		let storage_root = T::Hash::decode(&mut &sp_io::storage::root(version)[..])
+			.expect("Node is configured to use the same hash; qed");
+		storage_root
+	}
+
 	/// Remove temporary "environment" entries in storage, compute the storage root and return the
 	/// resulting header for this block.
 	pub fn finalize() -> T::Header {
-		#[cfg(feature = "std")]
-		let finalize_start = std::time::Instant::now();
 		log::debug!(
 			target: LOG_TARGET,
 			"[{:?}] {} extrinsics, length: {} (normal {}%, op: {}%, mandatory {}%) / normal weight:\
@@ -1421,7 +1435,10 @@ impl<T: Config> Pallet<T> {
 		let parent_hash = <ParentHash<T>>::get();
 		let digest = <Digest<T>>::get();
 		// We have to store events by block number since `Events` keep change.
-		<EventsMap<T>>::insert(number, <Events<T>>::get());
+		if let Some(events_raw) = storage::unhashed::take_raw(&Events::<T>::hashed_key()) {
+			let thread = <Threads<T>>::get(number);
+			storage::unhashed::put_raw(&EventsMap::<T>::hashed_key_for(number, thread), &events_raw);
+		}
 
 		ExtrinsicCount::<T>::kill();
 		// move block hash pruning window by one block
@@ -1434,18 +1451,8 @@ impl<T: Config> Pallet<T> {
 		}
 
 		let version = T::Version::get().state_version();
-		#[cfg(feature = "std")]
-		let storage_root_start = std::time::Instant::now();
 		let storage_root = T::Hash::decode(&mut &sp_io::storage::root(version)[..])
 			.expect("Node is configured to use the same hash; qed");
-		#[cfg(feature = "std")]
-		let storage_root_time = storage_root_start.elapsed().as_micros();
-		#[cfg(feature = "std")]
-		log::debug!(
-			target: "authorship",
-			"finalize block {} micros(storage_root: {storage_root_time} micros)",
-			finalize_start.elapsed().as_micros(),
-		);
 		<T::Header as traits::Header>::new(
 			number,
 			Default::default(),
@@ -1545,7 +1552,7 @@ impl<T: Config> Pallet<T> {
 	/// This needs to be used in prior calling [`initialize`](Self::initialize) for each new block
 	/// to clear events from previous block.
 	pub fn reset_events() {
-		<Events<T>>::kill();
+		storage::unhashed::kill(&Events::<T>::hashed_key());
 		EventCount::<T>::kill();
 		let _ = <EventTopics<T>>::clear(u32::max_value(), None);
 	}

@@ -198,8 +198,8 @@ impl frame_system::Config for Runtime {
 }
 
 impl pallet_hotstuff::Config for Runtime {
+	type MaxEmpty = ConstU32<15>;
 	type AuthorityId = HotstuffId;
-
 	type DisabledValidators = ();
 	type MaxAuthorities = ConstU32<32>;
 	type AuthorityApplyDelay = ConstU32<3>;
@@ -379,6 +379,10 @@ impl_runtime_apis! {
 			Executive::apply_extrinsics(extrinsics, timeout, None)
 		}
 
+		fn finish_thread(thread: u8) -> <Block as BlockT>::Hash {
+			Executive::finish_thread(thread)
+		}
+
 		fn finalize_block() -> <Block as BlockT>::Header {
 			Executive::finalize_block()
 		}
@@ -420,6 +424,10 @@ impl_runtime_apis! {
 	impl hotstuff_primitives::HotstuffApi<Block, HotstuffId> for Runtime {
 		fn slot_duration() -> hotstuff_primitives::SlotDuration {
 			hotstuff_primitives::SlotDuration::from_millis(Hotstuff::slot_duration())
+		}
+
+		fn max_empty() -> u32 {
+			Hotstuff::max_empty()
 		}
 
 		fn current_slot() -> Slot {

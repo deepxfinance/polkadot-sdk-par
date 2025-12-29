@@ -1,19 +1,18 @@
 use std::collections::{HashMap, HashSet};
 use std::marker::PhantomData;
 use std::sync::Arc;
-use std::{cmp, time};
+use std::time;
 use std::time::Duration;
 use codec::Encode;
 use futures::{SinkExt, StreamExt};
 use futures::channel::mpsc::{Receiver, Sender, channel};
-use futures::task::SpawnExt;
 use log::{debug, error, info, trace, warn};
 use sc_block_builder::{BlockBuilder, BlockBuilderApi, BlockBuilderProvider};
-use sc_client_api::{backend, StorageProof};
+use sc_client_api::{backend, ChildInfo, StorageProof};
 use sc_proposer_metrics::{EndProposingReason, MetricsLink as PrometheusMetrics};
 use sc_telemetry::{telemetry, TelemetryHandle, CONSENSUS_INFO};
 use sc_transaction_pool_api::TransactionPool;
-use sp_api::{ApiExt, BlockT, CallApiAt, HeaderT, ProofRecorder, ProvideRuntimeApi};
+use sp_api::{ApiExt, BlockT, CallApiAt, HeaderT, ProofRecorder, ProvideRuntimeApi, StorageTransactionCache};
 use sp_blockchain::ApplyExtrinsicFailed::Validity;
 use sp_blockchain::Error::ApplyExtrinsicFailed;
 use sp_blockchain::HeaderBackend;
@@ -23,17 +22,19 @@ use sp_core::traits::SpawnNamed;
 use sp_inherents::InherentData;
 use sp_perp_api::PerpRuntimeApi;
 use sp_runtime::{traits, Digest, Percent, SaturatedConversion, Saturating};
-use sp_runtime::traits::{Hash, Header, One};
+use sp_runtime::traits::{Hash, Header, NumberFor, One};
 use sp_spot_api::SpotRuntimeApi;
-use sp_state_machine::{MergeErr, OverlayedChanges, StorageKey, StorageValue};
+use sp_state_machine::{Changes, MergeErr, OverlayedChanges, OverlayedEntry, StorageKey, StorageValue};
+use sp_state_machine::backend::Consolidate;
 use crate::{BlockPropose, ExtendExtrinsic, MultiThreadBlockBuilder};
 use crate::mth_authorship::execute_info::{BlockExecuteInfo, InfoRecorder, MergeInfo, ThreadExecutionInfo};
 
 const LOG_TARGET: &str = "authorship";
 
-type MergeType<A, B> = (
+type MergeType<A, B, C> = (
     Vec<usize>,
     OverlayedChanges,
+    StorageTransactionCache<B, <<C as ProvideRuntimeApi<B>>::Api as ApiExt<B>>::StateBackend>,
     Option<ProofRecorder<B>>,
     Vec<<B as BlockT>::Extrinsic>,
     Vec<<A as TransactionPool>::Hash>,
@@ -109,6 +110,7 @@ where
         let thread_number = extrinsic_group.len();
         let max_duration = deadline.saturating_duration_since(propose_with_start);
         let mut recorder = InfoRecorder::<Block>::new()
+            .parent_hash(parent_hash)
             .number(parent_number + One::one())
             .max_time(max_duration)
             .start();
@@ -184,21 +186,31 @@ where
             let extrinsics_root = extrinsics_root::<<Block::Header as HeaderT>::Hashing, <Block as BlockT>::Extrinsic>(&block.extrinsics()[1..]);
             block.header_mut().set_extrinsics_root(extrinsics_root);
         }
+        recorder.set_state_hash(*block.header().state_root());
+        recorder.set_hash(block.header().hash());
         let info = recorder.finalize();
 
-        // 6. spawn a single execution check if env `MTH_CHECK` is true, this is just an extra check, weill not block main block build.
+        // 6. spawn a single execution check if env `MTH_CHECK` is true, this is just an extra check.
         let single_thread_check = std::env::var("MTH_CHECK").unwrap_or("false".into()).parse().unwrap_or(false);
         if single_thread_check && thread_number > 0 {
-            let client = self.client.clone();
-            let inherent_digests = inherent_digests.clone();
-            let block = block.clone();
-            let main_storage_changes = storage_changes.main_storage_changes.clone();
-            let child_storage_changes = storage_changes.child_storage_changes.clone();
-            let proof = proof.clone();
-            let kv_mode = std::env::var("DB_KV_MODE").map(|s| s.parse().unwrap_or(false)).unwrap_or(false);
-            if kv_mode {
-                // TODO kv mode currently not support OTC.
-            } else {
+            #[cfg(feature = "kvdb")]
+            Self::one_thread_build_check(
+                self.client.clone(),
+                inherent_digests,
+                block.clone(),
+                storage_changes.main_storage_changes.clone(),
+                storage_changes.child_storage_changes.clone(),
+                proof.clone(),
+            )
+                .await;
+            #[cfg(not(feature = "kvdb"))]
+            {
+                let client = self.client.clone();
+                let inherent_digests = inherent_digests.clone();
+                let block = block.clone();
+                let main_storage_changes = storage_changes.main_storage_changes.clone();
+                let child_storage_changes = storage_changes.child_storage_changes.clone();
+                let proof = proof.clone();
                 self.spawn_handle.spawn(
                     "mth-authorship-proposer",
                     None,
@@ -274,7 +286,7 @@ where
         let thread_number = multi_groups.len();
         trace!(
             target: LOG_TARGET,
-            "[Execute Block {}] ExecuteLimits: threads {thread_number}, mth_exe(mth_merge) {}({}) ms, single_exe {} ms, total execute_deadline {} ms",
+            "[Execute Block {}] ExecuteLimits: threads {thread_number}, mth {}({}) ms, single {} ms, total execute_deadline {} ms",
             parent_number + One::one(),
             mth_execute_time.as_millis(),
             mth_merge_time.as_millis(),
@@ -291,11 +303,13 @@ where
             self.spawn_execute_groups(
                 parent_number,
                 block_builder,
+                &mut mbh,
                 mth_execute_deadline.clone(),
                 inherents.clone(),
                 multi_groups,
                 merge_tx.clone(),
                 round_tx,
+                merge_in_thread_order,
                 limit_execution_time,
             );
 
@@ -330,7 +344,7 @@ where
         };
 
         // 6. execute all single thread transactions.
-        let (single_invalid, end_reason, single_thread_info) = Self::execute_one_thread_txs(
+        let (_, single_invalid, end_reason, single_thread_info) = Self::execute_one_thread_txs(
             parent_number + One::one(),
             single_deadline,
             block_builder,
@@ -339,8 +353,9 @@ where
             0,
             round_tx,
             limit_execution_time,
+            false,
         );
-        recorder.threads.insert(0, single_thread_info);
+        recorder.set_thread(single_thread_info);
         if !block_builder.extrinsics.is_empty() || !single_invalid.is_empty() {
             final_end_reason = end_reason;
         }
@@ -351,11 +366,13 @@ where
         &self,
         parent_number: <<Block as BlockT>::Header as HeaderT>::Number,
         block_builder: &mut BlockBuilder<Block, C, B>,
+        mbh: &mut MBH,
         mth_execute_deadline: time::Instant,
         inherents: Vec<<Block as BlockT>::Extrinsic>,
         extrinsic_group: Vec<Vec<(usize, <A as TransactionPool>::Hash, Block::Extrinsic)>>,
-        merge_tx: Sender<(MergeType<A, Block>, Option<ThreadExecutionInfo<Block>>)>,
+        merge_tx: Sender<(MergeType<A, Block, C>, Option<ThreadExecutionInfo<Block>>)>,
         round_tx: usize,
+        merge_in_thread_order: bool,
         limit_execution_time: bool,
     ) {
         let (init_cache, init_changes, _, init_recorder) = block_builder.api.take_all_changes();
@@ -365,12 +382,15 @@ where
             let estimated_header_size = block_builder.estimated_header_size.clone();
             let extrinsics = block_builder.extrinsics.clone();
             let context = Some(block_builder.context.clone());
-            let init_cache = init_cache.copy_data();
-            let init_changes = init_changes.clone();
+            let mut init_cache = init_cache.copy_data();
+            let mut init_changes = init_changes.clone();
             let init_recorder = init_recorder.clone();
             let thread_client = self.client.clone();
             let block = parent_number + One::one();
             let mut res_tx = merge_tx.clone();
+            if merge_in_thread_order {
+                mbh.prepare_thread_in_order(i + 1, pending_txs.len(), &mut init_cache, &mut init_changes);
+            }
             self.spawn_handle.spawn_blocking(
                 "mth-authorship-proposer",
                 None,
@@ -388,7 +408,7 @@ where
                             return;
                         }
                     };
-                    let (unqueue_invalid, end_reason, thread_info) = Self::execute_one_thread_txs(
+                    let (thread_root, unqueue_invalid, end_reason, thread_info) = Self::execute_one_thread_txs(
                         block.clone(),
                         mth_execute_deadline,
                         &mut thread_builder,
@@ -397,15 +417,12 @@ where
                         i + 1,
                         round_tx,
                         limit_execution_time,
+                        true,
                     );
-
-                    let (mut cache, mut overlay, _, recorder) = thread_builder.api.take_all_changes();
-                    // TODO more check when merge cache to overlay.top?
-                    for (k, v) in cache.drain_commited() {
-                        overlay.top.changes.entry(k).or_default().set(v, true, None);
-                    }
-
-                    let changes = (vec![i + 1], overlay, recorder, thread_builder.extrinsics.clone(), unqueue_invalid, end_reason);
+                    let (_, mut overlay, stc, recorder) = thread_builder.api.take_all_changes();
+                    #[cfg(feature = "kvdb")]
+                    overlay.set_storage(b":thread_root".to_vec(), Some(thread_root.encode()));
+                    let changes = (vec![i + 1], overlay, stc, recorder, thread_builder.extrinsics.clone(), unqueue_invalid, end_reason);
                     if res_tx.start_send((changes, Some(thread_info))).is_err() {
                         trace!("Could not send block production result to proposer!");
                     }
@@ -423,11 +440,13 @@ where
         thread: usize,
         round_tx: usize,
         limit_execution_time: bool,
-    ) -> (Vec<<A as TransactionPool>::Hash>, EndProposingReason, ThreadExecutionInfo<Block>) {
+        finish: bool,
+    ) -> (Block::Hash, Vec<<A as TransactionPool>::Hash>, EndProposingReason, ThreadExecutionInfo<Block>) {
         let mut thread_info = ThreadExecutionInfo::new(thread);
+        let mut thread_root = Default::default();
         let mut filter_transactions: HashSet<Block::Hash> = pending_txs.iter().map(|(_, tx, _)| tx.clone()).collect();
         if pending_txs.is_empty() {
-            return (Vec::new(), EndProposingReason::NoMoreTransactions, thread_info);
+            return (thread_root, Vec::new(), EndProposingReason::NoMoreTransactions, thread_info);
         }
         let mut thread_name = "single".to_string();
         if thread > 0 {
@@ -435,6 +454,7 @@ where
         }
         let thread_start = time::Instant::now();
         let thread_time = thread_deadline.saturating_duration_since(thread_start);
+        thread_info.time_limit = thread_time;
         if block_builder.extrinsics.is_empty() {
             for inherent in inherents.clone() {
                 block_builder.push(inherent).unwrap();
@@ -497,34 +517,34 @@ where
         };
         thread_info.total = block_builder.extrinsics.len() - initial_applied;
         thread_info.transactions = filter_transactions.into_iter().collect();
-        // TODO should we loop call this `E::extend_extrinsic`? does it will generate new transaction by extended result?
-        let _extend_extrinsics = E::extend_extrinsic(&*block_builder.api, block_builder.parent_hash);
-        Self::thread_finish_log(
-            block,
-            &thread_name,
-            thread_start,
-            thread_time,
-            reason,
-            &block_builder,
-            &thread_info,
-            round_execute_collect,
-            limit_execution_time,
-        );
+        let extend_start = time::Instant::now();
+        let _ = E::extend_extrinsic(&*block_builder.api, block_builder.parent_hash);
+        thread_info.extend_time = extend_start.elapsed();
         thread_info.time = thread_start.elapsed();
-
-        (unqueue_invalid, end_reason, thread_info)
+        #[cfg(feature = "kvdb")]
+        if finish {
+            // calculate current thread changes Root And TypedCache also be drained to OverlayedChanges.
+            let finish_thread_start = time::Instant::now();
+            match block_builder.api.finish_thread(
+                block_builder.parent_hash,
+                thread.saturating_sub(1) as u8,
+            ) {
+                Ok(root) => thread_root = root,
+                Err(e) => panic!("Could not get root for thread {thread} for error: {e:?}"),
+            };
+            thread_info.finish_time = finish_thread_start.elapsed();
+        }
+        thread_info.rounds = round_execute_collect;
+        thread_info.end_reason = reason.to_string();
+        Self::thread_finish_collect(block, &thread_name, &block_builder, &mut thread_info);
+        (thread_root, unqueue_invalid, end_reason, thread_info)
     }
 
-    fn thread_finish_log(
-        block: <<Block as BlockT>::Header as HeaderT>::Number,
+    fn thread_finish_collect(
+        _block: <<Block as BlockT>::Header as HeaderT>::Number,
         thread_name: &String,
-        thread_start: time::Instant,
-        thread_time: Duration,
-        reason: &str,
         block_builder: &BlockBuilder<Block, C, B>,
-        thread_info: &ThreadExecutionInfo<Block>,
-        round_execute_collect: Vec<usize>,
-        limit_execution_time: bool,
+        thread_info: &mut ThreadExecutionInfo<Block>,
     ) {
         let times = |block_builder: &BlockBuilder<Block, C, B>, _thread: &String| -> (Vec<[u128; 4]>, Vec<(String, [u128; 4], usize)>, u128, u128, u128) {
             let mut execute_map: HashMap<String, ([u128; 4], usize)> = HashMap::new();
@@ -552,51 +572,14 @@ where
             (round_times, times, execute_time_count, commit_time, rollback_time)
         };
         #[cfg(feature = "dev-time")]
-        let round_info = {
+        {
             let (round_times, times, execute_time, commit_time, rollback_time) = times(&block_builder, &thread_name);
-            let extra = thread_start.elapsed().as_nanos().saturating_sub(execute_time);
-            let round_with_times = round_execute_collect.iter().zip(round_times.into_iter()).map(|(txs, time)| {
-                let tx_num = (*txs).max(1);
-                let io_time = time[1] + time[3];
-                let avg = time[0] as usize / tx_num;
-                let avg_io = io_time as usize / tx_num;
-                let avg_rb = time[2] as usize / tx_num;
-                let avg_w = time[3] as usize / tx_num;
-                (*txs, avg, avg.saturating_sub(avg_io), avg_io, avg_rb, avg_w)
-            }).collect::<Vec<_>>();
-            trace!(target: LOG_TARGET, "[Execute Block {block}] Thread {thread_name} extra: {extra}({commit_time}/{rollback_time}) nanos, times(min/avg/max/count): {times:?}");
-            format!("([(num, avg, avg_exe, avg_io, avg_rb, avg_w)]: {round_with_times:?})")
-        };
+            thread_info.round_times = round_times;
+            let extra = thread_info.time.as_nanos().saturating_sub(execute_time);
+            trace!(target: LOG_TARGET, "[Execute Block {_block}] Thread {thread_name} extra: {extra}({commit_time}/{rollback_time})ns, times(min/avg/max/count): {times:?}");
+        }
         #[cfg(not(feature = "dev-time"))]
-        let round_info = {
-            let (round_times, ..) = times(&block_builder, &thread_name);
-            let round_with_times = round_execute_collect
-                .iter()
-                .zip(round_times.into_iter())
-                .map(|(txs, time)| (*txs, time[0] as usize / (*txs).max(1)))
-                .collect::<Vec<_>>();
-            format!("([(num, avg)]: {round_with_times:?})")
-        };
-
-        let limit_millis_info = if limit_execution_time {
-            format!("/{}", thread_time.as_millis())
-        } else {
-            "".to_string()
-        };
-        let invalid_info = if thread_info.invalid > 0 || thread_info.future_or_exhausted > 0 {
-            format!("({}/{})", thread_info.invalid, thread_info.future_or_exhausted)
-        } else {
-            "".to_string()
-        };
-        debug!(
-            target: LOG_TARGET,
-            "[Execute Block {block}] Thread {thread_name} {reason}({}{} ms) {}/{}{invalid_info} executed in {} rounds{round_info}.",
-            thread_start.elapsed().as_millis(),
-            limit_millis_info,
-            thread_info.applied(),
-            thread_info.total,
-            round_execute_collect.len(),
-        );
+        { thread_info.round_times = times(&block_builder, &thread_name).0; }
     }
 
     async fn merge_threads_result<'a>(
@@ -608,23 +591,19 @@ where
         inherents_len: usize,
         mth_finish_deadline: time::Instant,
         thread_number: usize,
-        merge_tx: Sender<(MergeType<A, Block>, Option<ThreadExecutionInfo<Block>>)>,
-        mut merge_rx: Receiver<(MergeType<A, Block>, Option<ThreadExecutionInfo<Block>>)>,
+        merge_tx: Sender<(MergeType<A, Block, C>, Option<ThreadExecutionInfo<Block>>)>,
+        mut merge_rx: Receiver<(MergeType<A, Block, C>, Option<ThreadExecutionInfo<Block>>)>,
         merge_in_thread_order: bool,
         limit_execution_time: bool,
         recorder: &mut InfoRecorder<Block>,
     ) -> Result<(Vec<<A as TransactionPool>::Hash>, EndProposingReason), sp_blockchain::Error> {
         let mut merge_info = MergeInfo::default();
-        let mut mth_merge = std::env::var("MTH_MERGE").unwrap_or("false".into()).parse().unwrap_or(false);
-        if merge_in_thread_order { mth_merge = false; }
-        let allow_rollback = std::env::var("MTH_MERGE_ROLLBACK").unwrap_or("true".into()).parse().unwrap_or(true);
+        let allow_rollback = std::env::var("MTH_MERGE_ROLLBACK").unwrap_or("false".into()).parse().unwrap_or(false);
         let mut merge_count = 0usize;
         let mut extra_merge_count = (time::Instant::now(), thread_number);
-        let mut merge_box: Vec<(u32, MergeType<A, Block>)> = vec![];
-        let pool = futures::executor::ThreadPoolBuilder::new()
-            .pool_size(cmp::min(thread_number / 2, num_cpus::get()))
-            .create()
-            .expect("Failed to build groups merge pool");
+        let mut merge_box: Vec<(u32, MergeType<A, Block, C>)> = vec![];
+        let mut conflict_top_changes = Changes::new();
+        let mut conflict_children_changes = HashMap::new();
         loop {
             if let Some(res) = merge_rx.next().await {
                 // try collect all changes in channel.
@@ -639,14 +618,11 @@ where
                 }
                 for (changes, thread_info) in all_changes {
                     if let Some(thread_info) = thread_info {
-                        recorder.threads.insert(thread_info.thread, thread_info);
+                        recorder.set_thread(thread_info);
                         extra_merge_count.1 -= 1;
                         if extra_merge_count.1 == 0 {
                             // all threads execute finished, initialize extra merge start time.
                             extra_merge_count.0 = time::Instant::now();
-                            // all threads execute finished, single thread merge is faster.
-                            // we do not need to merge same keys multi times(`mth_merge` actually merge much more changes).
-                            mth_merge = false;
                         }
                     } else {
                         // empty thread_info means merge result.
@@ -673,13 +649,23 @@ where
                     let _ = block_builder.api.take_all_changes();
                     // finalize merge
                     changes.1.finalize_merge(mbh);
+                    #[cfg(feature = "kvdb")]
+                    {
+                        // move all merged changes as read_only.
+                        changes.1.read_only();
+                        // set block threads info to changes.
+                        set_threads_to_storage::<Block>(block, thread_number as u8, &mut conflict_top_changes);
+                    }
+                    // set conflict changes as new changes for following root calculation.
+                    changes.1.extend_changes(conflict_top_changes, conflict_children_changes);
                     // final main block builder state.
                     block_builder.api.set_changes(changes.1);
-                    block_builder.api.set_recorder(changes.2);
-                    block_builder.extrinsics = changes.3;
+                    block_builder.api.set_storage_transaction_cache(changes.2);
+                    block_builder.api.set_recorder(changes.3);
+                    block_builder.extrinsics = changes.4;
                     merge_info.extra_merge_time = extra_merge_count.0.elapsed();
                     recorder.merge = Some(merge_info);
-                    return Ok((changes.4, changes.5));
+                    return Ok((changes.5, changes.6));
                 }
                 loop {
                     if merge_box.len() >= 2 {
@@ -690,17 +676,20 @@ where
                             merge_box.push((changes_weight_weight, pre_changes));
                             break;
                         }
-                        if !mth_merge {
-                            Self::merge_process(merge_tx.clone(), block, &mbh, pre_changes, changes, inherents_len, allow_rollback, merge_in_thread_order);
-                            break;
-                        } else {
-                            let merge_tx = merge_tx.clone();
-                            let mbh = mbh.copy_state();
-                            pool.spawn(async move {
-                                Self::merge_process(merge_tx, block, &mbh, pre_changes, changes, inherents_len, allow_rollback, merge_in_thread_order);
-                            })
-                                .expect("Failed to spawn merge thread");
-                        }
+                        Self::merge_process(
+                            merge_tx.clone(),
+                            block,
+                            &mbh,
+                            pre_changes,
+                            changes,
+                            &mut conflict_top_changes,
+                            &mut conflict_children_changes,
+                            inherents_len,
+                            allow_rollback,
+                            merge_in_thread_order,
+                            &mut merge_info,
+                        );
+                        break;
                     } else {
                         break;
                     }
@@ -710,30 +699,42 @@ where
     }
 
     fn merge_process(
-        mut merge_tx: Sender<(MergeType<A, Block>, Option<ThreadExecutionInfo<Block>>)>,
+        mut merge_tx: Sender<(MergeType<A, Block, C>, Option<ThreadExecutionInfo<Block>>)>,
         block: <<Block as BlockT>::Header as HeaderT>::Number,
         mbh: &MBH,
-        changes1: MergeType<A, Block>,
-        changes2: MergeType<A, Block>,
+        changes1: MergeType<A, Block, C>,
+        changes2: MergeType<A, Block, C>,
+        collect_top: &mut Changes,
+        collect_children: &mut HashMap<StorageKey, (Changes, ChildInfo)>,
         inherents_len: usize,
         allow_rollback: bool,
         static_order: bool,
+        merge_info: &mut MergeInfo,
     ) {
         let exe_merge_start = time::Instant::now();
-        let merge_result = Self::merge_changes(&mbh, changes1, changes2, inherents_len, allow_rollback, static_order);
-        let merge_time = exe_merge_start.elapsed().as_micros();
+        let merge_result = Self::merge_changes(
+            &mbh,
+            changes1,
+            changes2,
+            collect_top,
+            collect_children,
+            inherents_len,
+            allow_rollback,
+            static_order,
+        );
+        let merge_time = exe_merge_start.elapsed();
         let changes = match merge_result {
-            Ok((changes, to_threads, from_threads)) => {
-                debug!(target: LOG_TARGET, "[MergeCh Block {block}] Merge threads {to_threads:?} and {from_threads:?} in {merge_time} micros");
+            Ok((changes, to_threads, from_threads, merge_transaction_time)) => {
+                merge_info.records.push((to_threads, from_threads, merge_time, merge_transaction_time));
                 changes
             },
             Err((keep, drop, e)) => {
                 error!(
                     target: LOG_TARGET,
-                    "[MergeCh Block {block}] Merge threads keep {:?}, drop [threads {:?}, {} extrinsics] in {merge_time} micros for error: {e:?}",
+                    "[MergeCh Block {block}] Merge threads keep {:?}, drop [threads {:?}, {} extrinsics] in {merge_time:?} for error: {e:?}",
                     keep.0,
                     drop.0,
-                    drop.3.len() + drop.4.len() - inherents_len,
+                    drop.4.len() + drop.5.len() - inherents_len,
                 );
                 keep
             }
@@ -745,12 +746,17 @@ where
 
     fn merge_changes(
         mbh: &MBH,
-        mut to: MergeType<A, Block>,
-        mut from: MergeType<A, Block>,
+        mut to: MergeType<A, Block, C>,
+        mut from: MergeType<A, Block, C>,
+        collect_top: &mut Changes,
+        collect_children: &mut HashMap<StorageKey, (Changes, ChildInfo)>,
         inherents_len: usize,
         allow_rollback: bool,
         static_order: bool,
-    ) -> Result<(MergeType<A, Block>, Vec<usize>, Vec<usize>), (MergeType<A, Block>, MergeType<A, Block>, MergeErr)> {
+    ) -> Result<
+        (MergeType<A, Block, C>, Vec<usize>, Vec<usize>, Duration),
+        (MergeType<A, Block, C>, MergeType<A, Block, C>, MergeErr)
+    > {
         if !static_order && to.1.merge_weight::<MBH>() < from.1.merge_weight::<MBH>() {
             std::mem::swap(&mut to, &mut from);
         }
@@ -759,20 +765,41 @@ where
         // if failed, return unchanged state.
         if allow_rollback {
             let mut tmp_state = to.1.clone();
-            if let Err(e) = tmp_state.merge(&from.1, mbh, allow_rollback) {
+            match tmp_state.merge(&mut from.1, static_order, mbh) {
+                Ok((top_changes, children_changes)) => {
+                    collect_top.extend(top_changes);
+                    for (child_key, (children, info)) in children_changes {
+                        if let Some((c, ci)) = collect_children.get_mut(&child_key) {
+                            if *ci != info { continue; }
+                            c.extend(children);
+                        }
+                    }
+                },
+                Err(e) => return Err((to, from, e)),
                 // since both state are not changed. we choose to keep `to` and drop `from`
-                return Err((to, from, e));
             }
             to.1 = tmp_state;
         } else {
-            if let Err(e) = to.1.merge(&from.1, mbh, allow_rollback) {
-                // since `to` state is dirty, we should keep `from` and drop `to`
-                return Err((from, to, e));
+            match to.1.merge(&mut from.1, static_order, mbh) {
+                Ok((top_changes, children_changes)) => {
+                    collect_top.extend(top_changes);
+                    for (child_key, (children, info)) in children_changes {
+                        if let Some((c, ci)) = collect_children.get_mut(&child_key) {
+                            if *ci != info { continue; }
+                            c.extend(children);
+                        }
+                    }
+                },
+                Err(e) => panic!("Merge threads {:?} and {:?} failed for {e:?}(rollback not allowed)", to.0, from.0),
             }
         }
         let to_threads = to.0.clone();
         to.0.extend(from.0.clone());
-        to.2 = match (to.2, from.2) {
+        let merge_transaction_start = time::Instant::now();
+        to.2.consolidate(from.2);
+        let merge_transaction_time = merge_transaction_start.elapsed();
+        to.2.clear_root();
+        to.3 = match (to.3, from.3) {
             (Some(recorder1), Some(recorder2)) => {
                 recorder1.merge(&recorder2);
                 Some(recorder1)
@@ -781,10 +808,10 @@ where
             (None, Some(recorder2)) => Some(recorder2),
             (None, None) => None,
         };
-        to.3.extend(from.3[inherents_len..].to_vec());
-        to.4.extend(from.4.clone());
-        to.5 = from.5;
-        Ok((to, to_threads, from.0))
+        to.4.extend(from.4[inherents_len..].to_vec());
+        to.5.extend(from.5.clone());
+        to.6 = from.6;
+        Ok((to, to_threads, from.0, merge_transaction_time))
     }
 
     async fn one_thread_build_check(
@@ -827,11 +854,22 @@ where
                 let build_time = build_timer.elapsed().as_millis();
                 let (block_res, storage_changes_res, _proof_res) = res.into_inner();
                 // total block hash check
-                if block_res.hash() == block.hash() {
-                    info!(target: LOG_TARGET, "[OTC Block {number}({block_time} ({init_time} {execute_time} {build_time}) ms)] Check Block Hash success");
+                if block_res.header().state_root() == block.header().state_root() {
+                    info!(target: LOG_TARGET, "[OTC Block {number}({block_time}({init_time} {execute_time} {build_time}) ms)] Check Block Hash success");
                     return;
                 }
                 let change_diff = |mth: &Vec<(StorageKey, Option<StorageValue>)>, oth: &Vec<(StorageKey, Option<StorageValue>)>| {
+                    #[cfg(feature = "kvdb")]
+                    let filter = vec![
+                        // System Threads
+                        [38, 170, 57, 78, 234, 86, 48, 224, 124, 72, 174, 12, 149, 88, 206, 247, 156, 181, 201, 244, 0, 171, 65, 57, 156, 107, 139, 81, 248, 209, 136, 25].to_vec(),
+                        // System EventsMap
+                        [38, 170, 57, 78, 234, 86, 48, 224, 124, 72, 174, 12, 149, 88, 206, 247, 49, 208, 128, 228, 214, 125, 178, 100, 12, 86, 17, 66, 220, 220, 32, 101].to_vec(),
+                        // b":thread_root",
+                        [58, 116, 104, 114, 101, 97, 100, 95, 114, 111, 111, 116].to_vec(),
+                    ];
+                    #[cfg(not(feature = "kvdb"))]
+                    let filter = vec![[58, 116, 104, 114, 101, 97, 100, 95, 114, 111, 111, 116].to_vec()];
                     // main_storage_changes check if block different.
                     let mut mth_changes = HashMap::new();
                     for (k, v) in mth.clone() {
@@ -842,17 +880,27 @@ where
                     for (k, v_res) in oth.iter() {
                         if let Some(v) = mth_changes.remove(k) {
                             if &v != v_res {
+                                if filter.iter().any(|f| k.starts_with(f)) { continue; }
                                 oth_diff.push(k.clone());
                             }
                         } else {
+                            if filter.iter().any(|f| k.starts_with(f)) { continue; }
                             oth_extra.push(k.clone());
                         }
                     }
-                    let oth_less: Vec<_> = mth_changes.keys().cloned().collect();
+                    let oth_less: Vec<_> = mth_changes
+                        .keys()
+                        .filter(|k| !filter.iter().any(|f| k.starts_with(f)))
+                        .cloned()
+                        .collect();
                     (oth_less, oth_diff, oth_extra)
                 };
                 // main_storage_changes check if block different.
                 let (oth_main_less, oth_main_diff, oth_main_extra) = change_diff(&main_storage_changes, &storage_changes_res.main_storage_changes);
+                if oth_main_less.is_empty() && oth_main_diff.is_empty() && oth_main_extra.is_empty() {
+                    info!(target: LOG_TARGET, "[OTC Block {number}({block_time}({init_time} {execute_time} {build_time}) ms)] Check Block state success");
+                    return;
+                }
                 error!(
                     target: LOG_TARGET,
                     "[OTC Block {number}({block_time} ({init_time} {execute_time} {build_time}) ms)] [one thread/multi threads] main change differences, less: {oth_main_less:?}, diff: {oth_main_diff:?}, extra: {oth_main_extra:?}",
@@ -1079,16 +1127,20 @@ where
             limit_execution_time,
         )
             .await?;
-        info!(
-            target: LOG_TARGET,
-			"🎁 [{source}] Prepared block {} [{}] \
-			[hash: {:?}; parent_hash: {}; {}, threads {thread_number}]",
-			info.number,
-			info.time_info(limit_execution_time),
-			<Block as BlockT>::Hash::from(proposal.block.header().hash()),
-			proposal.block.header().parent_hash(),
-            info.tx_info(),
-		);
+        let block_execute_info = if log::log_enabled!(target: LOG_TARGET, log::Level::Debug) {
+            for thread_info in info.threads_debug(limit_execution_time) {
+                debug!(target: LOG_TARGET, "[Execute {}] {thread_info}", info.number);
+            }
+            for merge_info in info.merge.print_records() {
+                debug!(target: LOG_TARGET, "[MergeCh {}] {merge_info}", info.number);
+            }
+            info.debug(limit_execution_time)
+        } else if log::log_enabled!(target: LOG_TARGET, log::Level::Info) {
+            info.info(limit_execution_time)
+        } else {
+            unreachable!()
+        };
+        info!(target: LOG_TARGET, "🎁 [{source}] {block_execute_info}");
         telemetry!(
 			self.telemetry;
 			CONSENSUS_INFO;
@@ -1173,16 +1225,17 @@ where
             Some(extrinsics_root) => proposal.block.header_mut().set_extrinsics_root(extrinsics_root),
             None => return Err(Self::Error::UnknownBlock("Failed to get extrinsiscs_root".to_string())),
         }
-        info!(
-            target: LOG_TARGET,
-			"🎁 [{source}] Prepared block {} [{}] \
-			[hash: {:?}; parent_hash: {}; {}, threads {thread_number}]",
-			info.number,
-			info.time_info(limit_execution_time),
-			<Block as BlockT>::Hash::from(proposal.block.header().hash()),
-			proposal.block.header().parent_hash(),
-            info.tx_info(),
-		);
+        let block_execute_info = if log::log_enabled!(target: LOG_TARGET, log::Level::Debug) {
+            for merge_info in info.merge.print_records() {
+                debug!(target: LOG_TARGET, "[MergeCh Block {}] {merge_info}", info.number);
+            }
+            info.debug(limit_execution_time)
+        } else if log::log_enabled!(target: LOG_TARGET, log::Level::Info) {
+            info.info(limit_execution_time)
+        } else {
+            unreachable!()
+        };
+        info!(target: LOG_TARGET, "🎁 [{source}] {block_execute_info}");
         telemetry!(
 			self.telemetry;
 			CONSENSUS_INFO;
@@ -1202,4 +1255,19 @@ pub fn extrinsics_root<H: Hash, E: codec::Encode>(extrinsics: &[E]) -> H::Output
 /// Same with `frame_system::extrinsics_data_root`.
 pub fn extrinsics_data_root<H: Hash>(xts: Vec<Vec<u8>>) -> H::Output {
     H::ordered_trie_root(xts, sp_core::storage::StateVersion::V0)
+}
+
+pub fn set_threads_to_storage<Block: BlockT>(block: NumberFor<Block>, threads: u8, changes: &mut Changes) {
+    use sp_core::blake2_128;
+
+    const SYSTEM_THREADS_PREFIX: [u8; 32] = [38, 170, 57, 78, 234, 86, 48, 224, 124, 72, 174, 12, 149, 88, 206, 247, 156, 181, 201, 244, 0, 171, 65, 57, 156, 107, 139, 81, 248, 209, 136, 25];
+
+    let threads_key = [SYSTEM_THREADS_PREFIX.to_vec(), blake2_128(&block.encode()).to_vec()].concat();
+    if let Some(entry) = changes.get_mut(&threads_key) {
+        entry.set(Some(threads.encode()), false, None);
+    } else {
+        let mut new_entry = OverlayedEntry::default();
+        new_entry.set(Some(threads.encode()), true, None);
+        changes.insert(threads_key, new_entry);
+    }
 }

@@ -389,7 +389,7 @@ fn generate_runtime_api_base_structures() -> Result<TokenStream> {
 				std::cell::RefCell::borrow(&self.typed_cache).get_change_encode(space, key)
 			}
 
-			fn get_typed_change<T: Clone + codec::Encode + 'static>(&self, space: &[u8], key: &#crate_::StorageKey) -> std::option::Option<std::option::Option<T>>
+			fn get_typed_change<T: Clone + codec::FullCodec + 'static>(&self, space: &[u8], key: &#crate_::StorageKey) -> std::option::Option<std::option::Option<T>>
 			where
 				Self: Sized
 			{
@@ -401,28 +401,6 @@ fn generate_runtime_api_base_structures() -> Result<TokenStream> {
 				Self: Sized
 			{
 				std::cell::RefCell::borrow(&self.changes).top_change(key)
-			}
-
-			fn merge_all_changes<M: #crate_::MergeChange<#crate_::StorageKey, std::option::Option<#crate_::StorageValue>>>(
-				&mut self,
-				changes: #crate_::OverlayedChanges,
-				recorder: std::option::Option<#crate_::ProofRecorder<Block>>,
-				merge_top: &M,
-				allow_rollback: bool,
-			) -> std::result::Result<(), #crate_::MergeErr>
-			where
-				Self: Sized,
-			{
-				// merge changes
-				std::cell::RefCell::borrow_mut(&self.changes).merge(&changes, merge_top, allow_rollback)?;
-				// merge recorder
-				if self.recorder.is_some() {
-					if let std::option::Option::Some(other_recorder) = &recorder {
-						self.recorder.as_mut().unwrap().merge(other_recorder)
-					}
-				}
-				// storage_transaction_cache does not need merge, it is updated by [Self::into_storage_changes]
-				Ok(())
 			}
 		}
 

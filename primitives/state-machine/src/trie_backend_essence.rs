@@ -39,6 +39,7 @@ use sp_trie::{
 };
 #[cfg(feature = "std")]
 use std::{collections::HashMap, sync::Arc};
+#[cfg(feature = "kvdb")]
 use kv_db::{KVCache, KVDBMut, KVMut, KV, KVDB};
 // In this module, we only use layout for read operation and empty root,
 // where V1 and V0 are equivalent.
@@ -385,7 +386,7 @@ impl<S: TrieBackendStorage<H>, H: Hasher, C: AsLocalTrieCache<H>> TrieBackendEss
 	}
 
 	/// Call the given closure passing it the cache.
-	#[cfg(feature = "std")]
+	#[cfg(all(feature = "std", feature = "kvdb"))]
 	#[inline]
 	fn with_kv_cache<R>(
 		&self,
@@ -401,7 +402,7 @@ impl<S: TrieBackendStorage<H>, H: Hasher, C: AsLocalTrieCache<H>> TrieBackendEss
 		}
 	}
 
-	#[cfg(not(feature = "std"))]
+	#[cfg(all(not(feature = "std"), feature = "kvdb"))]
 	#[inline]
 	fn with_kv_cache<R>(
 		&self,
@@ -545,6 +546,7 @@ where
 	}
 
 	/// Returns the hash value
+	#[cfg(feature = "kvdb")]
 	pub fn kv_storage_hash(&self, key: &[u8]) -> Result<Option<H::Out>> {
 		let map_e = |e| format!("Trie lookup error: {}", e);
 
@@ -563,6 +565,7 @@ where
 	}
 
 	/// Get the value of storage at given key by kv_db.
+	#[cfg(feature = "kvdb")]
 	pub fn kv_storage(&self, key: &[u8]) -> Result<Option<StorageValue>> {
 		self.with_kv_cache(|cache| {
 			Ok(KVDB::new(self, &self.root, cache).get(key))
@@ -618,6 +621,7 @@ where
 	}
 
 	/// Get the value of child storage at given key by kv_db.
+	#[cfg(feature = "kvdb")]
 	pub fn kv_child_storage(
 		&self,
 		child_info: &ChildInfo,
@@ -704,14 +708,15 @@ where
 	}
 
 	/// Return the storage kv_db transaction.
+	#[cfg(feature = "kvdb")]
 	pub fn kv_storage_root<'a>(
 		&self,
 		delta: impl Iterator<Item = (&'a [u8], Option<&'a [u8]>)>,
 		_state_version: StateVersion,
 	) -> (H::Out, S::Overlay) {
 		let mut write_overlay = S::Overlay::default();
-		self.with_kv_cache(|cache| {
-			let mut kvdb = KVDBMut::new(&mut write_overlay, &self.root, cache);
+		self.with_kv_cache(|_cache| {
+			let mut kvdb = KVDBMut::new(&mut write_overlay, &self.root, None, true);
 			for (k, v) in delta {
 				if let Some(v) = v {
 					kvdb.insert(k, v.to_vec());
@@ -782,6 +787,7 @@ where
 	}
 
 	/// Returns the child storage kv_db transaction.
+	#[cfg(feature = "kvdb")]
 	pub fn kv_child_storage_root<'a>(
 		&self,
 		child_info: &ChildInfo,
@@ -789,8 +795,8 @@ where
 		_state_version: StateVersion,
 	) -> (H::Out, bool, S::Overlay) {
 		let mut write_overlay = S::Overlay::default();
-		self.with_kv_cache(|cache| {
-			let mut kvdb = KVDBMut::new(&mut write_overlay, &self.root, cache);
+		self.with_kv_cache(|_cache| {
+			let mut kvdb = KVDBMut::new(&mut write_overlay, &self.root, None, true);
 			for (k, v) in delta {
 				let k = [child_info.storage_key(), k].concat();
 				if let Some(v) = v {

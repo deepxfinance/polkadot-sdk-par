@@ -147,7 +147,7 @@ where
 		backend: &'a B,
 		extensions: Option<&'a mut sp_externalities::Extensions>,
 	) -> Self {
-		let typed_cache: bool = std::env::var("TYPED_CACHE").unwrap_or("false".into()).parse().unwrap_or(false);
+		let typed_cache: bool = std::env::var("TYPED_CACHE").unwrap_or("true".into()).parse().unwrap_or(true);
 		Self {
 			cache: if typed_cache { cache } else { None },
 			overlay,
@@ -165,6 +165,8 @@ where
 	///
 	/// Called when there are changes that likely will invalidate the storage root.
 	fn mark_dirty(&mut self) {
+		// Disable for feature `kvdb`
+		#[cfg(not(feature = "std"))]
 		self.storage_transaction_cache.reset();
 	}
 }
@@ -249,7 +251,7 @@ where
 				*self.b_read_time.write().unwrap() += time;
 			}
 			if time >= 1000 {
-				debug!(target: "ext-dev", "ext {} get storage key: {key:?}, time: {time} nanos, backend: {backend}", self.id);
+				debug!(target: "ext-dev", "ext {} get storage key: {key:?}, time: {time}ns, backend: {backend}", self.id);
 			}
 		}
 		// NOTE: be careful about touching the key names – used outside substrate!
@@ -482,7 +484,7 @@ where
 			let time = start.elapsed().as_nanos();
 			*self.write_time.write().unwrap() += time;
 			if time >= 1000 {
-				debug!(target: "ext-dev", "ext {} place storage key {key:?}, time: {} nanos", start.elapsed().as_nanos(), self.id);
+				debug!(target: "ext-dev", "ext {} place storage key {key:?}, time: {}ns", start.elapsed().as_nanos(), self.id);
 			}
 		}
 	}
@@ -607,7 +609,7 @@ where
 			let time = start.elapsed().as_nanos();
 			*self.write_time.write().unwrap() += time;
 			if time >= 1000 {
-				debug!(target: "ext-dev", "ext {} append storage key {key:?}, time: {} nanos", start.elapsed().as_nanos(), self.id);
+				debug!(target: "ext-dev", "ext {} append storage key {key:?}, time: {}ns", start.elapsed().as_nanos(), self.id);
 			}
 		}
 	}
@@ -633,7 +635,6 @@ where
 		{
 			self.overlay.top.set(key, value, None);
 		}
-
 		let root =
 			self.overlay
 				.storage_root(self.backend, self.storage_transaction_cache, state_version);

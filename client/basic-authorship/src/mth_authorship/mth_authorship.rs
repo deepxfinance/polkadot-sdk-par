@@ -375,16 +375,7 @@ where
             .await?;
         info.set_group_info(group_output.info);
         self.oracle.update_execute_info(&info);
-        info!(
-            target: LOG_TARGET,
-			"🎁 [Propose] Prepared block {} [{}] \
-			[hash: {:?}; parent_hash: {}; {}, threads {thread_number}]",
-			info.number,
-			info.time_info(true),
-			<Block as BlockT>::Hash::from(proposal.block.header().hash()),
-			proposal.block.header().parent_hash(),
-            info.tx_info(),
-		);
+        info!(target: LOG_TARGET, "🎁 [Propose] {}", info.info(true));
         telemetry!(
 			self.telemetry;
 			CONSENSUS_INFO;

@@ -48,12 +48,16 @@ impl<B: BlockT, O: BlockOracle<B>> HotstuffOracle<B, O> {
                 hotstuff_duration = Duration::from_millis(duration);
             }
         }
+        let consensus_time = hotstuff_duration.saturating_sub(inner.pool_time());
+        let consensus_percent = Percent::from_rational(consensus_time.as_micros(), hotstuff_duration.as_micros());
         let mut verify_percent = Percent::from_percent(75);
         if let Ok(value) = env::var("HOTSTUFF_VERIFY_PERCENT") {
             if let Ok(percent) = value.parse::<u8>() {
                 verify_percent = Percent::from_percent(percent);
             }
         }
+        verify_percent = verify_percent * consensus_percent;
+
         let mut filter_blocks = 50u32;
         if let Ok(value) = env::var("HOTSTUFF_FILTER_BLOCKS") {
             if let Ok(blocks) = value.parse::<u32>() {
@@ -113,7 +117,7 @@ impl<B: BlockT, O: BlockOracle<B>> HotsOracle<B> for HotstuffOracle<B, O> {
             let pre_verify_time_per_tx = *self.verify_time_per_tx.lock().unwrap();
             if pre_verify_time_per_tx != time_per_verify {
                 *self.verify_time_per_tx.lock().unwrap() = time_per_verify;
-                log::debug!(target: "oracle_hots", "[Update] verify_time_per_tx: {} micros", time_per_verify.as_micros());
+                log::debug!(target: "oracle_hots", "[Update] verify_time_per_tx: {}μs", time_per_verify.as_micros());
             }
         }
     }

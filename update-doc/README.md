@@ -61,7 +61,7 @@ And it also supports `TransactionGrouper` to group transactions by transaction's
 Main block executor. We support extra method `push_batch` to execute batch transactions by single call for faster execution(less runtime env init).
 
 ### `db`
-Full node database creator, responsible for read state from db or store changes to db(e.g. rocksdb/paritydb). We add env `DB_KV_MODE` to decide if we store all `STATE` by key-value mode(no MPT for state proof and no history state).
+Full node database creator, responsible for read state from db or store changes to db(e.g. rocksdb/paritydb). We add feature `kvdb` to decide if we store all `STATE` by key-value mode(no MPT for state proof and no history state).
 
 ### `sync`
 Main block sync entry. We do small change to check `extrinsics_root` without inherent transaction(currently only one transaction for timestamp) for `hotstuff consensus` have not consensus for inherent transaction.

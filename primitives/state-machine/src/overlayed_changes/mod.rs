@@ -43,6 +43,7 @@ use std::{
 };
 #[cfg(feature = "std")]
 use sp_core::bytes::to_hex;
+use crate::backend::Consolidate;
 pub use crate::overlayed_changes::changeset::{OverlayedEntry, MergeChange};
 pub use self::changeset::{AlreadyInRuntime, NoOpenTransaction, NotInRuntime, OverlayedValue};
 
@@ -54,6 +55,8 @@ pub type StorageKey = Vec<u8>;
 
 /// Storage value.
 pub type StorageValue = Vec<u8>;
+
+pub type Changes = sp_std::collections::btree_map::BTreeMap<StorageKey, OverlayedEntry<Option<StorageValue>>>;
 
 /// In memory array of storage values.
 pub type StorageCollection = Vec<(StorageKey, Option<StorageValue>)>;
@@ -144,6 +147,38 @@ impl sp_std::fmt::Debug for MergeErr {
 }
 
 impl OverlayedChanges {
+	#[cfg(feature = "kvdb")]
+	pub fn read_only(&mut self) {
+		self.top.read_only();
+		self.children.iter_mut().for_each(|(_, (child, _))| child.read_only());
+		self.offchain.overlay_mut().read_only();
+	}
+
+	pub fn extend_changes(
+		&mut self,
+		top: Changes,
+		children: Map<StorageKey, (Changes, ChildInfo)>,
+	) {
+		self.top.extend_changes(top);
+		for (key, (changes, child_info)) in children {
+			if let Some((child, ci)) = self.children.get_mut(&key) {
+				if *ci != child_info { continue; }
+				child.extend_changes(changes);
+			} else {
+				let mut child = OverlayedChangeSet::default();
+				child.extend_changes(changes);
+				self.children.insert(key, (child, child_info));
+			}
+		}
+	}
+
+	#[cfg(feature = "kvdb")]
+	pub fn merge_read_only(&mut self) {
+		self.top.merge_read_only();
+		self.children.iter_mut().for_each(|c| c.1.0.merge_read_only());
+		self.offchain.overlay_mut().merge_read_only();
+	}
+
 	pub fn commit_rollback_time(&self) -> (u128, u128) {
 		#[cfg(feature = "std")]
 		{(self.commit_time, self.rollback_time)}
@@ -209,59 +244,56 @@ impl OverlayedChanges {
 	/// if `allow_rollback` is true, we will copy state to test change, and change real state when merge success(cost more memory).
 	pub fn merge<M: MergeChange<StorageKey, Option<StorageValue>>>(
 		&mut self,
-		other: &Self,
+		other: &mut Self,
+		in_order: bool,
 		merge_handle: &M,
-		allow_rollback: bool,
-	) -> Result<(), MergeErr> {
-		let mut tmp_top = OverlayedChangeSet::default();
-		let mut tmp_children = Map::new();
-		let mut tmp_offchain = OffchainOverlayedChanges::default();
-		let (merge_top, merge_children, merge_offchain) = if allow_rollback {
-			tmp_top = self.top.clone();
-			tmp_children = self.children.clone();
-			tmp_offchain = self.offchain.clone();
-			(&mut tmp_top, &mut tmp_children, &mut tmp_offchain)
-		} else {
-			(&mut self.top, &mut self.children, &mut self.offchain)
-		};
-		if let Err(duplicate_keys) = merge_top.merge_custom(other.top.clone(), Some(merge_handle)) {
-			return if duplicate_keys.is_empty() {
+	) -> Result<(Changes, Map<StorageKey, (Changes, ChildInfo)>), MergeErr> {
+		let (merge_top, merge_children, merge_offchain) = (&mut self.top, &mut self.children, &mut self.offchain);
+		let top_changes = match merge_top.merge_custom(&mut other.top, in_order, Some(merge_handle)) {
+			Ok(changes) => changes,
+			Err(duplicate_keys) => return if duplicate_keys.is_empty() {
 				Err(MergeErr::Unfinished("OverlayedChanges merge top meet unfinished transaction"))
 			} else {
 				Err(MergeErr::DuplicateTopKeys(duplicate_keys))
-			}
+			},
 		};
-		for (key, (set, info)) in other.children.iter() {
-			if let Some((changeset, _info)) = merge_children.get_mut(key) {
-				if let Err(duplicate_keys) = changeset.merge(set.clone()) {
-					return if duplicate_keys.is_empty() {
+		let mut children_changes = Map::new();
+		for (key, (mut set, info)) in std::mem::take(&mut other.children).into_iter() {
+			if let Some((changeset, info)) = merge_children.get_mut(&key) {
+				match changeset.merge(&mut set, in_order) {
+					Ok(changes) => { children_changes.insert(key, (changes, info.clone())); }
+					Err(duplicate_keys) => return if duplicate_keys.is_empty() {
 						Err(MergeErr::Unfinished("OverlayedChanges merge children meet unfinished transaction"))
 					} else {
 						Err(MergeErr::DuplicateChildKeys(duplicate_keys))
 					}
 				}
 			} else {
-				merge_children.insert(key.clone(), (set.clone(), info.clone()));
+				merge_children.insert(key, (set, info));
 			}
 		}
-		if let Err(duplicate_keys) = merge_offchain.overlay_mut().merge(other.offchain.overlay().clone()) {
+		if let Err(duplicate_keys) = merge_offchain.overlay_mut().merge(&mut other.offchain.overlay().clone(), in_order) {
 			return if duplicate_keys.is_empty() {
 				Err(MergeErr::Unfinished("OverlayedChanges merge offchain meet unfinished transaction"))
 			} else {
 				Err(MergeErr::DuplicateOffchainKeys(duplicate_keys))
 			}
 		};
-		if allow_rollback {
-			self.top = tmp_top;
-			self.children = tmp_children;
-			self.offchain = tmp_offchain;
-		}
 
-		let offset = self.transaction_index_ops.last().map(|tio| match tio {
+		let mut offset = self.transaction_index_ops.last().map(|tio| match tio {
 			IndexOperation::Insert { extrinsic: e, .. } => *e + 1,
 			IndexOperation::Renew { extrinsic: e, .. } => *e + 1,
 		}).unwrap_or(0);
-		for mut other_tio in other.transaction_index_ops.clone() {
+		if let Some(other_first_tio) = other.transaction_index_ops.first() {
+			let other_start_index = match other_first_tio {
+				IndexOperation::Insert { extrinsic: e, .. } => *e,
+				IndexOperation::Renew { extrinsic: e, .. } => *e,
+			};
+			if other_start_index >= offset {
+				offset = 0;
+			}
+		}
+		for mut other_tio in std::mem::take(&mut other.transaction_index_ops) {
 			match &mut other_tio {
 				IndexOperation::Insert { extrinsic: e, .. } => *e += offset,
 				IndexOperation::Renew { extrinsic: e, .. } => *e += offset,
@@ -269,7 +301,13 @@ impl OverlayedChanges {
 			self.transaction_index_ops.push(other_tio);
 		}
 		self.stats.add(&other.stats);
-		Ok(())
+		#[cfg(feature = "std")]
+		{
+			self.exe_times.extend(std::mem::take(&mut other.exe_times));
+			self.commit_time += other.commit_time;
+			self.rollback_time += other.rollback_time;
+		}
+		Ok((top_changes, children_changes))
 	}
 
 	/// Finalize all merge work.
@@ -366,9 +404,25 @@ pub struct StorageTransactionCache<Transaction, H: Hasher> {
 }
 
 impl<Transaction, H: Hasher> StorageTransactionCache<Transaction, H> {
+	pub fn clear_root(&mut self) {
+		self.transaction_storage_root = None;
+	}
+
 	/// Reset the cached transactions.
 	pub fn reset(&mut self) {
 		*self = Self::default();
+	}
+}
+
+impl<Transaction: Consolidate, H: Hasher> Consolidate for StorageTransactionCache<Transaction, H> {
+	fn consolidate(&mut self, other: Self) {
+		if let Some(transaction) = other.transaction {
+			if let Some(pre_transaction) = &mut self.transaction {
+				pre_transaction.consolidate(transaction);
+			} else {
+				self.transaction = Some(transaction);
+			}
+		}
 	}
 }
 
@@ -718,7 +772,8 @@ impl OverlayedChanges {
 			.take()
 			.and_then(|t| cache.transaction_storage_root.take().map(|tr| (t, tr)))
 			.expect("Transaction was be generated as part of `storage_root`; qed");
-
+		#[cfg(feature = "kvdb")]
+		self.merge_read_only();
 		let (main_storage_changes, child_storage_changes) = self.drain_committed();
 		let offchain_storage_changes = self.offchain_drain_committed().collect();
 
@@ -780,8 +835,13 @@ impl OverlayedChanges {
 		});
 
 		let (root, transaction) = backend.full_storage_root(delta, child_delta, state_version);
-
-		cache.transaction = Some(transaction);
+		if let Some(pre_transaction) = &mut cache.transaction {
+			// This situation only valid for feature `kvdb`, since any storage change will call `Ext::mark_dirty()`(this will clean cache).
+			// We disabled this `mark_dirty()` for feature `kvdb`.
+			pre_transaction.consolidate(transaction);
+		} else {
+			cache.transaction = Some(transaction);
+		}
 		cache.transaction_storage_root = Some(root);
 
 		root

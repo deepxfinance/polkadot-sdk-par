@@ -34,7 +34,7 @@ trie-root = { version = "0.18.0", default-features = false }
 sp-core = { version = "7.0.0", default-features = false, path = "../core" }
 sp-std = { version = "5.0.0", default-features = false, path = "../std" }
 schnellru = { version = "0.2.1", optional = true }
-kv-db = { default-features = false, path = "../kv-db" }
+kv-db = { default-features = false, path = "../kv-db", optional = true }
 
 [dev-dependencies]
 array-bytes = "4.1"
@@ -63,3 +63,4 @@ std = [
 	"trie-db/std",
 	"trie-root/std",
 ]
+kvdb = ["kv-db"]

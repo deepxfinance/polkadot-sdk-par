@@ -117,7 +117,7 @@ pub fn take_cache<T: FullCodec + TStorage, F>(key: &[u8], _f: F) -> Option<T> wh
 	) {
 		Some(Some(value)) => value,
 		Some(None) => {
-			let res = take(key);
+			let res = get(key);
 			if res.is_some() {
 				sp_io::mut_typed_cache(|o| o.kill::<T>(key_prefix(key), key));
 			} else {
@@ -361,4 +361,13 @@ pub fn put_raw(key: &[u8], value: &[u8]) {
 			lock.insert(key, vec![(Default::default(), time, value.len())]);
 		}
 	}
+}
+
+/// Take raw byte slice from storage
+pub fn take_raw(key: &[u8])  -> Option<Vec<u8>> {
+	let res = get_raw(key);
+	if res.is_some() {
+		kill(key);
+	}
+	res
 }

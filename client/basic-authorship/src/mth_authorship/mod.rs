@@ -14,7 +14,7 @@ use sp_consensus::Proposal;
 use sp_spot_api::SpotRuntimeApi;
 use sp_perp_api::PerpRuntimeApi;
 use sp_runtime::traits::Block as BlockT;
-use sp_state_machine::{MergeChange, OverlayedEntry, StorageKey, StorageValue};
+use sp_state_machine::{MergeChange, OverlayCache, OverlayedChanges, OverlayedEntry, StorageKey, StorageValue};
 pub use merge_system::*;
 pub use mth_authorship::*;
 use sp_core::ExecutionContext;
@@ -27,6 +27,8 @@ use crate::mth_authorship::execute_info::BlockExecuteInfo;
 pub trait MultiThreadBlockBuilder<B, Block: BlockT, Api>: MergeChange<StorageKey, Option<StorageValue>> + Default {
     /// Pre handle the state for future [MergeChange::merge_changes]
     fn prepare(&mut self, _backend: &Arc<B>, _parent: &Block::Hash, _api: &Api) {}
+
+    fn prepare_thread_in_order(&mut self, _thread: usize, _txs: usize, _cache: &mut OverlayCache, _changes: &mut OverlayedChanges) {}
 
     /// Copy a new Self for another spawn merge work.
     fn copy_state(&self) -> Self;
@@ -97,14 +99,14 @@ pub trait BlockPropose<Block: BlockT> {
 /// Special trait for mth authorship used to generate extend extrinsic before finalize.
 pub trait ExtendExtrinsic {
     /// Input runtime api with latest state.
-    /// Return extrinsic with group_info
-    fn extend_extrinsic<Block: BlockT, Api: ApiExt<Block> + SpotRuntimeApi<Block> + PerpRuntimeApi<Block>>(api: &Api, hash: <Block as BlockT>::Hash) -> Vec<Block::Extrinsic>;
+    /// Return execute info
+    fn extend_extrinsic<Block: BlockT, Api: ApiExt<Block> + SpotRuntimeApi<Block> + PerpRuntimeApi<Block>>(api: &Api, hash: <Block as BlockT>::Hash) -> Vec<u8>;
 }
 
 pub struct EmptyExtendTx;
 
 impl ExtendExtrinsic for EmptyExtendTx {
-    fn extend_extrinsic<Block: BlockT, Api: ApiExt<Block> + SpotRuntimeApi<Block> + PerpRuntimeApi<Block>>(_api: &Api, _hash: <Block as BlockT>::Hash) -> Vec<Block::Extrinsic> {
+    fn extend_extrinsic<Block: BlockT, Api: ApiExt<Block> + SpotRuntimeApi<Block> + PerpRuntimeApi<Block>>(_api: &Api, _hash: <Block as BlockT>::Hash) -> Vec<u8> {
         Vec::new()
     }
 }

@@ -48,3 +48,4 @@ substrate-test-runtime-client = { version = "2.0.0", path = "../../test-utils/ru
 
 [features]
 dev-time = ["sp-state-machine/dev-time"]
+kvdb = ["sp-state-machine/kvdb"]

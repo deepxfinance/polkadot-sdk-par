@@ -103,7 +103,7 @@ pub use sp_runtime::{
 pub use sp_state_machine::{
 	backend::AsTrieBackend, Backend as StateBackend, InMemoryBackend, OverlayedChanges,
 	StorageProof, TrieBackend, TrieBackendBuilder, OverlayedEntry, MergeErr, MergeChange,
-	OverlayCache,
+	OverlayCache, Changes,
 };
 #[cfg(not(feature = "std"))]
 pub struct OverlayCache;
@@ -613,7 +613,7 @@ pub trait ApiExt<Block: BlockT> {
 	where
 		Self: Sized;
 
-	fn get_typed_change<T: Clone + codec::Encode + 'static>(&self, space: &[u8], key: &StorageKey) -> Option<Option<T>>
+	fn get_typed_change<T: Clone + codec::FullCodec + 'static>(&self, space: &[u8], key: &StorageKey) -> Option<Option<T>>
 	where
 		Self: Sized;
 	
@@ -643,16 +643,6 @@ pub trait ApiExt<Block: BlockT> {
 		Self: Sized;
 
 	fn set_storage_transaction_cache(&mut self, storage_transaction_cache: StorageTransactionCache<Block, Self::StateBackend>)
-	where
-		Self: Sized;
-
-	fn merge_all_changes<M: MergeChange<StorageKey, Option<StorageValue>>>(
-		&mut self,
-		_changes: OverlayedChanges,
-		_recorder: Option<ProofRecorder<Block>>,
-		_merge_top: &M,
-		_allow_rollback: bool,
-	) -> Result<(), MergeErr>
 	where
 		Self: Sized;
 }
