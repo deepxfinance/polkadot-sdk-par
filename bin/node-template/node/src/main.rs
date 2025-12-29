@@ -10,7 +10,7 @@ mod command;
 mod rpc;
 mod merge_handler;
 mod merge_balances;
-mod extend_extrinsic;
+mod extra_execute;
 mod merge_backend;
 
 fn main() -> sc_cli::Result<()> {

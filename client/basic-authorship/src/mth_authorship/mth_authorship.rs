@@ -46,7 +46,7 @@ use crate::{BlockExecuteInfo, BlockPropose, GroupInfo, GroupTransaction, GroupTx
 use crate::mth_authorship::executor::BlockExecutor;
 use crate::mth_authorship::groups::TransactionGrouper;
 use crate::mth_authorship::oracle::BlockOracle;
-use super::{ExtendExtrinsic, MultiThreadBlockBuilder};
+use super::{ExtraExecute, MultiThreadBlockBuilder};
 
 const LOG_TARGET: &str = "authorship";
 
@@ -151,7 +151,7 @@ where
     ApiExt<Block, StateBackend = backend::StateBackendFor<B, Block>> + BlockBuilderApi<Block> + SpotRuntimeApi<Block> + PerpRuntimeApi<Block>,
     O: BlockOracle<Block> + Send + Sync + 'static,
     MBH: MultiThreadBlockBuilder<B, Block, C::Api> + Send + Sync + 'static,
-    E: ExtendExtrinsic + Send + Sync + 'static,
+    E: ExtraExecute<Block, C::Api> + Send + Sync + 'static,
     PR: ProofRecording + Send + Sync + 'static,
 {
     fn init_with_now(
@@ -206,7 +206,7 @@ where
     PR: ProofRecording + Send + Sync + 'static,
     O: BlockOracle<Block> + Send + Sync + 'static,
     MBH: MultiThreadBlockBuilder<B, Block, C::Api> + Send + Sync + 'static,
-    E: ExtendExtrinsic + Send + Sync + 'static,
+    E: ExtraExecute<Block, C::Api> + Send + Sync + 'static,
 {
     type Proposer = Proposer<B, Block, C, A, PR, O, MBH, E>;
     type CreateProposer = future::Ready<Result<Self::Proposer, Self::Error>>;
@@ -218,7 +218,7 @@ where
 }
 
 /// The proposer logic.
-pub struct Proposer<B, Block: BlockT, C: ProvideRuntimeApi<Block>, A: TransactionPool, PR, O: BlockOracle<Block>, MBH: MultiThreadBlockBuilder<B, Block, C::Api>, E: ExtendExtrinsic> {
+pub struct Proposer<B, Block: BlockT, C: ProvideRuntimeApi<Block>, A: TransactionPool, PR, O: BlockOracle<Block>, MBH: MultiThreadBlockBuilder<B, Block, C::Api>, E: ExtraExecute<Block, C::Api>> {
     spawn_handle: Box<dyn SpawnNamed>,
     client: Arc<C>,
     parent_hash: Block::Hash,
@@ -249,7 +249,7 @@ where
     PR: ProofRecording + Send + Sync + 'static,
     O: BlockOracle<Block> + Send + Sync + 'static,
     MBH: MultiThreadBlockBuilder<B, Block, C::Api> + Send + Sync + 'static,
-    E: ExtendExtrinsic + Send + Sync + 'static,
+    E: ExtraExecute<Block, C::Api> + Send + Sync + 'static,
 {
     type Error = sp_blockchain::Error;
     type Transaction = backend::TransactionFor<B, Block>;
@@ -306,7 +306,7 @@ where
     PR: ProofRecording + Send + Sync + 'static,
     O: BlockOracle<Block> + Send + Sync + 'static,
     MBH: MultiThreadBlockBuilder<B, Block, C::Api> + Send + Sync + 'static,
-    E: ExtendExtrinsic + Send + Sync + 'static,
+    E: ExtraExecute<Block, C::Api> + Send + Sync + 'static,
 {
     async fn propose_with(
         self,
@@ -396,7 +396,7 @@ where
     B: backend::Backend<Block> + Send + Sync + 'static,
     C: ProvideRuntimeApi<Block> + Send + Sync + 'static,
     MBH: MultiThreadBlockBuilder<B, Block, C::Api> + Send + Sync + 'static,
-    E: ExtendExtrinsic + Send + Sync + 'static,
+    E: ExtraExecute<Block, C::Api> + Send + Sync + 'static,
     PR: ProofRecording + Send + Sync + 'static,
     O: BlockOracle<Block> + Send + Sync + 'static,
 {
@@ -452,7 +452,7 @@ where
     PR: ProofRecording + Send + Sync + 'static,
     O: BlockOracle<Block> + Send + Sync + 'static,
     MBH: MultiThreadBlockBuilder<B, Block, C::Api> + Send + Sync + 'static,
-    E: ExtendExtrinsic + Send + Sync + 'static,
+    E: ExtraExecute<Block, C::Api> + Send + Sync + 'static,
 {
     type Transaction = backend::TransactionFor<B, Block>;
     type Proof = PR::Proof;

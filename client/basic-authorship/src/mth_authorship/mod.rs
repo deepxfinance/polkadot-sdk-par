@@ -96,19 +96,9 @@ pub trait BlockPropose<Block: BlockT> {
     >;
 }
 
-/// Special trait for mth authorship used to generate extend extrinsic before finalize.
-pub trait ExtendExtrinsic {
-    /// Input runtime api with latest state.
-    /// Return execute info
-    fn extend_extrinsic<Block: BlockT, Api: ApiExt<Block> + SpotRuntimeApi<Block> + PerpRuntimeApi<Block>>(api: &Api, hash: <Block as BlockT>::Hash) -> Vec<u8>;
-}
-
-pub struct EmptyExtendTx;
-
-impl ExtendExtrinsic for EmptyExtendTx {
-    fn extend_extrinsic<Block: BlockT, Api: ApiExt<Block> + SpotRuntimeApi<Block> + PerpRuntimeApi<Block>>(_api: &Api, _hash: <Block as BlockT>::Hash) -> Vec<u8> {
-        Vec::new()
-    }
+/// Extra execution logic needed for thread before finalize.
+pub trait ExtraExecute<Block: BlockT, Api: ApiExt<Block>> {
+    fn extra_execute(_api: &Api, _hash: <Block as BlockT>::Hash) {}
 }
 
 pub fn parse_entry_value<T: codec::Decode>(entry: &OverlayedEntry<Option<StorageValue>>) -> Option<T> {

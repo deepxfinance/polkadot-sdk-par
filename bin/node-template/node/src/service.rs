@@ -12,7 +12,7 @@ use std::sync::Arc;
 use sc_basic_authorship::ExecutionOracle;
 use sp_consensus::DisableProofRecording;
 use sp_timestamp::Timestamp;
-use crate::extend_extrinsic::ExtendTx;
+use crate::extra_execute::ExtraLogics;
 use crate::merge_handler::MergeHandler;
 
 // Our native executor instance.
@@ -48,7 +48,7 @@ type ProposerFactory = sc_basic_authorship::MTHProposerFactory<
 	DisableProofRecording,
 	Oracle,
 	MergeHandler<FullBackend, Block>,
-	ExtendTx,
+	ExtraLogics,
 >;
 
 type BlockExecutor = sc_basic_authorship::BlockExecutor<
@@ -57,7 +57,7 @@ type BlockExecutor = sc_basic_authorship::BlockExecutor<
 	FullPool,
 	DisableProofRecording,
 	MergeHandler<FullBackend, Block>,
-	ExtendTx,
+	ExtraLogics,
 >;
 
 pub fn new_partial(

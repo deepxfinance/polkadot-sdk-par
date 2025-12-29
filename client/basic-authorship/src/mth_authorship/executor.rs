@@ -26,7 +26,7 @@ use sp_runtime::traits::{Hash, Header, NumberFor, One};
 use sp_spot_api::SpotRuntimeApi;
 use sp_state_machine::{Changes, MergeErr, OverlayedChanges, OverlayedEntry, StorageKey, StorageValue};
 use sp_state_machine::backend::Consolidate;
-use crate::{BlockPropose, ExtendExtrinsic, MultiThreadBlockBuilder};
+use crate::{BlockPropose, ExtraExecute, MultiThreadBlockBuilder};
 use crate::mth_authorship::execute_info::{BlockExecuteInfo, InfoRecorder, MergeInfo, ThreadExecutionInfo};
 
 const LOG_TARGET: &str = "authorship";
@@ -68,7 +68,7 @@ where
     ApiExt<Block, StateBackend = backend::StateBackendFor<B, Block>> + BlockBuilderApi<Block> + SpotRuntimeApi<Block> + PerpRuntimeApi<Block>,
     PR: ProofRecording,
     MBH: MultiThreadBlockBuilder<B, Block, C::Api> + Send + Sync + 'static,
-    E: ExtendExtrinsic + Send + Sync + 'static,
+    E: ExtraExecute<Block, C::Api> + Send + Sync + 'static,
 {
     pub fn new(
         spawn_handle: Box<dyn SpawnNamed>,
@@ -518,7 +518,7 @@ where
         thread_info.total = block_builder.extrinsics.len() - initial_applied;
         thread_info.transactions = filter_transactions.into_iter().collect();
         let extend_start = time::Instant::now();
-        let _ = E::extend_extrinsic(&*block_builder.api, block_builder.parent_hash);
+        let _ = E::extra_execute(&*block_builder.api, block_builder.parent_hash);
         thread_info.extend_time = extend_start.elapsed();
         thread_info.time = thread_start.elapsed();
         #[cfg(feature = "kvdb")]
@@ -1065,7 +1065,7 @@ where
     ApiExt<Block, StateBackend = backend::StateBackendFor<B, Block>> + BlockBuilderApi<Block> + SpotRuntimeApi<Block> + PerpRuntimeApi<Block>,
     PR: ProofRecording,
     MBH: MultiThreadBlockBuilder<B, Block, C::Api> + Send + Sync + 'static,
-    E: ExtendExtrinsic + Send + Sync + 'static,
+    E: ExtraExecute<Block, C::Api> + Send + Sync + 'static,
 {
     type Transaction = backend::TransactionFor<B, Block>;
     type Proof = PR::Proof;
