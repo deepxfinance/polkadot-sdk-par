@@ -70,25 +70,14 @@ impl<T: Config> sp_std::fmt::Debug for CheckQuotaNonce<T> {
 	}
 }
 
-impl<T: Config> SignedExtension for CheckQuotaNonce<T>
+impl<T: Config> CheckQuotaNonce<T>
 where
 	T::RuntimeCall: Dispatchable<Info = DispatchInfo>,
 {
-	type AccountId = T::AccountId;
-	type Call = T::RuntimeCall;
-	type AdditionalSigned = ();
-	type Pre = ();
-	const IDENTIFIER: &'static str = "CheckNonce";
-
-	fn additional_signed(&self) -> sp_std::result::Result<(), TransactionValidityError> {
-		Ok(())
-	}
-
-	fn pre_dispatch(
+	pub fn do_pre_dispatch(
 		self,
-		who: &Self::AccountId,
-		_call: &Self::Call,
-		info: &DispatchInfoOf<Self::Call>,
+		who: &T::AccountId,
+		info: &DispatchInfoOf<T::RuntimeCall>,
 		_len: usize,
 	) -> Result<(), TransactionValidityError> {
 		let mut account = crate::Account::<T>::get(who);
@@ -105,11 +94,10 @@ where
 		Ok(())
 	}
 
-	fn validate(
+	pub fn do_validate(
 		&self,
-		who: &Self::AccountId,
-		_call: &Self::Call,
-		info: &DispatchInfoOf<Self::Call>,
+		who: &T::AccountId,
+		info: &DispatchInfoOf<T::RuntimeCall>,
 		_len: usize,
 	) -> TransactionValidity {
 		// check index and quote
@@ -155,6 +143,41 @@ where
 			longevity: TransactionLongevity::MAX,
 			propagate: true,
 		})
+	}
+}
+
+impl<T: Config> SignedExtension for CheckQuotaNonce<T>
+where
+	T::RuntimeCall: Dispatchable<Info = DispatchInfo>,
+{
+	type AccountId = T::AccountId;
+	type Call = T::RuntimeCall;
+	type AdditionalSigned = ();
+	type Pre = ();
+	const IDENTIFIER: &'static str = "CheckNonce";
+
+	fn additional_signed(&self) -> sp_std::result::Result<(), TransactionValidityError> {
+		Ok(())
+	}
+
+	fn pre_dispatch(
+		self,
+		who: &Self::AccountId,
+		_call: &Self::Call,
+		info: &DispatchInfoOf<Self::Call>,
+		len: usize,
+	) -> Result<(), TransactionValidityError> {
+		self.do_pre_dispatch(who, info, len)
+	}
+
+	fn validate(
+		&self,
+		who: &Self::AccountId,
+		_call: &Self::Call,
+		info: &DispatchInfoOf<Self::Call>,
+		len: usize,
+	) -> TransactionValidity {
+		self.do_validate(who, info, len)
 	}
 }
 
