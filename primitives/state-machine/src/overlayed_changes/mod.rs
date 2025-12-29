@@ -162,7 +162,7 @@ impl OverlayedChanges {
 		self.top.extend_changes(top);
 		for (key, (changes, child_info)) in children {
 			if let Some((child, ci)) = self.children.get_mut(&key) {
-				if *ci != child_info { continue; }
+				if ci.keyspace() != child_info.keyspace() { continue; }
 				child.extend_changes(changes);
 			} else {
 				let mut child = OverlayedChangeSet::default();
@@ -258,7 +258,7 @@ impl OverlayedChanges {
 			},
 		};
 		let mut children_changes = Map::new();
-		for (key, (mut set, info)) in std::mem::take(&mut other.children).into_iter() {
+		for (key, (mut set, info)) in core::mem::take(&mut other.children).into_iter() {
 			if let Some((changeset, info)) = merge_children.get_mut(&key) {
 				match changeset.merge(&mut set, in_order) {
 					Ok(changes) => { children_changes.insert(key, (changes, info.clone())); }
@@ -293,7 +293,7 @@ impl OverlayedChanges {
 				offset = 0;
 			}
 		}
-		for mut other_tio in std::mem::take(&mut other.transaction_index_ops) {
+		for mut other_tio in core::mem::take(&mut other.transaction_index_ops) {
 			match &mut other_tio {
 				IndexOperation::Insert { extrinsic: e, .. } => *e += offset,
 				IndexOperation::Renew { extrinsic: e, .. } => *e += offset,
@@ -303,7 +303,7 @@ impl OverlayedChanges {
 		self.stats.add(&other.stats);
 		#[cfg(feature = "std")]
 		{
-			self.exe_times.extend(std::mem::take(&mut other.exe_times));
+			self.exe_times.extend(core::mem::take(&mut other.exe_times));
 			self.commit_time += other.commit_time;
 			self.rollback_time += other.rollback_time;
 		}
@@ -778,7 +778,7 @@ impl OverlayedChanges {
 		let offchain_storage_changes = self.offchain_drain_committed().collect();
 
 		#[cfg(feature = "std")]
-		let transaction_index_changes = std::mem::take(&mut self.transaction_index_ops);
+		let transaction_index_changes = core::mem::take(&mut self.transaction_index_ops);
 
 		Ok(StorageChanges {
 			main_storage_changes: main_storage_changes.collect(),

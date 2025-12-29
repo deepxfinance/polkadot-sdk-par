@@ -280,8 +280,8 @@ impl<K: Ord + Hash + Clone, V> OverlayedMap<K, V> {
 	/// Merge read_only and changes into changes.
 	#[cfg(feature = "kvdb")]
 	pub fn merge_read_only(&mut self) {
-		let mut final_changes = std::mem::take(&mut self.read_only);
-		final_changes.extend(std::mem::take(&mut self.changes));
+		let mut final_changes = core::mem::take(&mut self.read_only);
+		final_changes.extend(core::mem::take(&mut self.changes));
 		self.changes = final_changes;
 	}
 

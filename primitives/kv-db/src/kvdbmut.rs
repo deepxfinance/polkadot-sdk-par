@@ -161,10 +161,10 @@ impl <'db, 'cache, H: Hasher> KVDBMut<'db, 'cache, H> {
         #[cfg(feature = "std")]
         trace!(target: "kvdb", "Committing kv changes to db.");
         let changes = if self.direct {
-            std::mem::take(&mut self.direct_changes)
+            core::mem::take(&mut self.direct_changes)
         } else {
             let mut changes = Vec::new();
-            for (prefix, value) in std::mem::take(&mut self.storage).into_iter() {
+            for (prefix, value) in core::mem::take(&mut self.storage).into_iter() {
                 changes.extend([prefix.0.as_slice(), &pad_encode(&prefix.1), &value].concat());
                 let key_hash = H::hash(prefix.0.as_slice());
                 if value == &NULL_DATA {
