@@ -63,7 +63,7 @@ impl<Hash, Ex, Error> ValidatedTransaction<Hash, Ex, Error> {
 		at: u64,
 		hash: Hash,
 		source: TransactionSource,
-		mut data: Ex,
+		data: Ex,
 		bytes: usize,
 		validity: ValidTransaction,
 	) -> Result<Self, Error> {

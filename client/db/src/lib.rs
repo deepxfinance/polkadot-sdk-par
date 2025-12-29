@@ -1096,7 +1096,6 @@ impl<T: Clone> FrozenForDuration<T> {
 /// Disk backend keeps data in a key-value store. In archive mode, trie nodes are kept from all
 /// blocks. Otherwise, trie nodes are kept only from some recent blocks.
 pub struct Backend<Block: BlockT> {
-	kv_mode: bool,
 	storage: Arc<StorageDb<Block>>,
 	offchain_storage: offchain::LocalStorage,
 	blockchain: BlockchainDb<Block>,
@@ -1210,12 +1209,7 @@ impl<Block: BlockT> Backend<Block> {
 
 		let offchain_storage = offchain::LocalStorage::new(db.clone());
 
-		#[cfg(feature = "kvdb")]
-		let kv_mode = true;
-		#[cfg(not(feature = "kvdb"))]
-		let kv_mode = false;
 		let backend = Backend {
-			kv_mode,
 			storage: Arc::new(storage_db),
 			offchain_storage,
 			blockchain,
