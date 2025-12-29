@@ -806,6 +806,7 @@ fn test_witness(proof: StorageProof, root: crate::Hash) {
 	let mut overlay = sp_state_machine::OverlayedChanges::default();
 	let mut cache = sp_state_machine::StorageTransactionCache::<_, _>::default();
 	let mut ext = sp_state_machine::Ext::new(
+		None,
 		&mut overlay,
 		&mut cache,
 		&backend,

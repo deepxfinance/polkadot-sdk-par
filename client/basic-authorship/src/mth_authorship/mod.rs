@@ -65,6 +65,7 @@ pub trait BlockPropose<Block: BlockT> {
         inherent_data: InherentData,
         inherent_digests: Digest,
         extrinsic: (Vec<Vec<Block::Extrinsic>>, Vec<Block::Extrinsic>),
+        set_extrinsics_root: Option<Block::Hash>,
         round_tx: usize,
         merge_in_thread_order: bool,
         limit_execution_time: bool,

@@ -38,6 +38,7 @@ pub use key::{
 pub use map::StorageMap;
 pub use nmap::StorageNMap;
 pub use value::StorageValue;
+use crate::storage::TStorage;
 
 /// Trait implementing how the storage optional value is converted into the queried type.
 ///
@@ -71,7 +72,7 @@ pub trait QueryKindTrait<Value, OnEmpty> {
 pub struct OptionQuery;
 impl<Value> QueryKindTrait<Value, crate::traits::GetDefault> for OptionQuery
 where
-	Value: FullCodec + 'static,
+	Value: FullCodec + TStorage + 'static,
 {
 	const METADATA: StorageEntryModifierIR = StorageEntryModifierIR::Optional;
 
@@ -91,7 +92,7 @@ where
 pub struct ResultQuery<Error>(sp_std::marker::PhantomData<Error>);
 impl<Value, Error, OnEmpty> QueryKindTrait<Value, OnEmpty> for ResultQuery<Error>
 where
-	Value: FullCodec + 'static,
+	Value: FullCodec + TStorage + 'static,
 	Error: FullCodec + 'static,
 	OnEmpty: crate::traits::Get<Result<Value, Error>>,
 {
@@ -115,7 +116,7 @@ where
 pub struct ValueQuery;
 impl<Value, OnEmpty> QueryKindTrait<Value, OnEmpty> for ValueQuery
 where
-	Value: FullCodec + 'static,
+	Value: FullCodec + TStorage + 'static,
 	OnEmpty: crate::traits::Get<Value>,
 {
 	const METADATA: StorageEntryModifierIR = StorageEntryModifierIR::Default;

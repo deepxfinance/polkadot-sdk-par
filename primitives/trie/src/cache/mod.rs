@@ -669,7 +669,14 @@ impl<'a, H: Hasher> KVCache<H> for TrieCache<'a, H> {
 		if let Some(value) = self.local_kv_cache.peek(&full_key) {
 			return Some(value.clone());
 		}
-		self.shared_cache.peek_kv_value(full_key.as_slice())
+		match self.shared_cache.peek_kv_value(full_key.as_slice()) {
+			Some(val) => if val.is_empty() {
+				None
+			} else {
+				Some(val)
+			},
+			None => None,
+		}
 	}
 
 	fn cache_value_for_key(&mut self, hash: H::Out, key: &[u8], pad: Option<u8>, value: DBValue) {
@@ -678,8 +685,8 @@ impl<'a, H: Hasher> KVCache<H> for TrieCache<'a, H> {
 	}
 
 	fn remove_value_for_key(&mut self, hash: H::Out, key: &[u8], pad: Option<u8>) {
-		let key = [hash.as_ref(), key, [pad.unwrap_or_default()].as_slice()].concat();
-		self.local_kv_cache.remove(&key);
+		let full_key = [hash.as_ref(), key, [pad.unwrap_or_default()].as_slice()].concat();
+		self.local_kv_cache.insert(full_key, vec![]);
 	}
 }
 

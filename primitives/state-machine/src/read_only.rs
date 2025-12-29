@@ -29,6 +29,7 @@ use std::{
 	any::{Any, TypeId},
 	marker::PhantomData,
 };
+use typed_cache::OverlayCache;
 
 /// Trait for inspecting state in any backend.
 ///
@@ -86,6 +87,10 @@ where
 {
 	fn set_offchain_storage(&mut self, _key: &[u8], _value: Option<&[u8]>) {
 		panic!("Should not be used in read-only externalities!")
+	}
+
+	fn overlay_cache(&mut self) -> Option<&mut OverlayCache> {
+		None
 	}
 
 	fn storage(&self, key: &[u8]) -> Option<StorageValue> {

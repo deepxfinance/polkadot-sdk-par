@@ -26,6 +26,7 @@ thiserror = { version = "1.0.30", optional = true }
 scale-info = { version = "2.1.1", default-features = false, features = ["derive"] }
 sp-metadata-ir = { version = "0.1.0", default-features = false, path = "../metadata-ir" }
 log = { version = "0.4.17", default-features = false }
+typed-cache = { default-features = false, path = "../typed-cache" }
 
 [dev-dependencies]
 sp-test-primitives = { version = "2.0.0", path = "../test-primitives" }
@@ -42,6 +43,7 @@ std = [
 	"sp-version/std",
 	"hash-db",
 	"thiserror",
+	"typed-cache/std",
 	"log/std",
 	"scale-info/std",
 	"sp-metadata-ir/std",

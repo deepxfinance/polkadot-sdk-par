@@ -251,6 +251,7 @@ pub mod pallet {
 			+ Default
 			+ Bounded
 			+ Copy
+			+ Clone
 			+ sp_std::hash::Hash
 			+ sp_std::str::FromStr
 			+ MaxEncodedLen
@@ -266,6 +267,7 @@ pub mod pallet {
 			+ Ord
 			+ Default
 			+ Copy
+			+ Clone
 			+ CheckEqual
 			+ sp_std::hash::Hash
 			+ AsRef<[u8]>
@@ -426,6 +428,8 @@ pub mod pallet {
 			items: Vec<KeyValue>,
 		) -> DispatchResultWithPostInfo {
 			ensure_root(origin)?;
+			#[cfg(feature = "std")]
+			if sp_io::mut_typed_cache(|_| ()).is_some() { panic!("`System::set_storage` not supported") };
 			for i in &items {
 				storage::unhashed::put_raw(&i.0, &i.1);
 			}
@@ -440,6 +444,8 @@ pub mod pallet {
 		))]
 		pub fn kill_storage(origin: OriginFor<T>, keys: Vec<Key>) -> DispatchResultWithPostInfo {
 			ensure_root(origin)?;
+			#[cfg(feature = "std")]
+			if sp_io::mut_typed_cache(|_| ()).is_some() { panic!("`System::kill_storage` not supported") };
 			for key in &keys {
 				storage::unhashed::kill(key);
 			}
@@ -461,6 +467,8 @@ pub mod pallet {
 			_subkeys: u32,
 		) -> DispatchResultWithPostInfo {
 			ensure_root(origin)?;
+			#[cfg(feature = "std")]
+			if sp_io::mut_typed_cache(|_| ()).is_some() { panic!("`System::kill_prefix` not supported") };
 			let _ = storage::unhashed::clear_prefix(&prefix, None, None);
 			Ok(().into())
 		}
@@ -652,8 +660,8 @@ pub mod pallet {
 	#[pallet::genesis_build]
 	impl<T: Config> GenesisBuild<T> for GenesisConfig {
 		fn build(&self) {
-			<BlockHash<T>>::insert::<_, T::Hash>(T::BlockNumber::zero(), hash69());
-			<ParentHash<T>>::put::<T::Hash>(hash69());
+			<BlockHash<T>>::insert::<_>(T::BlockNumber::zero(), hash69());
+			<ParentHash<T>>::put(hash69());
 			<LastRuntimeUpgrade<T>>::put(LastRuntimeUpgradeInfo::from(T::Version::get()));
 			<UpgradedToU32RefCount<T>>::put(true);
 			<UpgradedToTripleRefCount<T>>::put(true);
@@ -688,8 +696,8 @@ pub type Key = Vec<u8>;
 pub type KeyValue = (Vec<u8>, Vec<u8>);
 
 /// A phase of a block's execution.
-#[derive(Encode, Decode, RuntimeDebug, TypeInfo, MaxEncodedLen)]
-#[cfg_attr(feature = "std", derive(Serialize, PartialEq, Eq, Clone))]
+#[derive(Encode, Decode, RuntimeDebug, TypeInfo, MaxEncodedLen, Clone)]
+#[cfg_attr(feature = "std", derive(Serialize, PartialEq, Eq))]
 pub enum Phase {
 	/// Applying an extrinsic.
 	ApplyExtrinsic(u32),
@@ -757,7 +765,7 @@ pub struct AccountInfo<Index, AccountData> {
 /// Stores the `spec_version` and `spec_name` of when the last runtime upgrade
 /// happened.
 #[derive(sp_runtime::RuntimeDebug, Encode, Decode, TypeInfo)]
-#[cfg_attr(feature = "std", derive(PartialEq))]
+#[cfg_attr(feature = "std", derive(PartialEq, Clone))]
 pub struct LastRuntimeUpgradeInfo {
 	pub spec_version: codec::Compact<u32>,
 	pub spec_name: sp_runtime::RuntimeString,
@@ -1282,15 +1290,21 @@ impl<T: Config> Pallet<T> {
 			old_event_count
 		};
 
+		#[cfg(feature = "std")]
+		Events::<T>::append(Box::new(event));
+		#[cfg(not(feature = "std"))]
 		Events::<T>::append(event);
 
 		for topic in topics {
-			<EventTopics<T>>::append(topic, &(block_number, event_idx));
+			<EventTopics<T>>::append(topic, (block_number, event_idx));
 		}
 	}
 
 	/// Gets the index of extrinsic that is currently executing.
 	pub fn extrinsic_index() -> Option<u32> {
+		#[cfg(feature = "std")]
+		{ storage::unhashed::get_cache(well_known_keys::EXTRINSIC_INDEX, |_| { Option::<u32>::None }) }
+		#[cfg(not(feature = "std"))]
 		storage::unhashed::get(well_known_keys::EXTRINSIC_INDEX)
 	}
 
@@ -1328,13 +1342,19 @@ impl<T: Config> Pallet<T> {
 	pub fn initialize(number: &T::BlockNumber, parent_hash: &T::Hash, digest: &generic::Digest) {
 		// populate environment
 		ExecutionPhase::<T>::put(Phase::Initialization);
+		#[cfg(feature = "std")]
+		storage::unhashed::put_cache(well_known_keys::EXTRINSIC_INDEX, 0u32);
+		#[cfg(not(feature = "std"))]
 		storage::unhashed::put(well_known_keys::EXTRINSIC_INDEX, &0u32);
 		let entropy = (b"frame_system::initialize", parent_hash).using_encoded(blake2_256);
+		#[cfg(feature = "std")]
+		storage::unhashed::put_cache(well_known_keys::INTRABLOCK_ENTROPY, entropy);
+		#[cfg(not(feature = "std"))]
 		storage::unhashed::put_raw(well_known_keys::INTRABLOCK_ENTROPY, &entropy[..]);
-		<Number<T>>::put(number);
-		<Digest<T>>::put(digest);
-		<ParentHash<T>>::put(parent_hash);
-		<BlockHash<T>>::insert(*number - One::one(), parent_hash);
+		<Number<T>>::put(*number);
+		<Digest<T>>::put(digest.clone());
+		<ParentHash<T>>::put(*parent_hash);
+		<BlockHash<T>>::insert(*number - One::one(), *parent_hash);
 
 		// Remove previous block data from storage
 		BlockWeight::<T>::kill();
@@ -1382,6 +1402,9 @@ impl<T: Config> Pallet<T> {
 		);
 		ExecutionPhase::<T>::kill();
 		AllExtrinsicsLen::<T>::kill();
+		#[cfg(feature = "std")]
+		storage::unhashed::kill_cache::<[u8; 32]>(well_known_keys::INTRABLOCK_ENTROPY);
+		#[cfg(not(feature = "std"))]
 		storage::unhashed::kill(well_known_keys::INTRABLOCK_ENTROPY);
 
 		// The following fields
@@ -1400,15 +1423,7 @@ impl<T: Config> Pallet<T> {
 		// We have to store events by block number since `Events` keep change.
 		<EventsMap<T>>::insert(number, <Events<T>>::get());
 
-		#[cfg(feature = "std")]
-		let extrinsics_root_start = std::time::Instant::now();
-		let extrinsics = (1..ExtrinsicCount::<T>::take().unwrap_or_default())
-			.map(ExtrinsicData::<T>::take)
-			.collect();
-		let extrinsics_root = extrinsics_data_root::<T::Hashing>(extrinsics);
-		#[cfg(feature = "std")]
-		let extrinsics_root_time = extrinsics_root_start.elapsed().as_micros();
-
+		ExtrinsicCount::<T>::kill();
 		// move block hash pruning window by one block
 		let block_hash_count = T::BlockHashCount::get();
 		let to_remove = number.saturating_sub(block_hash_count).saturating_sub(One::one());
@@ -1428,12 +1443,12 @@ impl<T: Config> Pallet<T> {
 		#[cfg(feature = "std")]
 		log::debug!(
 			target: "authorship",
-			"finalize block {} micros(extrinsic_root: {extrinsics_root_time} micros, storage_root: {storage_root_time} micros)",
+			"finalize block {} micros(storage_root: {storage_root_time} micros)",
 			finalize_start.elapsed().as_micros(),
 		);
 		<T::Header as traits::Header>::new(
 			number,
-			extrinsics_root,
+			Default::default(),
 			storage_root,
 			parent_hash,
 			digest,
@@ -1503,6 +1518,9 @@ impl<T: Config> Pallet<T> {
 	/// Sets the index of extrinsic that is currently executing.
 	#[cfg(any(feature = "std", test))]
 	pub fn set_extrinsic_index(extrinsic_index: u32) {
+		#[cfg(feature = "std")]
+		storage::unhashed::put_cache(well_known_keys::EXTRINSIC_INDEX, extrinsic_index);
+		#[cfg(not(feature = "std"))]
 		storage::unhashed::put(well_known_keys::EXTRINSIC_INDEX, &extrinsic_index)
 	}
 
@@ -1609,6 +1627,9 @@ impl<T: Config> Pallet<T> {
 	pub fn note_next_extrinsic() {
 		let next_extrinsic_index = Self::extrinsic_index().unwrap_or_default() + 1u32;
 
+		#[cfg(feature = "std")]
+		storage::unhashed::put_cache(well_known_keys::EXTRINSIC_INDEX, next_extrinsic_index);
+		#[cfg(not(feature = "std"))]
 		storage::unhashed::put(well_known_keys::EXTRINSIC_INDEX, &next_extrinsic_index);
 		ExecutionPhase::<T>::put(Phase::ApplyExtrinsic(next_extrinsic_index));
 	}
@@ -1616,6 +1637,10 @@ impl<T: Config> Pallet<T> {
 	/// To be called immediately after `note_applied_extrinsic` of the last extrinsic of the block
 	/// has been called.
 	pub fn note_finished_extrinsics() {
+		#[cfg(feature = "std")]
+		let extrinsic_index: u32 =
+			storage::unhashed::take_cache(well_known_keys::EXTRINSIC_INDEX, |_| { Option::<u32>::None }).unwrap_or_default();
+		#[cfg(not(feature = "std"))]
 		let extrinsic_index: u32 =
 			storage::unhashed::take(well_known_keys::EXTRINSIC_INDEX).unwrap_or_default();
 		ExtrinsicCount::<T>::put(extrinsic_index);
@@ -1668,6 +1693,14 @@ impl<T: Config> Pallet<T> {
 				Ok(())
 			}
 		}
+	}
+
+	pub fn get_execution_phase() -> Option<Phase> {
+		ExecutionPhase::<T>::get()
+	}
+
+	pub fn update_execution_phase(phase: Phase) {
+		ExecutionPhase::<T>::put(phase)
 	}
 }
 

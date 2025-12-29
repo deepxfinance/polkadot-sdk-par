@@ -633,7 +633,7 @@ impl<T: Config> Pallet<T> {
 		let session_keys = <QueuedKeys<T>>::get();
 		let validators =
 			session_keys.iter().map(|(validator, _)| validator.clone()).collect::<Vec<_>>();
-		Validators::<T>::put(&validators);
+		Validators::<T>::put(validators);
 
 		if changed {
 			// reset disabled validators
@@ -865,7 +865,7 @@ impl<T: Config> Pallet<T> {
 	}
 
 	fn put_keys(v: &T::ValidatorId, keys: &T::Keys) {
-		<NextKeys<T>>::insert(v, keys);
+		<NextKeys<T>>::insert(v, keys.clone());
 	}
 
 	/// Query the owner of a session key by returning the owner's validator ID.
@@ -874,7 +874,7 @@ impl<T: Config> Pallet<T> {
 	}
 
 	fn put_key_owner(id: KeyTypeId, key_data: &[u8], v: &T::ValidatorId) {
-		<KeyOwner<T>>::insert((id, key_data), v)
+		<KeyOwner<T>>::insert((id, key_data), v.clone())
 	}
 
 	fn clear_key_owner(id: KeyTypeId, key_data: &[u8]) {

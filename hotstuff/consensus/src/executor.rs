@@ -232,6 +232,7 @@ where
             inherent_data,
             Digest { logs },
             (multi, single),
+            Some(mission.block.extrinsics_root),
             self.oracle.round_tx(),
             true,
             false,

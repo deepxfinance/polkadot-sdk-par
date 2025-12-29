@@ -16,11 +16,12 @@
 // limitations under the License.
 
 use crate::{
-	storage::{self, unhashed, StorageAppend},
+	storage::{self, unhashed, StorageAppend, TStorage},
 	Never,
 };
 use codec::{Decode, Encode, EncodeLike, FullCodec};
 use scale_info::prelude::string::String;
+use crate::storage::TypedAppend;
 
 /// Generator for `StorageValue` used by `decl_storage`.
 ///
@@ -28,7 +29,7 @@ use scale_info::prelude::string::String;
 /// ```nocompile
 /// Twox128(module_prefix) ++ Twox128(storage_prefix)
 /// ```
-pub trait StorageValue<T: FullCodec> {
+pub trait StorageValue<T: FullCodec + TStorage> {
 	/// The type that get/take returns.
 	type Query;
 
@@ -50,7 +51,7 @@ pub trait StorageValue<T: FullCodec> {
 	}
 }
 
-impl<T: FullCodec, G: StorageValue<T>> storage::StorageValue<T> for G {
+impl<T: FullCodec + TStorage, G: StorageValue<T>> storage::StorageValue<T> for G {
 	type Query = G::Query;
 
 	fn hashed_key() -> [u8; 32] {
@@ -58,15 +59,28 @@ impl<T: FullCodec, G: StorageValue<T>> storage::StorageValue<T> for G {
 	}
 
 	fn exists() -> bool {
+		#[cfg(feature = "std")]
+		if sp_io::mut_typed_cache(|_| ()).is_none() {
+			unhashed::exists(&Self::storage_value_final_key())
+		} else {
+			unhashed::get_cache(&Self::storage_value_final_key(), |_| { Option::<T>::None }).is_some()
+		}
+		#[cfg(not(feature = "std"))]
 		unhashed::exists(&Self::storage_value_final_key())
 	}
 
 	fn get() -> Self::Query {
+		#[cfg(feature = "std")]
+		let value = unhashed::get_cache(&Self::storage_value_final_key(), |_| { Option::<T>::None });
+		#[cfg(not(feature = "std"))]
 		let value = unhashed::get(&Self::storage_value_final_key());
 		G::from_optional_value_to_query(value)
 	}
 
 	fn try_get() -> Result<T, ()> {
+		#[cfg(feature = "std")]
+		{ unhashed::get_cache(&Self::storage_value_final_key(), |_| { Option::<T>::None }).ok_or(()) }
+		#[cfg(not(feature = "std"))]
 		unhashed::get(&Self::storage_value_final_key()).ok_or(())
 	}
 
@@ -79,13 +93,31 @@ impl<T: FullCodec, G: StorageValue<T>> storage::StorageValue<T> for G {
 			.transpose()?;
 		let maybe_new = f(maybe_old);
 		if let Some(new) = maybe_new.as_ref() {
+			#[cfg(feature = "std")]
+			Self::put(new.clone());
+			#[cfg(not(feature = "std"))]
 			new.using_encoded(|d| unhashed::put_raw(&key, d));
 		} else {
+			#[cfg(feature = "std")]
+			Self::kill();
+			#[cfg(not(feature = "std"))]
 			unhashed::kill(&key);
 		}
 		Ok(maybe_new)
 	}
 
+	#[cfg(feature = "std")]
+	fn put(val: T) {
+		log::trace!(target: "storage_dev", "value put {} {}",
+			String::from_utf8(Self::module_prefix().to_vec()).unwrap(),
+			String::from_utf8(Self::storage_prefix().to_vec()).unwrap(),
+		);
+		// detect if typed_cache exists.
+		let key = Self::storage_value_final_key();
+		unhashed::put_cache(&key, val);
+	}
+
+	#[cfg(not(feature = "std"))]
 	fn put<Arg: EncodeLike<T>>(val: Arg) {
 		log::trace!(target: "storage_dev", "value put {} {}",
 			String::from_utf8(Self::module_prefix().to_vec()).unwrap(), 
@@ -96,18 +128,29 @@ impl<T: FullCodec, G: StorageValue<T>> storage::StorageValue<T> for G {
 
 	fn set(maybe_val: Self::Query) {
 		log::trace!(target: "storage_dev", "value set {} {}",
-			String::from_utf8(Self::module_prefix().to_vec()).unwrap(), 
+			String::from_utf8(Self::module_prefix().to_vec()).unwrap(),
 			String::from_utf8(Self::storage_prefix().to_vec()).unwrap(),
 		);
+		let key = Self::storage_value_final_key();
 		if let Some(val) = G::from_query_to_optional_value(maybe_val) {
-			unhashed::put(&Self::storage_value_final_key(), &val)
+			#[cfg(feature = "std")]
+			unhashed::put_cache(&key, val);
+			#[cfg(not(feature = "std"))]
+			unhashed::put(&key, &val)
 		} else {
-			unhashed::kill(&Self::storage_value_final_key())
+			#[cfg(feature = "std")]
+			unhashed::kill_cache::<T>(&key);
+			#[cfg(not(feature = "std"))]
+			unhashed::kill(&key)
 		}
 	}
 
 	fn kill() {
-		unhashed::kill(&Self::storage_value_final_key())
+		let key = Self::storage_value_final_key();
+		#[cfg(feature = "std")]
+		unhashed::kill_cache::<T>(&key);
+		#[cfg(not(feature = "std"))]
+		unhashed::kill(&key)
 	}
 
 	fn mutate<R, F: FnOnce(&mut G::Query) -> R>(f: F) -> R {
@@ -124,7 +167,12 @@ impl<T: FullCodec, G: StorageValue<T>> storage::StorageValue<T> for G {
 				String::from_utf8(Self::storage_prefix().to_vec()).unwrap(),
 			);
 			match G::from_query_to_optional_value(val) {
-				Some(ref val) => G::put(val),
+				Some(ref val) => {
+					#[cfg(feature = "std")]
+					G::put(val.clone());
+					#[cfg(not(feature = "std"))]
+					G::put(val)
+				},
 				None => G::kill(),
 			}
 		}
@@ -152,7 +200,7 @@ impl<T: FullCodec, G: StorageValue<T>> storage::StorageValue<T> for G {
 				String::from_utf8(Self::storage_prefix().to_vec()).unwrap(),
 			);
 			match val {
-				Some(ref val) => Self::put(val),
+				Some(ref val) => Self::put(val.clone()),
 				None => Self::kill(),
 			}
 		}
@@ -160,14 +208,31 @@ impl<T: FullCodec, G: StorageValue<T>> storage::StorageValue<T> for G {
 	}
 
 	fn take() -> G::Query {
-		let key = Self::storage_value_final_key();
-		let value = unhashed::get(&key);
+		#[cfg(feature = "std")]
+		let value = unhashed::get_cache(&Self::storage_value_final_key(), |_| { Option::<T>::None });
+
+		#[cfg(not(feature = "std"))]
+		let value = unhashed::get(&Self::storage_value_final_key());
 		if value.is_some() {
-			unhashed::kill(&key)
+			Self::kill()
 		}
 		G::from_optional_value_to_query(value)
 	}
 
+	#[cfg(feature = "std")]
+	fn append<Item: Encode + Clone>(item: Item)
+	where
+		T: TypedAppend<Item> + TStorage
+	{
+		log::trace!(target: "storage_dev", "value append {} {}",
+			String::from_utf8(Self::module_prefix().to_vec()).unwrap(),
+			String::from_utf8(Self::storage_prefix().to_vec()).unwrap(),
+		);
+		let key = Self::storage_value_final_key();
+		unhashed::append_cache::<T, Item>(&key, item);
+	}
+
+	#[cfg(not(feature = "std"))]
 	fn append<Item, EncodeLikeItem>(item: EncodeLikeItem)
 	where
 		Item: Encode,
@@ -178,20 +243,6 @@ impl<T: FullCodec, G: StorageValue<T>> storage::StorageValue<T> for G {
 			String::from_utf8(Self::module_prefix().to_vec()).unwrap(), 
 			String::from_utf8(Self::storage_prefix().to_vec()).unwrap(),
 		);
-		let key = Self::storage_value_final_key();
-		#[cfg(feature = "std")]
-		let start = std::time::Instant::now();
-		let encoded = item.encode();
-		#[cfg(feature = "std")]
-		{
-			let time = start.elapsed();
-			let mut lock = crate::storage::unhashed::GLOBAL_ENCODE.lock().unwrap();
-			if let Some(v) = lock.get_mut(key.as_ref()) {
-				v.push((time, encoded.len()));
-			} else {
-				lock.insert(key.to_vec(), vec![(time, encoded.len())]);
-			}
-		}
-		sp_io::storage::append(&key, encoded);
+		sp_io::storage::append(&Self::storage_value_final_key(), item.encode());
 	}
 }

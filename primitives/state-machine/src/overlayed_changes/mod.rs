@@ -93,7 +93,7 @@ impl Extrinsics {
 #[derive(Debug, Default, Clone)]
 pub struct OverlayedChanges {
 	/// Top level storage changes.
-	top: OverlayedChangeSet,
+	pub top: OverlayedChangeSet,
 	/// Child storage changes. The map key is the child storage key without the common prefix.
 	children: Map<StorageKey, (OverlayedChangeSet, ChildInfo)>,
 	/// Offchain related changes.
@@ -1057,7 +1057,7 @@ mod tests {
 		overlay.set_storage(b"doug".to_vec(), None);
 
 		let mut cache = StorageTransactionCache::default();
-		let mut ext = Ext::new(&mut overlay, &mut cache, &backend, None);
+		let mut ext = Ext::new(None, &mut overlay, &mut cache, &backend, None);
 		let root = array_bytes::hex2bytes_unchecked(
 			"39245109cef3758c2eed2ccba8d9b370a917850af3824bc8348d505df2c298fa",
 		);

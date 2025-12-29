@@ -16,6 +16,7 @@
 // limitations under the License.
 
 use crate::{BoundedBTreeMap, BoundedBTreeSet, BoundedVec, WeakBoundedVec};
+use super::TStorage;
 use codec::Decode;
 use sp_std::vec::Vec;
 
@@ -105,7 +106,7 @@ pub trait StorageStreamIter<T: private::StreamIter> {
 	fn stream_iter() -> T::Iterator;
 }
 
-impl<T: private::StreamIter + codec::FullCodec, StorageValue: super::StorageValue<T>>
+impl<T: private::StreamIter + codec::FullCodec + TStorage, StorageValue: super::StorageValue<T>>
 	StorageStreamIter<T> for StorageValue
 {
 	fn stream_iter() -> T::Iterator {

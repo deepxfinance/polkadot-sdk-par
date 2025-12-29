@@ -17,12 +17,13 @@
 
 use crate::{
 	hash::{ReversibleStorageHasher, StorageHasher},
-	storage::{self, storage_prefix, unhashed, KeyPrefixIterator, PrefixIterator, StorageAppend},
+	storage::{self, storage_prefix, unhashed, KeyPrefixIterator, PrefixIterator, StorageAppend, TStorage},
 	Never,
 };
 use codec::{Decode, Encode, EncodeLike, FullCodec, FullEncode};
 use sp_std::prelude::*;
 use scale_info::prelude::string::String;
+use crate::storage::TypedAppend;
 
 /// Generator for `StorageDoubleMap` used by `decl_storage`.
 ///
@@ -44,7 +45,7 @@ use scale_info::prelude::string::String;
 /// If the key2s are not trusted (e.g. can be set by a user), a cryptographic `hasher` such as
 /// `blake2_256` must be used for Hasher2. Otherwise, other items in storage with the same first
 /// key can be compromised.
-pub trait StorageDoubleMap<K1: FullEncode, K2: FullEncode, V: FullCodec> {
+pub trait StorageDoubleMap<K1: FullEncode, K2: FullEncode, V: FullCodec + TStorage> {
 	/// The type that get/take returns.
 	type Query;
 
@@ -115,7 +116,7 @@ impl<K1, K2, V, G> storage::StorageDoubleMap<K1, K2, V> for G
 where
 	K1: FullEncode,
 	K2: FullEncode,
-	V: FullCodec,
+	V: FullCodec + TStorage,
 	G: StorageDoubleMap<K1, K2, V>,
 {
 	type Query = G::Query;
@@ -133,7 +134,15 @@ where
 		KArg1: EncodeLike<K1>,
 		KArg2: EncodeLike<K2>,
 	{
-		unhashed::exists(&Self::storage_double_map_final_key(k1, k2))
+		let key = Self::storage_double_map_final_key(k1, k2);
+		#[cfg(feature = "std")]
+		if sp_io::mut_typed_cache(|_| ()).is_none() {
+			unhashed::exists(&key)
+		} else {
+			unhashed::get_cache(&key, |_| { Option::<V>::None }).is_some()
+		}
+		#[cfg(not(feature = "std"))]
+		unhashed::exists(&key)
 	}
 
 	fn get<KArg1, KArg2>(k1: KArg1, k2: KArg2) -> Self::Query
@@ -141,6 +150,14 @@ where
 		KArg1: EncodeLike<K1>,
 		KArg2: EncodeLike<K2>,
 	{
+		#[cfg(feature = "std")]
+		{
+			G::from_optional_value_to_query(unhashed::get_cache(
+				&Self::storage_double_map_final_key(k1, k2),
+				|_| { Option::<V>::None }
+			))
+		}
+		#[cfg(not(feature = "std"))]
 		G::from_optional_value_to_query(unhashed::get(&Self::storage_double_map_final_key(k1, k2)))
 	}
 
@@ -149,6 +166,15 @@ where
 		KArg1: EncodeLike<K1>,
 		KArg2: EncodeLike<K2>,
 	{
+		#[cfg(feature = "std")]
+		{
+			unhashed::get_cache(
+				&Self::storage_double_map_final_key(k1, k2),
+				|_| { Option::<V>::None }
+			)
+				.ok_or(())
+		}
+		#[cfg(not(feature = "std"))]
 		unhashed::get(&Self::storage_double_map_final_key(k1, k2)).ok_or(())
 	}
 
@@ -165,7 +191,9 @@ where
 		KArg2: EncodeLike<K2>,
 	{
 		let final_key = Self::storage_double_map_final_key(k1, k2);
-
+		#[cfg(feature = "std")]
+		let value = unhashed::take_cache(&final_key, |_| { Option::<V>::None });
+		#[cfg(not(feature = "std"))]
 		let value = unhashed::take(&final_key);
 		G::from_optional_value_to_query(value)
 	}
@@ -180,19 +208,53 @@ where
 		let final_x_key = Self::storage_double_map_final_key(x_k1, x_k2);
 		let final_y_key = Self::storage_double_map_final_key(y_k1, y_k2);
 
-		let v1 = unhashed::get_raw(&final_x_key);
-		if let Some(val) = unhashed::get_raw(&final_y_key) {
-			unhashed::put_raw(&final_x_key, &val);
-		} else {
-			unhashed::kill(&final_x_key)
+		#[cfg(feature = "std")]
+		{
+			let v1 = unhashed::get_cache(&final_x_key, |_| { Option::<V>::None });
+			if let Some(val) = unhashed::get_cache(&final_y_key, |_| { Option::<V>::None }) {
+				unhashed::put_cache(&final_x_key, val);
+			} else {
+				unhashed::kill_cache::<V>(&final_x_key);
+			}
+			if let Some(val) = v1 {
+				unhashed::put_cache(&final_y_key, val);
+			} else {
+				unhashed::kill_cache::<V>(&final_y_key);
+			}
 		}
-		if let Some(val) = v1 {
-			unhashed::put_raw(&final_y_key, &val);
-		} else {
-			unhashed::kill(&final_y_key)
+		#[cfg(not(feature = "std"))]
+		{
+			let v1 = unhashed::get_raw(&final_x_key);
+			if let Some(val) = unhashed::get_raw(&final_y_key) {
+				unhashed::put_raw(&final_x_key, &val);
+			} else {
+				unhashed::kill(&final_x_key)
+			}
+			if let Some(val) = v1 {
+				unhashed::put_raw(&final_y_key, &val);
+			} else {
+				unhashed::kill(&final_y_key)
+			}
 		}
 	}
 
+	#[cfg(feature = "std")]
+	fn insert<KArg1, KArg2>(k1: KArg1, k2: KArg2, val: V)
+	where
+		KArg1: EncodeLike<K1>,
+		KArg2: EncodeLike<K2>
+	{
+		log::trace!(target: "storage_dev", "double map insert {} {}",
+			String::from_utf8(Self::module_prefix().to_vec()).unwrap(),
+			String::from_utf8(Self::storage_prefix().to_vec()).unwrap(),
+		);
+		#[cfg(feature = "std")]
+		unhashed::put_cache(&Self::storage_double_map_final_key(k1, k2), val);
+		#[cfg(not(feature = "std"))]
+		unhashed::put(&Self::storage_double_map_final_key(k1, k2), &val)
+	}
+
+	#[cfg(not(feature = "std"))]
 	fn insert<KArg1, KArg2, VArg>(k1: KArg1, k2: KArg2, val: VArg)
 	where
 		KArg1: EncodeLike<K1>,
@@ -211,17 +273,24 @@ where
 		KArg1: EncodeLike<K1>,
 		KArg2: EncodeLike<K2>,
 	{
+		#[cfg(feature = "std")]
+		unhashed::kill_cache::<V>(&Self::storage_double_map_final_key(k1, k2));
+		#[cfg(not(feature = "std"))]
 		unhashed::kill(&Self::storage_double_map_final_key(k1, k2))
 	}
 
+	// TODO `typed_cache` not support `remove_prefix`
 	fn remove_prefix<KArg1>(k1: KArg1, maybe_limit: Option<u32>) -> sp_io::KillStorageResult
 	where
 		KArg1: EncodeLike<K1>,
 	{
+		#[cfg(feature = "std")]
+		if sp_io::mut_typed_cache(|_| ()).is_some() { panic!("`StorageDoubleMap::remove_prefix` not supported") };
 		unhashed::clear_prefix(Self::storage_double_map_final_key1(k1).as_ref(), maybe_limit, None)
 			.into()
 	}
 
+	// TODO `typed_cache` not support `clear_prefix`
 	fn clear_prefix<KArg1>(
 		k1: KArg1,
 		limit: u32,
@@ -230,6 +299,8 @@ where
 	where
 		KArg1: EncodeLike<K1>,
 	{
+		#[cfg(feature = "std")]
+		if sp_io::mut_typed_cache(|_| ()).is_some() { panic!("`StorageDoubleMap::clear_prefix` not supported") };
 		unhashed::clear_prefix(
 			Self::storage_double_map_final_key1(k1).as_ref(),
 			Some(limit),
@@ -238,17 +309,23 @@ where
 		.into()
 	}
 
+	// TODO `typed_cache` not support `contains_prefix`
 	fn contains_prefix<KArg1>(k1: KArg1) -> bool
 	where
 		KArg1: EncodeLike<K1>,
 	{
+		#[cfg(feature = "std")]
+		if sp_io::mut_typed_cache(|_| ()).is_some() { panic!("`StorageDoubleMap::contains_prefix` not supported") };
 		unhashed::contains_prefixed_key(Self::storage_double_map_final_key1(k1).as_ref())
 	}
 
+	// TODO `typed_cache` not support `iter_prefix_values`
 	fn iter_prefix_values<KArg1>(k1: KArg1) -> storage::PrefixIterator<V>
 	where
 		KArg1: ?Sized + EncodeLike<K1>,
 	{
+		#[cfg(feature = "std")]
+		if sp_io::mut_typed_cache(|_| ()).is_some() { panic!("`StorageDoubleMap::iter_prefix_values` not supported") };
 		let prefix = Self::storage_double_map_final_key1(k1);
 		storage::PrefixIterator {
 			prefix: prefix.clone(),
@@ -286,6 +363,12 @@ where
 		F: FnOnce(&mut Self::Query) -> Result<R, E>,
 	{
 		let final_key = Self::storage_double_map_final_key(k1, k2);
+		#[cfg(feature = "std")]
+		let mut val = G::from_optional_value_to_query(unhashed::get_cache(
+			final_key.as_ref(),
+			|_| { Option::<V>::None }
+		));
+		#[cfg(not(feature = "std"))]
 		let mut val = G::from_optional_value_to_query(unhashed::get(final_key.as_ref()));
 
 		let ret = f(&mut val);
@@ -295,8 +378,18 @@ where
 				String::from_utf8(Self::storage_prefix().to_vec()).unwrap(),
 			);
 			match G::from_query_to_optional_value(val) {
-				Some(ref val) => unhashed::put(final_key.as_ref(), val),
-				None => unhashed::kill(final_key.as_ref()),
+				Some(ref val) => {
+					#[cfg(feature = "std")]
+					unhashed::put_cache(final_key.as_ref(), val.clone());
+					#[cfg(not(feature = "std"))]
+					unhashed::put(final_key.as_ref(), val)
+				},
+				None => {
+					#[cfg(feature = "std")]
+					unhashed::kill_cache::<V>(final_key.as_ref());
+					#[cfg(not(feature = "std"))]
+					unhashed::kill(final_key.as_ref())
+				},
 			}
 		}
 		ret
@@ -309,6 +402,9 @@ where
 		F: FnOnce(&mut Option<V>) -> Result<R, E>,
 	{
 		let final_key = Self::storage_double_map_final_key(k1, k2);
+		#[cfg(feature = "std")]
+		let mut val = unhashed::get_cache(final_key.as_ref(), |_| { Option::<V>::None });
+		#[cfg(not(feature = "std"))]
 		let mut val = unhashed::get(final_key.as_ref());
 
 		let ret = f(&mut val);
@@ -318,13 +414,39 @@ where
 				String::from_utf8(Self::storage_prefix().to_vec()).unwrap(),
 			);
 			match val {
-				Some(ref val) => unhashed::put(final_key.as_ref(), val),
-				None => unhashed::kill(final_key.as_ref()),
+				Some(ref val) => {
+					#[cfg(feature = "std")]
+					unhashed::put_cache(final_key.as_ref(), val.clone());
+					#[cfg(not(feature = "std"))]
+					unhashed::put(final_key.as_ref(), val)
+				},
+				None => {
+					#[cfg(feature = "std")]
+					unhashed::kill_cache::<V>(final_key.as_ref());
+					#[cfg(not(feature = "std"))]
+					unhashed::kill(final_key.as_ref())
+				},
 			}
 		}
 		ret
 	}
 
+	#[cfg(feature = "std")]
+	fn append<Item: Encode + Clone, KArg1, KArg2>(k1: KArg1, k2: KArg2, item: Item)
+	where
+		KArg1: EncodeLike<K1>,
+		KArg2: EncodeLike<K2>,
+		V: TypedAppend<Item> + TStorage
+	{
+		log::trace!(target: "storage_dev", "double map append {} {}",
+			String::from_utf8(Self::module_prefix().to_vec()).unwrap(),
+			String::from_utf8(Self::storage_prefix().to_vec()).unwrap(),
+		);
+		let final_key = Self::storage_double_map_final_key(k1, k2);
+		unhashed::append_cache::<V, Item>(&final_key, item);
+	}
+
+	#[cfg(not(feature = "std"))]
 	fn append<Item, EncodeLikeItem, KArg1, KArg2>(k1: KArg1, k2: KArg2, item: EncodeLikeItem)
 	where
 		KArg1: EncodeLike<K1>,
@@ -337,25 +459,7 @@ where
 			String::from_utf8(Self::module_prefix().to_vec()).unwrap(), 
 			String::from_utf8(Self::storage_prefix().to_vec()).unwrap(),
 		);
-		let final_key = Self::storage_double_map_final_key(k1, k2);
-		#[cfg(feature = "std")]
-		let start = std::time::Instant::now();
-		let encoded = item.encode();
-		#[cfg(feature = "std")]
-		{
-			let time = start.elapsed();
-			let mut key = final_key.clone();
-			if key.len() > 32 {
-				key.resize(32, 0);
-			}
-			let mut lock = crate::storage::unhashed::GLOBAL_ENCODE.lock().unwrap();
-			if let Some(v) = lock.get_mut(&key) {
-				v.push((time, encoded.len()));
-			} else {
-				lock.insert(key.to_vec(), vec![(time, encoded.len())]);
-			}
-		}
-		sp_io::storage::append(&final_key, item.encode());
+		sp_io::storage::append(&Self::storage_double_map_final_key(k1, k2), item.encode());
 	}
 
 	fn migrate_keys<
@@ -383,6 +487,14 @@ where
 
 			final_key
 		};
+		#[cfg(feature = "std")]
+		{
+			unhashed::take_cache(&old_key, |_| { Option::<V>::None }).map(|value| {
+				unhashed::put_cache(Self::storage_double_map_final_key(key1, key2).as_ref(), value.clone());
+				value
+			})
+		}
+		#[cfg(not(feature = "std"))]
 		unhashed::take(old_key.as_ref()).map(|value| {
 			unhashed::put(Self::storage_double_map_final_key(key1, key2).as_ref(), &value);
 			value
@@ -390,7 +502,7 @@ where
 	}
 }
 
-impl<K1: FullCodec, K2: FullCodec, V: FullCodec, G: StorageDoubleMap<K1, K2, V>>
+impl<K1: FullCodec, K2: FullCodec, V: FullCodec + TStorage, G: StorageDoubleMap<K1, K2, V>>
 	storage::IterableStorageDoubleMap<K1, K2, V> for G
 where
 	G::Hasher1: ReversibleStorageHasher,
@@ -402,6 +514,8 @@ where
 	type Iterator = PrefixIterator<(K1, K2, V)>;
 
 	fn iter_prefix(k1: impl EncodeLike<K1>) -> Self::PrefixIterator {
+		#[cfg(feature = "std")]
+		if sp_io::mut_typed_cache(|_| ()).is_some() { panic!("`StorageDoubleMap::iter_prefix` not supported") };
 		let prefix = G::storage_double_map_final_key1(k1);
 		Self::PrefixIterator {
 			prefix: prefix.clone(),
@@ -419,12 +533,16 @@ where
 		k1: impl EncodeLike<K1>,
 		starting_raw_key: Vec<u8>,
 	) -> Self::PrefixIterator {
+		#[cfg(feature = "std")]
+		if sp_io::mut_typed_cache(|_| ()).is_some() { panic!("`StorageDoubleMap::iter_prefix_from` not supported") };
 		let mut iter = Self::iter_prefix(k1);
 		iter.set_last_raw_key(starting_raw_key);
 		iter
 	}
 
 	fn iter_key_prefix(k1: impl EncodeLike<K1>) -> Self::PartialKeyIterator {
+		#[cfg(feature = "std")]
+		if sp_io::mut_typed_cache(|_| ()).is_some() { panic!("`StorageDoubleMap::iter_key_prefix` not supported") };
 		let prefix = G::storage_double_map_final_key1(k1);
 		Self::PartialKeyIterator {
 			prefix: prefix.clone(),
@@ -441,18 +559,24 @@ where
 		k1: impl EncodeLike<K1>,
 		starting_raw_key: Vec<u8>,
 	) -> Self::PartialKeyIterator {
+		#[cfg(feature = "std")]
+		if sp_io::mut_typed_cache(|_| ()).is_some() { panic!("`StorageDoubleMap::iter_key_prefix_from` not supported") };
 		let mut iter = Self::iter_key_prefix(k1);
 		iter.set_last_raw_key(starting_raw_key);
 		iter
 	}
 
 	fn drain_prefix(k1: impl EncodeLike<K1>) -> Self::PrefixIterator {
+		#[cfg(feature = "std")]
+		if sp_io::mut_typed_cache(|_| ()).is_some() { panic!("`StorageDoubleMap::drain_prefix` not supported") };
 		let mut iterator = Self::iter_prefix(k1);
 		iterator.drain = true;
 		iterator
 	}
 
 	fn iter() -> Self::Iterator {
+		#[cfg(feature = "std")]
+		if sp_io::mut_typed_cache(|_| ()).is_some() { panic!("`StorageDoubleMap::iter` not supported") };
 		let prefix = G::prefix_hash();
 		Self::Iterator {
 			prefix: prefix.clone(),
@@ -470,12 +594,16 @@ where
 	}
 
 	fn iter_from(starting_raw_key: Vec<u8>) -> Self::Iterator {
+		#[cfg(feature = "std")]
+		if sp_io::mut_typed_cache(|_| ()).is_some() { panic!("`StorageDoubleMap::iter_from` not supported") };
 		let mut iter = Self::iter();
 		iter.set_last_raw_key(starting_raw_key);
 		iter
 	}
 
 	fn iter_keys() -> Self::FullKeyIterator {
+		#[cfg(feature = "std")]
+		if sp_io::mut_typed_cache(|_| ()).is_some() { panic!("`StorageDoubleMap::iter_keys` not supported") };
 		let prefix = G::prefix_hash();
 		Self::FullKeyIterator {
 			prefix: prefix.clone(),
@@ -492,18 +620,24 @@ where
 	}
 
 	fn iter_keys_from(starting_raw_key: Vec<u8>) -> Self::FullKeyIterator {
+		#[cfg(feature = "std")]
+		if sp_io::mut_typed_cache(|_| ()).is_some() { panic!("`StorageDoubleMap::iter_keys_from` not supported") };
 		let mut iter = Self::iter_keys();
 		iter.set_last_raw_key(starting_raw_key);
 		iter
 	}
 
 	fn drain() -> Self::Iterator {
+		#[cfg(feature = "std")]
+		if sp_io::mut_typed_cache(|_| ()).is_some() { panic!("`StorageDoubleMap::drain` not supported") };
 		let mut iterator = Self::iter();
 		iterator.drain = true;
 		iterator
 	}
 
 	fn translate<O: Decode, F: FnMut(K1, K2, O) -> Option<V>>(mut f: F) {
+		#[cfg(feature = "std")]
+		if sp_io::mut_typed_cache(|_| ()).is_some() { panic!("`StorageDoubleMap::translate` not supported") };
 		let prefix = G::prefix_hash();
 		let mut previous_key = prefix.clone();
 		while let Some(next) =

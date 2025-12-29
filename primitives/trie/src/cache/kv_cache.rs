@@ -118,7 +118,14 @@ pub struct LocalKVCache<'a, H> {
 impl<'a, H: Hasher> KVCache<H> for LocalKVCache<'a, H> {
 	fn lookup_value_for_key(&mut self, hash: H::Out, key: &[u8], pad: Option<u8>) -> Option<DBValue> {
 		let key = [hash.as_ref(), key, [pad.unwrap_or_default()].as_slice()].concat();
-		self.cache.peek(&key).cloned()
+		match self.cache.peek(&key).cloned() {
+			Some(val) => if val.is_empty() {
+				None
+			} else {
+				Some(val)
+			},
+			None => None,
+		}
 	}
 
 	fn cache_value_for_key(&mut self, hash: H::Out, key: &[u8], pad: Option<u8>, value: DBValue) {
@@ -128,7 +135,7 @@ impl<'a, H: Hasher> KVCache<H> for LocalKVCache<'a, H> {
 
 	fn remove_value_for_key(&mut self, hash: H::Out, key: &[u8], pad: Option<u8>) {
 		let full_key = [hash.as_ref(), key, [pad.unwrap_or_default()].as_slice()].concat();
-		self.cache.insert(full_key, vec![0u8]);
+		self.cache.insert(full_key, vec![]);
 	}
 }
 

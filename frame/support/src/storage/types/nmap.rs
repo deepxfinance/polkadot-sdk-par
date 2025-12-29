@@ -25,13 +25,14 @@ use crate::{
 			EncodeLikeTuple, HasKeyPrefix, HasReversibleKeyPrefix, OptionQuery, QueryKindTrait,
 			StorageEntryMetadataBuilder, TupleToEncodedIter,
 		},
-		KeyGenerator, PrefixIterator, StorageAppend, StorageDecodeLength, StoragePrefixedMap,
+		KeyGenerator, PrefixIterator, StorageAppend, StorageDecodeLength, StoragePrefixedMap, TStorage,
 	},
 	traits::{Get, GetDefault, StorageInfo, StorageInstance},
 };
 use codec::{Decode, Encode, EncodeLike, FullCodec, MaxEncodedLen};
 use sp_runtime::SaturatedConversion;
 use sp_std::prelude::*;
+use crate::storage::TypedAppend;
 
 /// A type that allow to store values for an arbitrary number of keys in the form of
 /// `(Key<Hasher1, key1>, Key<Hasher2, key2>, ..., Key<HasherN, keyN>)`.
@@ -66,7 +67,7 @@ impl<Prefix, Key, Value, QueryKind, OnEmpty, MaxValues>
 where
 	Prefix: StorageInstance,
 	Key: super::key::KeyGenerator,
-	Value: FullCodec,
+	Value: FullCodec + TStorage,
 	QueryKind: QueryKindTrait<Value, OnEmpty>,
 	OnEmpty: Get<QueryKind::Query> + 'static,
 	MaxValues: Get<Option<u32>>,
@@ -91,7 +92,7 @@ impl<Prefix, Key, Value, QueryKind, OnEmpty, MaxValues> crate::storage::StorageP
 where
 	Prefix: StorageInstance,
 	Key: super::key::KeyGenerator,
-	Value: FullCodec,
+	Value: FullCodec + TStorage,
 	QueryKind: QueryKindTrait<Value, OnEmpty>,
 	OnEmpty: Get<QueryKind::Query> + 'static,
 	MaxValues: Get<Option<u32>>,
@@ -109,7 +110,7 @@ impl<Prefix, Key, Value, QueryKind, OnEmpty, MaxValues>
 where
 	Prefix: StorageInstance,
 	Key: super::key::KeyGenerator,
-	Value: FullCodec,
+	Value: FullCodec + TStorage,
 	QueryKind: QueryKindTrait<Value, OnEmpty>,
 	OnEmpty: Get<QueryKind::Query> + 'static,
 	MaxValues: Get<Option<u32>>,
@@ -167,6 +168,16 @@ where
 		<Self as crate::storage::StorageNMap<Key, Value>>::swap::<KOther, _, _>(key1, key2)
 	}
 
+	#[cfg(feature = "std")]
+	/// Store a value to be associated with the given key from the map.
+	pub fn insert<KArg>(key: KArg, val: Value)
+	where
+		KArg: EncodeLikeTuple<Key::KArg> + TupleToEncodedIter
+	{
+		<Self as crate::storage::StorageNMap<Key, Value>>::insert(key, val)
+	}
+
+	#[cfg(not(feature = "std"))]
 	/// Store a value to be associated with the given keys from the map.
 	pub fn insert<KArg, VArg>(key: KArg, val: VArg)
 	where
@@ -286,6 +297,17 @@ where
 		<Self as crate::storage::StorageNMap<Key, Value>>::try_mutate_exists(key, f)
 	}
 
+	#[cfg(feature = "std")]
+	/// Append the given item to the value in the `typed_cache`.
+	fn append<Item: Encode + Clone, KArg>(key: KArg, item: Item)
+	where
+		KArg: EncodeLikeTuple<Key::KArg> + TupleToEncodedIter,
+		Value: TypedAppend<Item> + TStorage
+	{
+		<Self as crate::storage::StorageNMap<Key, Value>>::append(key, item)
+	}
+
+	#[cfg(not(feature = "std"))]
 	/// Append the given item to the value in the storage.
 	///
 	/// `Value` is required to implement [`StorageAppend`].
@@ -410,7 +432,7 @@ impl<Prefix, Key, Value, QueryKind, OnEmpty, MaxValues>
 where
 	Prefix: StorageInstance,
 	Key: super::key::ReversibleKeyGenerator,
-	Value: FullCodec,
+	Value: FullCodec + TStorage,
 	QueryKind: QueryKindTrait<Value, OnEmpty>,
 	OnEmpty: Get<QueryKind::Query> + 'static,
 	MaxValues: Get<Option<u32>>,
@@ -545,7 +567,7 @@ impl<Prefix, Key, Value, QueryKind, OnEmpty, MaxValues> StorageEntryMetadataBuil
 where
 	Prefix: StorageInstance,
 	Key: super::key::KeyGenerator,
-	Value: FullCodec + scale_info::StaticTypeInfo,
+	Value: FullCodec + TStorage + scale_info::StaticTypeInfo,
 	QueryKind: QueryKindTrait<Value, OnEmpty>,
 	OnEmpty: Get<QueryKind::Query> + 'static,
 	MaxValues: Get<Option<u32>>,
@@ -574,7 +596,7 @@ impl<Prefix, Key, Value, QueryKind, OnEmpty, MaxValues> crate::traits::StorageIn
 where
 	Prefix: StorageInstance,
 	Key: super::key::KeyGenerator + super::key::KeyGeneratorMaxEncodedLen,
-	Value: FullCodec + MaxEncodedLen,
+	Value: FullCodec + TStorage + MaxEncodedLen,
 	QueryKind: QueryKindTrait<Value, OnEmpty>,
 	OnEmpty: Get<QueryKind::Query> + 'static,
 	MaxValues: Get<Option<u32>>,
@@ -600,7 +622,7 @@ impl<Prefix, Key, Value, QueryKind, OnEmpty, MaxValues> crate::traits::PartialSt
 where
 	Prefix: StorageInstance,
 	Key: super::key::KeyGenerator,
-	Value: FullCodec,
+	Value: FullCodec + TStorage,
 	QueryKind: QueryKindTrait<Value, OnEmpty>,
 	OnEmpty: Get<QueryKind::Query> + 'static,
 	MaxValues: Get<Option<u32>>,

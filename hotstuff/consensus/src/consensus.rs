@@ -45,6 +45,7 @@ use sp_timestamp::Timestamp;
 use crate::executor::NewBlockMission;
 use crate::message::{CommitQC, Round};
 use crate::oracle::HotsOracle;
+use crate::revert::get_block_commit;
 use crate::state::ConsensusState;
 
 #[cfg(test)]
@@ -154,6 +155,13 @@ where
     // Try recover all unapplied commit.
     pub fn recover(&mut self) {
         let latest = self.client.info().best_number;
+        let latest_round = if latest > 0u32.into() {
+            get_block_commit(&self.client, self.client.info().best_hash)
+                .expect("Get best block commit failed")
+                .round()
+        } else {
+            Round::zero()
+        };
         let mut round = self.aux_data.high_round();
         let mut proposal_key = ProposalKey::digest(self.aux_data.high_digest());
         if round == Round::default() {
@@ -166,6 +174,10 @@ where
         let mut commit_qc_list = vec![];
         // load commit_qc
         loop {
+            if round <= latest_round {
+                debug!(target: CLIENT_LOG_TARGET, "[Recover] load finish for round {round} <= latest {latest_round}");
+                break;
+            }
             match self.aux_data.get_proposal(proposal_key.clone()).unwrap() {
                 Some(proposal) => {
                     trace!(target: CLIENT_LOG_TARGET, "[Recover] ~~ load proposal {} qc {}", proposal.round(), proposal.qc.round());
@@ -180,7 +192,7 @@ where
                     proposal_key = ProposalKey::digest(proposal.qc.proposal_hash);
                 },
                 None => {
-                    debug!(target: CLIENT_LOG_TARGET, "[Recover] No proposal for round {}", self.aux_data.high_round());
+                    debug!(target: CLIENT_LOG_TARGET, "[Recover] No proposal for round {round}");
                     round = round.sub_one();
                     if round == Round::zero() {
                         debug!(target: CLIENT_LOG_TARGET, "[Recover] load finish for reach round zero");

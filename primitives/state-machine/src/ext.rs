@@ -32,6 +32,7 @@ use sp_core::storage::{
 use sp_externalities::{Extension, ExtensionStore, Externalities, MultiRemovalResults};
 use sp_trie::{empty_child_trie_root, LayoutV1};
 
+use typed_cache::OverlayCache;
 use crate::{log_error, trace, warn, debug, StorageTransactionCache};
 use sp_std::{
 	any::{Any, TypeId},
@@ -39,6 +40,7 @@ use sp_std::{
 	cmp::Ordering,
 	vec,
 	vec::Vec,
+	sync::Arc,
 };
 #[cfg(feature = "std")]
 use std::error;
@@ -99,6 +101,8 @@ where
 	H: Hasher,
 	B: 'a + Backend<H>,
 {
+	/// The overlayed typed changes and cache.
+	cache: Option<&'a mut OverlayCache>,
 	/// The overlayed changes to write to.
 	overlay: &'a mut OverlayedChanges,
 	/// The storage backend to read from.
@@ -126,22 +130,26 @@ where
 	/// Create a new `Ext`.
 	#[cfg(not(feature = "std"))]
 	pub fn new(
+		cache: Option<&'a mut OverlayCache>,
 		overlay: &'a mut OverlayedChanges,
 		storage_transaction_cache: &'a mut StorageTransactionCache<B::Transaction, H>,
 		backend: &'a B,
 	) -> Self {
-		Ext { overlay, backend, id: 0, storage_transaction_cache }
+		Ext { cache, overlay, backend, id: 0, storage_transaction_cache }
 	}
 
 	/// Create a new `Ext` from overlayed changes and read-only backend
 	#[cfg(feature = "std")]
 	pub fn new(
+		cache: Option<&'a mut OverlayCache>,
 		overlay: &'a mut OverlayedChanges,
 		storage_transaction_cache: &'a mut StorageTransactionCache<B::Transaction, H>,
 		backend: &'a B,
 		extensions: Option<&'a mut sp_externalities::Extensions>,
 	) -> Self {
+		let typed_cache: bool = std::env::var("TYPED_CACHE").unwrap_or("false".into()).parse().unwrap_or(false);
 		Self {
+			cache: if typed_cache { cache } else { None },
 			overlay,
 			backend,
 			storage_transaction_cache,
@@ -191,7 +199,7 @@ where
 	B: Backend<H>,
 {
 	fn io_time(&self) -> (u128, u128, u128) {
-		#[cfg(feature = "std")]
+		#[cfg(all(feature = "std", feature = "dev-time"))]
 		{
 			let mut read_time = self.read_time.write().unwrap();
 			let r_time = *read_time;
@@ -204,7 +212,7 @@ where
 			*write_time = 0;
 			(r_time, b_r_time, w_time)
 		}
-		#[cfg(not(feature = "std"))]
+		#[cfg(not(all(feature = "std", feature = "dev-time")))]
 		(0, 0, 0)
 	}
 
@@ -216,8 +224,15 @@ where
 		self.overlay.set_offchain_storage(key, value)
 	}
 
+	fn overlay_cache(&mut self) -> Option<&mut OverlayCache> {
+		match self.cache {
+			Some(ref mut x) => Some(x),
+			None => None,
+		}
+	}
+
 	fn storage(&self, key: &[u8]) -> Option<StorageValue> {
-		#[cfg(feature = "std")]
+		#[cfg(all(feature = "std", feature = "dev-time"))]
 		let start = std::time::Instant::now();
 		let mut backend = false;
 		let _guard = guard();
@@ -226,7 +241,7 @@ where
 			.storage(key)
 			.map(|x| x.map(|x| x.to_vec()))
 			.unwrap_or_else(|| { backend = true; self.backend.storage(key).expect(EXT_NOT_ALLOWED_TO_FAIL) });
-		#[cfg(feature = "std")]
+		#[cfg(all(feature = "std", feature = "dev-time"))]
 		{
 			let time = start.elapsed().as_nanos();
 			*self.read_time.write().unwrap() += time;
@@ -437,7 +452,7 @@ where
 	}
 
 	fn place_storage(&mut self, key: StorageKey, value: Option<StorageValue>) {
-		#[cfg(feature = "std")]
+		#[cfg(all(feature = "std", feature = "dev-time"))]
 		let start = std::time::Instant::now();
 		let _guard = guard();
 		if is_child_storage_key(&key) {
@@ -462,7 +477,7 @@ where
 
 		self.mark_dirty();
 		self.overlay.set_storage(key.clone(), value);
-		#[cfg(feature = "std")]
+		#[cfg(all(feature = "std", feature = "dev-time"))]
 		{
 			let time = start.elapsed().as_nanos();
 			*self.write_time.write().unwrap() += time;
@@ -569,7 +584,7 @@ where
 	}
 
 	fn storage_append(&mut self, key: Vec<u8>, value: Vec<u8>) {
-		#[cfg(feature = "std")]
+		#[cfg(all(feature = "std", feature = "dev-time"))]
 		let start = std::time::Instant::now();
 		trace!(
 			target: "state",
@@ -587,7 +602,7 @@ where
 			backend.storage(&key).expect(EXT_NOT_ALLOWED_TO_FAIL).unwrap_or_default()
 		});
 		StorageAppend::new(current_value).append(value);
-		#[cfg(feature = "std")]
+		#[cfg(all(feature = "std", feature = "dev-time"))]
 		{
 			let time = start.elapsed().as_nanos();
 			*self.write_time.write().unwrap() += time;
@@ -608,6 +623,15 @@ where
 				cached = true,
 			);
 			return root.encode()
+		}
+		#[cfg(feature = "std")]
+		// Merge changes to overlay
+		for (key, value) in self.cache
+			.as_mut()
+			.map(|overlay| overlay.drain_commited())
+			.unwrap_or_default()
+		{
+			self.overlay.top.set(key, value, None);
 		}
 
 		let root =
@@ -731,15 +755,21 @@ where
 	}
 
 	fn storage_start_transaction(&mut self) {
+		#[cfg(feature = "std")]
+		self.cache.as_mut().map(|cache| cache.start_transaction());
 		self.overlay.start_transaction()
 	}
 
 	fn storage_rollback_transaction(&mut self) -> Result<(), ()> {
 		self.mark_dirty();
+		#[cfg(feature = "std")]
+		self.cache.as_mut().map(|cache| cache.rollback_transaction());
 		self.overlay.rollback_transaction().map_err(|_| ())
 	}
 
 	fn storage_commit_transaction(&mut self) -> Result<(), ()> {
+		#[cfg(feature = "std")]
+		self.cache.as_mut().map(|cache| cache.commit_transaction());
 		self.overlay.commit_transaction().map_err(|_| ())
 	}
 
@@ -1009,7 +1039,7 @@ mod tests {
 		)
 			.into();
 
-		let ext = TestExt::new(&mut overlay, &mut cache, &backend, None);
+		let ext = TestExt::new(None, &mut overlay, &mut cache, &backend, None);
 
 		// next_backend < next_overlay
 		assert_eq!(ext.next_storage_key(&[5]), Some(vec![10]));
@@ -1025,7 +1055,7 @@ mod tests {
 
 		drop(ext);
 		overlay.set_storage(vec![50], Some(vec![50]));
-		let ext = TestExt::new(&mut overlay, &mut cache, &backend, None);
+		let ext = TestExt::new(None, &mut overlay, &mut cache, &backend, None);
 
 		// next_overlay exist but next_backend doesn't exist
 		assert_eq!(ext.next_storage_key(&[40]), Some(vec![50]));
@@ -1056,7 +1086,7 @@ mod tests {
 		)
 			.into();
 
-		let ext = TestExt::new(&mut overlay, &mut cache, &backend, None);
+		let ext = TestExt::new(None, &mut overlay, &mut cache, &backend, None);
 
 		assert_eq!(ext.next_storage_key(&[5]), Some(vec![30]));
 
@@ -1090,7 +1120,7 @@ mod tests {
 		)
 			.into();
 
-		let ext = TestExt::new(&mut overlay, &mut cache, &backend, None);
+		let ext = TestExt::new(None, &mut overlay, &mut cache, &backend, None);
 
 		// next_backend < next_overlay
 		assert_eq!(ext.next_child_storage_key(child_info, &[5]), Some(vec![10]));
@@ -1106,7 +1136,7 @@ mod tests {
 
 		drop(ext);
 		overlay.set_child_storage(child_info, vec![50], Some(vec![50]));
-		let ext = TestExt::new(&mut overlay, &mut cache, &backend, None);
+		let ext = TestExt::new(None, &mut overlay, &mut cache, &backend, None);
 
 		// next_overlay exist but next_backend doesn't exist
 		assert_eq!(ext.next_child_storage_key(child_info, &[40]), Some(vec![50]));
@@ -1138,7 +1168,7 @@ mod tests {
 		)
 			.into();
 
-		let ext = TestExt::new(&mut overlay, &mut cache, &backend, None);
+		let ext = TestExt::new(None, &mut overlay, &mut cache, &backend, None);
 
 		assert_eq!(ext.child_storage(child_info, &[10]), Some(vec![10]));
 		assert_eq!(
@@ -1178,7 +1208,7 @@ mod tests {
 		)
 			.into();
 
-		let ext = TestExt::new(&mut overlay, &mut cache, &backend, None);
+		let ext = TestExt::new(None, &mut overlay, &mut cache, &backend, None);
 
 		use sp_core::storage::well_known_keys;
 		let mut ext = ext;

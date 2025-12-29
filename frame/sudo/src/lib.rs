@@ -217,7 +217,7 @@ pub mod pallet {
 			let new = T::Lookup::lookup(new)?;
 
 			Self::deposit_event(Event::KeyChanged { old_sudoer: Key::<T>::get() });
-			Key::<T>::put(&new);
+			Key::<T>::put(new);
 			// Sudo user does not pay a fee.
 			Ok(Pays::No.into())
 		}
@@ -292,7 +292,7 @@ pub mod pallet {
 	impl<T: Config> GenesisBuild<T> for GenesisConfig<T> {
 		fn build(&self) {
 			if let Some(ref key) = self.key {
-				Key::<T>::put(key);
+				Key::<T>::put(key.clone());
 			}
 		}
 	}

@@ -45,3 +45,6 @@ parking_lot = "0.12.1"
 sc-transaction-pool = { version = "4.0.0-dev", path = "../transaction-pool" }
 sp-std = { version = "5.0.0", default-features = false, path = "../../primitives/std" }
 substrate-test-runtime-client = { version = "2.0.0", path = "../../test-utils/runtime/client" }
+
+[features]
+dev-time = ["sp-state-machine/dev-time"]

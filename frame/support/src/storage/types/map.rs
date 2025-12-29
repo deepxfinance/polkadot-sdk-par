@@ -22,7 +22,7 @@ use crate::{
 	metadata_ir::{StorageEntryMetadataIR, StorageEntryTypeIR},
 	storage::{
 		types::{OptionQuery, QueryKindTrait, StorageEntryMetadataBuilder},
-		KeyLenOf, StorageAppend, StorageDecodeLength, StoragePrefixedMap, StorageTryAppend,
+		KeyLenOf, StorageAppend, StorageDecodeLength, StoragePrefixedMap, StorageTryAppend, TStorage,
 	},
 	traits::{Get, GetDefault, StorageInfo, StorageInstance},
 	StorageHasher, Twox128,
@@ -30,6 +30,7 @@ use crate::{
 use codec::{Decode, Encode, EncodeLike, FullCodec, MaxEncodedLen};
 use sp_arithmetic::traits::SaturatedConversion;
 use sp_std::prelude::*;
+use crate::storage::TypedAppend;
 
 /// A type that allow to store value for given key. Allowing to insert/remove/iterate on values.
 ///
@@ -76,7 +77,7 @@ where
 	Prefix: StorageInstance,
 	Hasher: crate::hash::StorageHasher,
 	Key: FullCodec,
-	Value: FullCodec,
+	Value: FullCodec + TStorage,
 	QueryKind: QueryKindTrait<Value, OnEmpty>,
 	OnEmpty: Get<QueryKind::Query> + 'static,
 	MaxValues: Get<Option<u32>>,
@@ -103,7 +104,7 @@ where
 	Prefix: StorageInstance,
 	Hasher: crate::hash::StorageHasher,
 	Key: FullCodec,
-	Value: FullCodec,
+	Value: FullCodec + TStorage,
 	QueryKind: QueryKindTrait<Value, OnEmpty>,
 	OnEmpty: Get<QueryKind::Query> + 'static,
 	MaxValues: Get<Option<u32>>,
@@ -122,7 +123,7 @@ where
 	Prefix: StorageInstance,
 	Hasher: crate::hash::StorageHasher,
 	Key: FullCodec,
-	Value: FullCodec,
+	Value: FullCodec + TStorage,
 	QueryKind: QueryKindTrait<Value, OnEmpty>,
 	OnEmpty: Get<QueryKind::Query> + 'static,
 	MaxValues: Get<Option<u32>>,
@@ -159,6 +160,12 @@ where
 		<Self as crate::storage::StorageMap<Key, Value>>::set(key, q)
 	}
 
+	#[cfg(feature = "std")]
+	pub fn insert<KeyArg: EncodeLike<Key>>(key: KeyArg, val: Value) {
+		<Self as crate::storage::StorageMap<Key, Value>>::insert(key, val)
+	}
+
+	#[cfg(not(feature = "std"))]
 	/// Store a value to be associated with the given key from the map.
 	pub fn insert<KeyArg: EncodeLike<Key>, ValArg: EncodeLike<Value>>(key: KeyArg, val: ValArg) {
 		<Self as crate::storage::StorageMap<Key, Value>>::insert(key, val)
@@ -210,6 +217,16 @@ where
 		<Self as crate::storage::StorageMap<Key, Value>>::take(key)
 	}
 
+	#[cfg(feature = "std")]
+	pub fn append<Item: Encode + Clone, EncodeLikeKey>(key: EncodeLikeKey, item: Item)
+	where
+		EncodeLikeKey: EncodeLike<Key>,
+		Value: TypedAppend<Item> + TStorage
+	{
+		<Self as crate::storage::StorageMap<Key, Value>>::append(key, item)
+	}
+
+	#[cfg(not(feature = "std"))]
 	/// Append the given items to the value in the storage.
 	///
 	/// `Value` is required to implement `codec::EncodeAppend`.
@@ -346,7 +363,7 @@ where
 	Prefix: StorageInstance,
 	Hasher: crate::hash::StorageHasher + crate::ReversibleStorageHasher,
 	Key: FullCodec,
-	Value: FullCodec,
+	Value: FullCodec + TStorage,
 	QueryKind: QueryKindTrait<Value, OnEmpty>,
 	OnEmpty: Get<QueryKind::Query> + 'static,
 	MaxValues: Get<Option<u32>>,
@@ -404,7 +421,7 @@ where
 	Prefix: StorageInstance,
 	Hasher: crate::hash::StorageHasher,
 	Key: FullCodec + scale_info::StaticTypeInfo,
-	Value: FullCodec + scale_info::StaticTypeInfo,
+	Value: FullCodec + TStorage + scale_info::StaticTypeInfo,
 	QueryKind: QueryKindTrait<Value, OnEmpty>,
 	OnEmpty: Get<QueryKind::Query> + 'static,
 	MaxValues: Get<Option<u32>>,
@@ -434,7 +451,7 @@ where
 	Prefix: StorageInstance,
 	Hasher: crate::hash::StorageHasher,
 	Key: FullCodec + MaxEncodedLen,
-	Value: FullCodec + MaxEncodedLen,
+	Value: FullCodec + TStorage + MaxEncodedLen,
 	QueryKind: QueryKindTrait<Value, OnEmpty>,
 	OnEmpty: Get<QueryKind::Query> + 'static,
 	MaxValues: Get<Option<u32>>,
@@ -462,7 +479,7 @@ where
 	Prefix: StorageInstance,
 	Hasher: crate::hash::StorageHasher,
 	Key: FullCodec,
-	Value: FullCodec,
+	Value: FullCodec + TStorage,
 	QueryKind: QueryKindTrait<Value, OnEmpty>,
 	OnEmpty: Get<QueryKind::Query> + 'static,
 	MaxValues: Get<Option<u32>>,

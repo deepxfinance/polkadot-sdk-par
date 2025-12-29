@@ -1099,6 +1099,12 @@ pub mod pallet {
 			if freezes.is_empty() {
 				Freezes::<T, I>::remove(who);
 			} else {
+				#[cfg(feature = "std")]
+				{
+					use sp_std::ops::Deref;
+					Freezes::<T, I>::insert(who, BoundedVec::<IdAmount<T::FreezeIdentifier, T::Balance>, T::MaxFreezes>::truncate_from(freezes.deref().to_vec()));
+				}
+				#[cfg(not(feature = "std"))]
 				Freezes::<T, I>::insert(who, freezes);
 			}
 			if prev_frozen > after_frozen {

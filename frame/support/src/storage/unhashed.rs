@@ -17,20 +17,23 @@
 
 //! Operation on unhashed runtime storage.
 
-use codec::{Decode, Encode};
+use codec::{Decode, Encode, FullCodec};
 use sp_std::prelude::*;
+use crate::storage::{TStorage, TypedAppend};
 
-#[cfg(feature = "std")]
+#[cfg(all(feature = "std", feature = "dev-time"))]
 lazy_static::lazy_static! {
-	pub static ref GLOBAL_ENCODE: std::sync::Mutex<std::collections::HashMap<Vec<u8>, Vec<(std::time::Duration, usize)>>> = std::sync::Mutex::new(std::collections::HashMap::new());
-	pub static ref GLOBAL_DECODE: std::sync::Mutex<std::collections::HashMap<Vec<u8>, Vec<(std::time::Duration, usize)>>> = std::sync::Mutex::new(std::collections::HashMap::new());
+	pub static ref GLOBAL_ENCODE: std::sync::Mutex<std::collections::HashMap<Vec<u8>, Vec<(std::time::Duration, std::time::Duration, usize)>>> = std::sync::Mutex::new(std::collections::HashMap::new());
+	pub static ref GLOBAL_DECODE: std::sync::Mutex<std::collections::HashMap<Vec<u8>, Vec<(std::time::Duration, std::time::Duration, usize)>>> = std::sync::Mutex::new(std::collections::HashMap::new());
 }
 
 /// Return the value of the item in storage under `key`, or `None` if there is no explicit entry.
 pub fn get<T: Decode + Sized>(key: &[u8]) -> Option<T> {
+	#[cfg(all(feature = "std", feature = "dev-time"))]
+	let start = std::time::Instant::now();
 	sp_io::storage::get(key).and_then(|val| {
-		#[cfg(feature = "std")]
-		let start = std::time::Instant::now();
+		#[cfg(all(feature = "std", feature = "dev-time"))]
+		let decode_start = std::time::Instant::now();
 		let res = Decode::decode(&mut &val[..]).map(Some).unwrap_or_else(|e| {
 			// TODO #3700: error should be handleable.
 			log::error!(
@@ -41,7 +44,9 @@ pub fn get<T: Decode + Sized>(key: &[u8]) -> Option<T> {
 			);
 			None
 		});
-		#[cfg(feature = "std")]
+		#[cfg(all(feature = "std", feature = "dev-time"))]
+		let decode_time = decode_start.elapsed();
+		#[cfg(all(feature = "std", feature = "dev-time"))]
 		if res.is_some() {
 			let time = start.elapsed();
 			let mut lock = GLOBAL_DECODE.lock().unwrap();
@@ -50,9 +55,9 @@ pub fn get<T: Decode + Sized>(key: &[u8]) -> Option<T> {
 				key.resize(32, 0);
 			}
 			if let Some(v) = lock.get_mut(&key) {
-				v.push((time, val.len()));
+				v.push((decode_time, time, val.len()));
 			} else {
-				lock.insert(key, vec![(time, val.len())]);
+				lock.insert(key, vec![(decode_time, time, val.len())]);
 			}
 		}
 		res
@@ -77,12 +82,119 @@ pub fn get_or_else<T: Decode + Sized, F: FnOnce() -> T>(key: &[u8], default_valu
 	get(key).unwrap_or_else(default_value)
 }
 
+fn key_prefix(key: &[u8]) -> &[u8] {
+	&key[..key.len().min(32)]
+}
+
+#[cfg(feature = "std")]
+pub fn put_cache<T: FullCodec + TStorage>(key: &[u8], val: T) {
+	if sp_io::mut_typed_cache(|_| ()).is_none() {
+		put(key, &val);
+	} else {
+		sp_io::mut_typed_cache(|o| o.put(key_prefix(key), &key, val));
+	}
+}
+
+#[cfg(feature = "std")]
+pub fn get_cache<T: FullCodec + TStorage, F>(key: &[u8], _f: F) -> Option<T> where F: Fn(&[u8]) -> Option<T> {
+	match sp_io::mut_typed_cache(
+		|o| o.get::<T, F>(key_prefix(key), key, None),
+	) {
+		Some(Some(value)) => value,
+		Some(None) => {
+			let res = get(key);
+			sp_io::mut_typed_cache(|o| o.cache(key_prefix(key), key, res.clone()));
+			res
+		}
+		None => get(key),
+	}
+}
+
+#[cfg(feature = "std")]
+pub fn take_cache<T: FullCodec + TStorage, F>(key: &[u8], _f: F) -> Option<T> where F: Fn(&[u8]) -> Option<T> {
+	match sp_io::mut_typed_cache(
+		|o| o.take::<T, F>(key_prefix(key), key, None),
+	) {
+		Some(Some(value)) => value,
+		Some(None) => {
+			let res = take(key);
+			if res.is_some() {
+				sp_io::mut_typed_cache(|o| o.kill::<T>(key_prefix(key), key));
+			} else {
+				sp_io::mut_typed_cache(|o| o.cache(key_prefix(key), key, res.clone()));
+			}
+			res
+		}
+		None => take(key),
+	}
+}
+
+#[cfg(feature = "std")]
+pub fn kill_cache<T: FullCodec + TStorage>(key: &[u8]) {
+	if sp_io::mut_typed_cache(|_| ()).is_none() {
+		kill(key);
+	} else {
+		sp_io::mut_typed_cache(|o| o.kill::<T>(key_prefix(key), key));
+	}
+}
+
+#[cfg(feature = "std")]
+pub fn append_cache<T: FullCodec + TStorage, Item: Encode + Clone>(key: &[u8], item: Item)
+where
+	T: TypedAppend<Item> + TStorage
+{
+	if sp_io::mut_typed_cache(|_| ()).is_none() {
+		append(key, item);
+	} else {
+		let mut none_f = Some(|_k: &[u8]| { None });
+		none_f.take();
+		let updated = sp_io::mut_typed_cache(|o| o.mutate::<T, _, _>(
+			key_prefix(key),
+			&key,
+			none_f,
+			|t| {
+				t.map(|t| t.append(item.clone()));
+			}
+		)).unwrap();
+		if !updated {
+			let mut new_value: T = get_cache(key, |_| { Option::<T>::None }).unwrap_or_default();
+			new_value.append(item);
+			sp_io::mut_typed_cache(|o| o.put(key_prefix(key), &key, new_value));
+		}
+	}
+}
+
+/// Direct encode `item` to `value`.
+pub fn append<Item: Encode>(key: &[u8], item: Item) {
+	#[cfg(all(feature = "std", feature = "dev-time"))]
+	let start = std::time::Instant::now();
+	let encoded = item.encode();
+	#[cfg(all(feature = "std", feature = "dev-time"))]
+	let encode_time = start.elapsed();
+	#[cfg(all(feature = "std", feature = "dev-time"))]
+	let len = encoded.len();
+	sp_io::storage::append(&key, encoded);
+	#[cfg(all(feature = "std", feature = "dev-time"))]
+	{
+		let time = start.elapsed();
+		let mut lock = crate::storage::unhashed::GLOBAL_ENCODE.lock().unwrap();
+		if let Some(v) = lock.get_mut(key_prefix(key)) {
+			v.push((encode_time, time, len));
+		} else {
+			lock.insert(key_prefix(key).to_vec(), vec![(encode_time, time, len)]);
+		}
+	}
+}
+
 /// Put `value` in storage under `key`.
 pub fn put<T: Encode + ?Sized>(key: &[u8], value: &T) {
-	#[cfg(feature = "std")]
+	#[cfg(all(feature = "std", feature = "dev-time"))]
 	let start = std::time::Instant::now();
 	let slice = value.encode();
-	#[cfg(feature = "std")]
+	#[cfg(all(feature = "std", feature = "dev-time"))]
+	let encode_time = start.elapsed();
+	sp_io::storage::set(key, slice.as_slice());
+	#[cfg(all(feature = "std", feature = "dev-time"))]
 	{
 		let time = start.elapsed();
 		let mut lock = GLOBAL_ENCODE.lock().unwrap();
@@ -91,12 +203,11 @@ pub fn put<T: Encode + ?Sized>(key: &[u8], value: &T) {
 			key.resize(32, 0);
 		}
 		if let Some(v) = lock.get_mut(&key) {
-			v.push((time, slice.len()));
+			v.push((encode_time, time, slice.len()));
 		} else {
-			lock.insert(key, vec![(time, slice.len())]);
+			lock.insert(key, vec![(encode_time, time, slice.len())]);
 		}
 	}
-	sp_io::storage::set(key, slice.as_slice());
 	// value.using_encoded(|slice| sp_io::storage::set(key, slice));
 }
 
@@ -207,7 +318,24 @@ pub fn contains_prefixed_key(prefix: &[u8]) -> bool {
 
 /// Get a Vec of bytes from storage.
 pub fn get_raw(key: &[u8]) -> Option<Vec<u8>> {
-	sp_io::storage::get(key).map(|value| value.to_vec())
+	#[cfg(all(feature = "std", feature = "dev-time"))]
+	let start = std::time::Instant::now();
+	let res = sp_io::storage::get(key).map(|value| value.to_vec());
+	#[cfg(all(feature = "std", feature = "dev-time"))]
+	{
+		let time = start.elapsed();
+		let mut lock = GLOBAL_DECODE.lock().unwrap();
+		let mut key = key.to_vec();
+		if key.len() > 32 {
+			key.resize(32, 0);
+		}
+		if let Some(v) = lock.get_mut(&key) {
+			v.push((Default::default(), time, res.as_ref().map(|r| r.len()).unwrap_or(0)));
+		} else {
+			lock.insert(key, vec![(Default::default(), time, res.as_ref().map(|r| r.len()).unwrap_or(0))]);
+		}
+	}
+	res
 }
 
 /// Put a raw byte slice into storage.
@@ -216,5 +344,21 @@ pub fn get_raw(key: &[u8]) -> Option<Vec<u8>> {
 /// you should also call `frame_system::RuntimeUpgraded::put(true)` to trigger the
 /// `on_runtime_upgrade` logic.
 pub fn put_raw(key: &[u8], value: &[u8]) {
-	sp_io::storage::set(key, value)
+	#[cfg(all(feature = "std", feature = "dev-time"))]
+	let start = std::time::Instant::now();
+	sp_io::storage::set(key, value);
+	#[cfg(all(feature = "std", feature = "dev-time"))]
+	{
+		let time = start.elapsed();
+		let mut lock = GLOBAL_ENCODE.lock().unwrap();
+		let mut key = key.to_vec();
+		if key.len() > 32 {
+			key.resize(32, 0);
+		}
+		if let Some(v) = lock.get_mut(&key) {
+			v.push((Default::default(), time, value.len()));
+		} else {
+			lock.insert(key, vec![(Default::default(), time, value.len())]);
+		}
+	}
 }

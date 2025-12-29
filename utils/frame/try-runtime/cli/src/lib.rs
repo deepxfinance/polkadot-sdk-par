@@ -384,7 +384,7 @@ use sp_runtime::{
 	traits::{BlakeTwo256, Block as BlockT, NumberFor},
 	DeserializeOwned, Digest,
 };
-use sp_state_machine::{CompactProof, OverlayedChanges, StateMachine, TrieBackendBuilder};
+use sp_state_machine::{CompactProof, OverlayCache, OverlayedChanges, StateMachine, TrieBackendBuilder};
 use sp_version::StateVersion;
 use std::{fmt::Debug, path::PathBuf, str::FromStr};
 
@@ -864,9 +864,11 @@ pub(crate) fn state_machine_call<Block: BlockT, HostFns: HostFunctions>(
 	data: &[u8],
 	extensions: Extensions,
 ) -> sc_cli::Result<(OverlayedChanges, Vec<u8>)> {
+	let mut cache = OverlayCache::default();
 	let mut changes = Default::default();
 	let encoded_results = StateMachine::new(
 		&ext.backend,
+		&mut cache,
 		&mut changes,
 		executor,
 		method,
@@ -896,6 +898,7 @@ pub(crate) fn state_machine_call_with_proof<Block: BlockT, HostFns: HostFunction
 ) -> sc_cli::Result<(OverlayedChanges, Vec<u8>)> {
 	use parity_scale_codec::Encode;
 
+	let cache = Default::default();
 	let mut changes = Default::default();
 	let backend = ext.backend.clone();
 	let runtime_code_backend = sp_state_machine::backend::BackendRuntimeCode::new(&backend);
@@ -906,6 +909,7 @@ pub(crate) fn state_machine_call_with_proof<Block: BlockT, HostFns: HostFunction
 	let pre_root = *backend.root();
 	let encoded_results = StateMachine::new(
 		&proving_backend,
+		&cache,
 		&mut changes,
 		executor,
 		method,

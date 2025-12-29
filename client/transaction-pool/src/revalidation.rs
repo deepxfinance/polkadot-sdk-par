@@ -330,7 +330,11 @@ where
 		api: Arc<Api>,
 		pool: Arc<Pool<Api, RCG>>,
 	) -> (Self, Pin<Box<dyn Future<Output = ()> + Send>>) {
-		Self::new_with_interval(api, pool, BACKGROUND_REVALIDATION_INTERVAL)
+		let interval = match std::env::var("REVALIDATION_INTERVAL") {
+			Ok(r) => Duration::from_millis(r.parse().expect("REVALIDATION_INTERVAL env should be u64")),
+			Err(_) => BACKGROUND_REVALIDATION_INTERVAL,
+		};
+		Self::new_with_interval(api, pool, interval)
 	}
 
 	/// Queue some transaction for later revalidation.

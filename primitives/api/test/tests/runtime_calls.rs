@@ -129,12 +129,14 @@ fn record_proof_works() {
 	.expect("Creates proof backend.");
 
 	// Use the proof backend to execute `execute_block`.
+	let cache = Default::default();
 	let mut overlay = Default::default();
 	let executor = NativeElseWasmExecutor::<LocalExecutorDispatch>::new_with_wasm_executor(
 		WasmExecutor::builder().build(),
 	);
 	execution_proof_check_on_trie_backend(
 		&backend,
+		&cache,
 		&mut overlay,
 		&executor,
 		"Core_execute_block",

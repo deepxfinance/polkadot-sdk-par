@@ -233,6 +233,7 @@ members = [
 	"primitives/transaction-pool",
 	"primitives/transaction-storage-proof",
 	"primitives/trie",
+	"primitives/typed-cache",
 	"primitives/version",
 	"primitives/version/proc-macro",
 	"primitives/wasm-interface",

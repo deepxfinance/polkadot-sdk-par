@@ -22,13 +22,14 @@ use crate::{
 	storage::{
 		generator::StorageValue as StorageValueT,
 		types::{OptionQuery, QueryKindTrait, StorageEntryMetadataBuilder},
-		StorageAppend, StorageDecodeLength, StorageTryAppend,
+		StorageAppend, StorageDecodeLength, StorageTryAppend, TStorage,
 	},
 	traits::{GetDefault, StorageInfo, StorageInstance},
 };
 use codec::{Decode, Encode, EncodeLike, FullCodec, MaxEncodedLen};
 use sp_arithmetic::traits::SaturatedConversion;
 use sp_std::prelude::*;
+use crate::storage::TypedAppend;
 
 /// A type that allow to store a value.
 ///
@@ -44,7 +45,7 @@ impl<Prefix, Value, QueryKind, OnEmpty> crate::storage::generator::StorageValue<
 	for StorageValue<Prefix, Value, QueryKind, OnEmpty>
 where
 	Prefix: StorageInstance,
-	Value: FullCodec,
+	Value: FullCodec + TStorage,
 	QueryKind: QueryKindTrait<Value, OnEmpty>,
 	OnEmpty: crate::traits::Get<QueryKind::Query> + 'static,
 {
@@ -66,7 +67,7 @@ where
 impl<Prefix, Value, QueryKind, OnEmpty> StorageValue<Prefix, Value, QueryKind, OnEmpty>
 where
 	Prefix: StorageInstance,
-	Value: FullCodec,
+	Value: FullCodec + TStorage,
 	QueryKind: QueryKindTrait<Value, OnEmpty>,
 	OnEmpty: crate::traits::Get<QueryKind::Query> + 'static,
 {
@@ -118,6 +119,12 @@ where
 		<Self as crate::storage::StorageValue<Value>>::translate(f)
 	}
 
+	#[cfg(feature = "std")]
+	pub fn put(val: Value) {
+		<Self as crate::storage::StorageValue<Value>>::put(val)
+	}
+
+	#[cfg(not(feature = "std"))]
 	/// Store a value under this key into the provided storage instance.
 	pub fn put<Arg: EncodeLike<Value>>(val: Arg) {
 		<Self as crate::storage::StorageValue<Value>>::put(val)
@@ -164,6 +171,15 @@ where
 		<Self as crate::storage::StorageValue<Value>>::take()
 	}
 
+	#[cfg(feature = "std")]
+	pub fn append<Item: Encode + Clone>(item: Item)
+	where
+		Value: TypedAppend<Item> + TStorage
+	{
+		<Self as crate::storage::StorageValue<Value>>::append(item)
+	}
+
+	#[cfg(not(feature = "std"))]
 	/// Append the given item to the value in the storage.
 	///
 	/// `Value` is required to implement [`StorageAppend`].
@@ -217,7 +233,7 @@ impl<Prefix, Value, QueryKind, OnEmpty> StorageEntryMetadataBuilder
 	for StorageValue<Prefix, Value, QueryKind, OnEmpty>
 where
 	Prefix: StorageInstance,
-	Value: FullCodec + scale_info::StaticTypeInfo,
+	Value: FullCodec + TStorage + scale_info::StaticTypeInfo,
 	QueryKind: QueryKindTrait<Value, OnEmpty>,
 	OnEmpty: crate::traits::Get<QueryKind::Query> + 'static,
 {
@@ -240,7 +256,7 @@ impl<Prefix, Value, QueryKind, OnEmpty> crate::traits::StorageInfoTrait
 	for StorageValue<Prefix, Value, QueryKind, OnEmpty>
 where
 	Prefix: StorageInstance,
-	Value: FullCodec + MaxEncodedLen,
+	Value: FullCodec + TStorage + MaxEncodedLen,
 	QueryKind: QueryKindTrait<Value, OnEmpty>,
 	OnEmpty: crate::traits::Get<QueryKind::Query> + 'static,
 {
@@ -260,7 +276,7 @@ impl<Prefix, Value, QueryKind, OnEmpty> crate::traits::PartialStorageInfoTrait
 	for StorageValue<Prefix, Value, QueryKind, OnEmpty>
 where
 	Prefix: StorageInstance,
-	Value: FullCodec,
+	Value: FullCodec + TStorage,
 	QueryKind: QueryKindTrait<Value, OnEmpty>,
 	OnEmpty: crate::traits::Get<QueryKind::Query> + 'static,
 {

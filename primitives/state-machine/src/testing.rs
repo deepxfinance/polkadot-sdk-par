@@ -65,6 +65,7 @@ where
 	/// Get externalities implementation.
 	pub fn ext(&mut self) -> Ext<H, InMemoryBackend<H>> {
 		Ext::new(
+			None,
 			&mut self.overlay,
 			&mut self.storage_transaction_cache,
 			&self.backend,
@@ -242,6 +243,7 @@ where
 			.with_recorder(Default::default())
 			.build();
 		let mut proving_ext = Ext::new(
+			None,
 			&mut self.overlay,
 			&mut self.storage_transaction_cache,
 			&proving_backend,

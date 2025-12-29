@@ -24,7 +24,7 @@
 use codec::{Decode, Encode, MaxEncodedLen};
 use frame_support::{
 	traits::{DisabledValidators, FindAuthor, Get, OnTimestampSet, OneSessionHandler},
-	BoundedSlice, BoundedVec, ConsensusEngineId, Parameter,
+	BoundedVec, ConsensusEngineId, Parameter,
 };
 use hotstuff_primitives::{AuthorityIndex, ConsensusLog, Slot, HOTSTUFF_ENGINE_ID};
 use log;
@@ -257,7 +257,7 @@ impl<T: pallet::Config> Pallet<T> {
 			return;
 		}
 
-		<Authorities<T>>::put(&new);
+		<Authorities<T>>::put(new.clone());
 
 		let log = DigestItem::Consensus(
 			HOTSTUFF_ENGINE_ID,
@@ -274,7 +274,7 @@ impl<T: pallet::Config> Pallet<T> {
 	pub fn initialize_authorities(authorities: &[T::AuthorityId]) {
 		if !authorities.is_empty() {
 			assert!(<Authorities<T>>::get().is_empty(), "Authorities are already initialized!");
-			let bounded = <BoundedSlice<'_, _, T::MaxAuthorities>>::try_from(authorities)
+			let bounded = <BoundedVec<_, T::MaxAuthorities>>::try_from(authorities.to_vec())
 				.expect("Initial authority set must be less than T::MaxAuthorities");
 			<Authorities<T>>::put(bounded);
 		}

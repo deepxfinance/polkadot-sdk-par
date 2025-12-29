@@ -31,12 +31,8 @@ sc-telemetry = { version = "4.0.0-dev", path = "../../../client/telemetry" }
 sc-transaction-pool = { version = "4.0.0-dev", path = "../../../client/transaction-pool" }
 sc-transaction-pool-api = { version = "4.0.0-dev", path = "../../../client/transaction-pool/api" }
 sc-statement-store = { version = "4.0.0-dev", path = "../../../client/statement-store" }
-sc-consensus-aura = { version = "0.10.0-dev", path = "../../../client/consensus/aura" }
-sp-consensus-aura = { version = "0.10.0-dev", path = "../../../primitives/consensus/aura" }
 sp-consensus = { version = "0.10.0-dev", path = "../../../primitives/consensus/common" }
 sc-consensus = { version = "0.10.0-dev", path = "../../../client/consensus/common" }
-sc-consensus-grandpa = { version = "0.10.0-dev", path = "../../../client/consensus/grandpa" }
-sp-consensus-grandpa = { version = "4.0.0-dev", path = "../../../primitives/consensus/grandpa" }
 sc-client-api = { version = "4.0.0-dev", path = "../../../client/api" }
 sp-runtime = { version = "7.0.0", path = "../../../primitives/runtime" }
 sp-io = { version = "7.0.0", path = "../../../primitives/io" }
@@ -44,6 +40,7 @@ sp-timestamp = { version = "4.0.0-dev", path = "../../../primitives/timestamp" }
 sp-inherents = { version = "4.0.0-dev", path = "../../../primitives/inherents" }
 sp-keyring = { version = "7.0.0", path = "../../../primitives/keyring" }
 frame-system = { version = "4.0.0-dev", path = "../../../frame/system" }
+frame-support = { version = "4.0.0-dev", path = "../../../frame/support" }
 pallet-transaction-payment = { version = "4.0.0-dev", default-features = false, path = "../../../frame/transaction-payment" }
 
 # Hotstuff Consensus
@@ -79,6 +76,7 @@ substrate-build-script-utils = { version = "3.0.0", path = "../../../utils/build
 
 [features]
 default = []
+dev-time = ["sc-basic-authorship/dev-time", "frame-support/dev-time"]
 # Dependencies that are only required if runtime benchmarking should be build.
 runtime-benchmarks = [
 	"node-template-runtime/runtime-benchmarks",

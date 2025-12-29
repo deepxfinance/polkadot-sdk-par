@@ -97,7 +97,7 @@ pub type OverlayedChangeSet = OverlayedMap<StorageKey, Option<StorageValue>>;
 #[derive(Debug, Clone)]
 pub struct OverlayedMap<K, V> {
 	/// Stores the changes that this overlay constitutes.
-	changes: BTreeMap<K, OverlayedEntry<V>>,
+	pub changes: BTreeMap<K, OverlayedEntry<V>>,
 	/// Stores which keys are dirty per transaction. Needed in order to determine which
 	/// values to merge into the parent transaction on commit. The length of this vector
 	/// therefore determines how many nested transactions are currently open (depth).
@@ -133,6 +133,31 @@ impl From<sp_core::storage::StorageMap> for OverlayedMap<StorageKey, Option<Stor
 						OverlayedEntry {
 							transactions: SmallVec::from_iter([InnerValue {
 								value: Some(v),
+								extrinsics: Default::default(),
+							}]),
+						},
+					)
+				})
+				.collect(),
+			dirty_keys: Default::default(),
+			num_client_transactions: 0,
+			execution_mode: ExecutionMode::Client,
+		}
+	}
+}
+
+#[cfg(feature = "std")]
+impl From<BTreeMap<Vec<u8>, Option<Vec<u8>>>> for OverlayedMap<StorageKey, Option<StorageValue>> {
+	fn from(storage: BTreeMap<Vec<u8>, Option<Vec<u8>>>) -> Self {
+		Self {
+			changes: storage
+				.into_iter()
+				.map(|(k, value)| {
+					(
+						k,
+						OverlayedEntry {
+							transactions: SmallVec::from_iter([InnerValue {
+								value,
 								extrinsics: Default::default(),
 							}]),
 						},

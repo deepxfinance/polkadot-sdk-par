@@ -334,7 +334,10 @@ impl<BlockHash: Hash, Key: Hash, D: MetaDb> StateDbSync<BlockHash, Key, D> {
 	) -> Result<CommitSet<Key>, Error<D::Error>> {
 		match self.mode {
 			PruningMode::ArchiveAll => {
-				changeset.deleted.clear();
+				let kv_mode = std::env::var("DB_KV_MODE").map(|s| s.parse().unwrap_or(false)).unwrap_or(false);
+				if !kv_mode {
+					changeset.deleted.clear();
+				}
 				// write changes immediately
 				Ok(CommitSet { data: changeset, meta: Default::default() })
 			},
