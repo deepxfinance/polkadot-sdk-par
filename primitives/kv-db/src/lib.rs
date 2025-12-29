@@ -24,10 +24,10 @@ use hash_db::Hasher;
 use crate::rstd::vec::Vec;
 pub use kvdb::KVDB;
 pub use kvdbmut::KVDBMut;
-pub use memory_db::*;
+pub use kv_memory_db::*;
 pub mod kvdb;
 pub mod kvdbmut;
-pub mod memory_db;
+pub mod kv_memory_db;
 
 /// Database value
 pub type DBValue = Vec<u8>;
