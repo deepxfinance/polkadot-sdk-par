@@ -114,6 +114,7 @@ where
 		};
 
 		Ok(ValidTransaction {
+			groups: None,
 			priority: 0,
 			requires,
 			provides,

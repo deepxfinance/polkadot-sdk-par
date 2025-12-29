@@ -119,11 +119,12 @@ pub mod weights;
 
 pub mod migrations;
 
+pub use extend_account::{AccountInfo, TimeNonce, limits::CallLimits};
 pub use extensions::{
 	check_genesis::CheckGenesis, check_mortality::CheckMortality,
 	check_non_zero_sender::CheckNonZeroSender, check_nonce::CheckNonce,
 	check_spec_version::CheckSpecVersion, check_tx_version::CheckTxVersion,
-	check_weight::CheckWeight,
+	check_weight::CheckWeight, check_quota_nonce::CheckQuotaNonce,
 };
 // Backward compatible re-export.
 pub use extensions::check_mortality::CheckMortality as CheckEra;
@@ -200,6 +201,7 @@ impl<MaxNormal: Get<u32>, MaxOverflow: Get<u32>> ConsumerLimits for (MaxNormal, 
 pub mod pallet {
 	use crate::{self as frame_system, pallet_prelude::*, *};
 	use frame_support::pallet_prelude::*;
+	use frame_support::dispatch::RCGroup;
 
 	/// System configuration trait. Implemented by runtime.
 	#[pallet::config]
@@ -357,6 +359,12 @@ pub mod pallet {
 
 		/// The maximum number of consumers allowed on a single account.
 		type MaxConsumers: ConsumerLimits;
+		
+		/// Get all call limits for account.
+		type CallLimits: CallLimits;
+
+		/// Runtime call grouper for handle RuntimeCall.
+		type CallGrouper: RCGroup<Self::AccountId, Self::RuntimeCall>;
 	}
 
 	#[pallet::pallet]
@@ -748,24 +756,24 @@ type EventIndex = u32;
 /// Type used to encode the number of references an account has.
 pub type RefCount = u32;
 
-/// Information of an account.
-#[derive(Clone, Eq, PartialEq, Default, RuntimeDebug, Encode, Decode, TypeInfo, MaxEncodedLen)]
-pub struct AccountInfo<Index, AccountData> {
-	/// The number of transactions this account has sent.
-	pub nonce: Index,
-	/// The number of other modules that currently depend on this account's existence. The account
-	/// cannot be reaped until this is zero.
-	pub consumers: RefCount,
-	/// The number of other modules that allow this account to exist. The account may not be reaped
-	/// until this and `sufficients` are both zero.
-	pub providers: RefCount,
-	/// The number of modules that allow this account to exist for their own purposes only. The
-	/// account may not be reaped until this and `providers` are both zero.
-	pub sufficients: RefCount,
-	/// The additional data that belongs to this account. Used to store the balance(s) in a lot of
-	/// chains.
-	pub data: AccountData,
-}
+// /// Information of an account.
+// #[derive(Clone, Eq, PartialEq, Default, RuntimeDebug, Encode, Decode, TypeInfo, MaxEncodedLen)]
+// pub struct AccountInfo<Index, AccountData> {
+// 	/// The number of transactions this account has sent.
+// 	pub nonce: Index,
+// 	/// The number of other modules that currently depend on this account's existence. The account
+// 	/// cannot be reaped until this is zero.
+// 	pub consumers: RefCount,
+// 	/// The number of other modules that allow this account to exist. The account may not be reaped
+// 	/// until this and `sufficients` are both zero.
+// 	pub providers: RefCount,
+// 	/// The number of modules that allow this account to exist for their own purposes only. The
+// 	/// account may not be reaped until this and `providers` are both zero.
+// 	pub sufficients: RefCount,
+// 	/// The additional data that belongs to this account. Used to store the balance(s) in a lot of
+// 	/// chains.
+// 	pub data: AccountData,
+// }
 
 /// Stores the `spec_version` and `spec_name` of when the last runtime upgrade
 /// happened.

@@ -758,7 +758,8 @@ fn call_expand() {
 		DispatchInfo {
 			weight: frame_support::weights::Weight::from_parts(3, 0),
 			class: DispatchClass::Normal,
-			pays_fee: Pays::Yes
+			pays_fee: Pays::Yes,
+			..Default::default()
 		}
 	);
 	assert_eq!(call_foo.get_call_name(), "foo");

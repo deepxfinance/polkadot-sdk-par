@@ -484,7 +484,7 @@ where
             } else {
                 Duration::from_secs(u64::MAX)
             };
-            let (results, mut invalid_tx, future_or_exhausted) = block_builder.push_batch(batch_txs, timeout);
+            let (results, mut invalid_tx, future_or_exhausted) = block_builder.push_batch(batch_txs, timeout, false);
             thread_info.invalid += invalid_tx.len();
             thread_info.future_or_exhausted += future_or_exhausted.len();
             let executed = results.len();

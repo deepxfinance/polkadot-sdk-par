@@ -77,9 +77,11 @@ mod tests;
 
 mod payment;
 mod types;
+mod empty_payment;
 
 pub use pallet::*;
 pub use payment::*;
+pub use empty_payment::EmptyTransactionPayment;
 pub use types::{FeeDetails, InclusionFee, RuntimeDispatchInfo};
 
 /// Fee multiplier.

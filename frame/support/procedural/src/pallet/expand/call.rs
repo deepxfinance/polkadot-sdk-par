@@ -113,6 +113,12 @@ pub fn expand_call(def: &mut Def) -> proc_macro2::TokenStream {
 	}
 	debug_assert_eq!(fn_weight.len(), methods.len());
 
+	let mut fn_call_type = Vec::<TokenStream2>::new();
+	for method in &methods {
+		fn_call_type.push((&method.call_type).into_token_stream())
+	}
+	debug_assert_eq!(fn_call_type.len(), methods.len());
+
 	let fn_doc = methods.iter().map(|method| &method.docs).collect::<Vec<_>>();
 
 	let args_name = methods
@@ -308,6 +314,7 @@ pub fn expand_call(def: &mut Def) -> proc_macro2::TokenStream {
 					#(
 						Self::#fn_name { #( #args_name_pattern_ref, )* } => {
 							let __pallet_base_weight = #fn_weight;
+							let __pallet_call_type = #fn_call_type;
 
 							let __pallet_weight = <
 								dyn #frame_support::dispatch::WeighData<( #( & #args_type, )* )>
@@ -323,8 +330,13 @@ pub fn expand_call(def: &mut Def) -> proc_macro2::TokenStream {
 								dyn #frame_support::dispatch::PaysFee<( #( & #args_type, )* )>
 							>::pays_fee(&__pallet_base_weight, ( #( #args_name, )* ));
 
+							// let __pallet_call_type = <
+							// 	dyn #frame_support::dispatch::GetCallType
+							// >::call_type(&__pallet_call_type);
+
 							#frame_support::dispatch::DispatchInfo {
 								weight: __pallet_weight,
+								call_type: __pallet_call_type,
 								class: __pallet_class,
 								pays_fee: __pallet_pays_fee,
 							}

@@ -25,6 +25,8 @@ sp-runtime = { version = "7.0.0", default-features = false, path = "../../primit
 sp-std = { version = "5.0.0", default-features = false, path = "../../primitives/std" }
 sp-version = { version = "5.0.0", default-features = false, path = "../../primitives/version" }
 sp-weights = { version = "4.0.0", default-features = false, path = "../../primitives/weights" }
+extend-account = { default-features = false, path = "./extend-account" }
+sp-timestamp = { version = "4.0.0-dev", default-features = false, path = "../../primitives/timestamp" }
 
 [dev-dependencies]
 criterion = "0.4.0"
@@ -45,6 +47,8 @@ std = [
 	"sp-std/std",
 	"sp-version/std",
 	"sp-weights/std",
+	"extend-account/std",
+	"sp-timestamp/std",
 ]
 runtime-benchmarks = [
 	"frame-support/runtime-benchmarks",

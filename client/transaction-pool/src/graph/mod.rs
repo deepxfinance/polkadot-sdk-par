@@ -41,7 +41,7 @@ pub use self::{
 	base_pool::Transaction,
 	pool::{
 		BlockHash, ChainApi, EventStream, ExtrinsicFor, ExtrinsicHash, NumberFor, Options, Pool,
-		TransactionFor, RCGroup, DefaultRCGroup,
+		TransactionFor,
 	},
 };
 pub use validated_pool::{IsValidator, ValidatedTransaction};

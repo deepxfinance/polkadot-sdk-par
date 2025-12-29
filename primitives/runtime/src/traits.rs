@@ -51,6 +51,7 @@ use sp_std::{self, fmt::Debug, prelude::*};
 use std::fmt::Display;
 #[cfg(feature = "std")]
 use std::str::FromStr;
+use crate::transaction_validity::RCGroup;
 
 /// A lazy value.
 pub trait Lazy<T: ?Sized> {
@@ -1358,12 +1359,15 @@ pub trait Applyable: Sized + Send + Sync {
 	/// Type by which we can dispatch. Restricts the `UnsignedValidator` type.
 	type Call: Dispatchable;
 
+	type AccountId;
+
 	/// Checks to see if this is a valid *transaction*. It returns information on it if so.
-	fn validate<V: ValidateUnsigned<Call = Self::Call>>(
+	fn validate<V: ValidateUnsigned<Call = Self::Call>, RCG: RCGroup<Self::AccountId, Self::Call>>(
 		&self,
 		source: TransactionSource,
 		info: &DispatchInfoOf<Self::Call>,
 		len: usize,
+		groups: bool,
 	) -> TransactionValidity;
 
 	/// Executes all necessary logic needed prior to dispatch and deconstructs into function call,

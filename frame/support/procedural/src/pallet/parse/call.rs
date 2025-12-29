@@ -27,6 +27,7 @@ mod keyword {
 	syn::custom_keyword!(OriginFor);
 	syn::custom_keyword!(weight);
 	syn::custom_keyword!(call_index);
+	syn::custom_keyword!(call_type);
 	syn::custom_keyword!(compact);
 	syn::custom_keyword!(T);
 	syn::custom_keyword!(pallet);
@@ -76,6 +77,8 @@ pub struct CallVariantDef {
 	pub weight: CallWeightDef,
 	/// Call index of the dispatchable.
 	pub call_index: u8,
+	/// Call type of the dispatchable.
+	pub call_type: syn::Expr,
 	/// Whether an explicit call index was specified.
 	pub explicit_call_index: bool,
 	/// Docs, used for metadata.
@@ -89,6 +92,7 @@ pub struct CallVariantDef {
 pub enum FunctionAttr {
 	CallIndex(u8),
 	Weight(syn::Expr),
+	CallType(syn::Expr),
 }
 
 impl syn::parse::Parse for FunctionAttr {
@@ -105,6 +109,11 @@ impl syn::parse::Parse for FunctionAttr {
 			let weight_content;
 			syn::parenthesized!(weight_content in content);
 			Ok(FunctionAttr::Weight(weight_content.parse::<syn::Expr>()?))
+		} else if lookahead.peek(keyword::call_type) {
+			content.parse::<keyword::call_type>()?;
+			let call_type_content;
+			syn::parenthesized!(call_type_content in content);
+			Ok(FunctionAttr::CallType(call_type_content.parse::<syn::Expr>()?))
 		} else if lookahead.peek(keyword::call_index) {
 			content.parse::<keyword::call_index>()?;
 			let call_index_content;
@@ -227,16 +236,18 @@ impl CallDef {
 					return Err(syn::Error::new(method.sig.span(), msg))
 				}
 
-				let (mut weight_attrs, mut call_idx_attrs): (Vec<FunctionAttr>, Vec<FunctionAttr>) =
-					helper::take_item_pallet_attrs(&mut method.attrs)?.into_iter().partition(
-						|attr| {
-							if let FunctionAttr::Weight(_) = attr {
-								true
-							} else {
-								false
-							}
-						},
-					);
+				let mut weight_attrs: Vec<FunctionAttr> = vec![];
+				let mut call_type_attrs: Vec<FunctionAttr> = vec![];
+				let mut call_idx_attrs: Vec<FunctionAttr> = vec![];
+				for attr in helper::take_item_pallet_attrs(&mut method.attrs)? {
+					if let FunctionAttr::Weight(_) = attr {
+						weight_attrs.push(attr);
+					} else if let FunctionAttr::CallType(_) = attr {
+						call_type_attrs.push(attr);
+					} else {
+						call_idx_attrs.push(attr);
+					}
+				}
 
 				if weight_attrs.is_empty() && dev_mode {
 					// inject a default O(1) weight when dev mode is enabled and no weight has
@@ -261,6 +272,29 @@ impl CallDef {
 					},
 					_ => {
 						let msg = "Invalid pallet::call, too many weight attributes given";
+						return Err(syn::Error::new(method.sig.span(), msg))
+					},
+				};
+
+				if call_type_attrs.is_empty() {
+					// inject a default function call type when dev mode is enabled and  has
+					// been specified on the call
+					let empty_call_type: syn::Expr = syn::parse(quote::quote!(Default::default()).into())
+						.expect("we are parsing a quoted string; qed");
+					call_type_attrs.push(FunctionAttr::CallType(empty_call_type));
+				}
+
+				let call_type = match call_type_attrs.len() {
+					0 => return Err(syn::Error::new(
+						method.sig.span(),
+						"A pallet::call requires a concrete `#[pallet::call_type($expr)]`, but none were given.",
+					)),
+					1 => match call_type_attrs.pop().unwrap() {
+						FunctionAttr::CallType(t) => t,
+						_ => unreachable!("checked during creation of the let binding"),
+					},
+					_ => {
+						let msg = "Invalid pallet::call, too many type attributes given";
 						return Err(syn::Error::new(method.sig.span(), msg))
 					},
 				};
@@ -327,6 +361,7 @@ impl CallDef {
 					name: method.sig.ident.clone(),
 					weight,
 					call_index: final_index,
+					call_type,
 					explicit_call_index,
 					args,
 					docs,

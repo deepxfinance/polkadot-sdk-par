@@ -1115,7 +1115,7 @@ where
                     .map_err(|e| HotstuffError::ClientError(e.to_string()))?;
                 for res in validate_results {
                     if let Err(e) = res {
-                        if !(e.exhausted_resources() || e.future()) {
+                        if !(e.exhausted_resources() || e.future() || e.time_stale()) {
                             // some extrinsic check filed(error but not exhausted_resources or future).
                             return Err(PayloadError::ExtrinsicErr(format!("validate_transactions meet err: {e:?}")).into());
                         }

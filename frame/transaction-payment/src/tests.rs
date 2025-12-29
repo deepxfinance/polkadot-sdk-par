@@ -233,6 +233,7 @@ fn signed_extension_allows_free_transactions() {
 				weight: Weight::from_parts(0, 0),
 				class: DispatchClass::Operational,
 				pays_fee: Pays::No,
+				..Default::default()
 			};
 			assert_ok!(ChargeTransactionPayment::<Runtime>::from(0).validate(
 				&1,
@@ -246,6 +247,7 @@ fn signed_extension_allows_free_transactions() {
 				weight: Weight::from_parts(0, 0),
 				class: DispatchClass::Normal,
 				pays_fee: Pays::Yes,
+				..Default::default()
 			};
 			assert_noop!(
 				ChargeTransactionPayment::<Runtime>::from(0).validate(
@@ -405,6 +407,7 @@ fn compute_fee_works_without_multiplier() {
 				weight: Weight::from_parts(0, 0),
 				class: DispatchClass::Operational,
 				pays_fee: Pays::No,
+				..Default::default()
 			};
 			assert_eq!(Pallet::<Runtime>::compute_fee(0, &dispatch_info, 10), 10);
 			// No tip, only base fee works
@@ -412,6 +415,7 @@ fn compute_fee_works_without_multiplier() {
 				weight: Weight::from_parts(0, 0),
 				class: DispatchClass::Operational,
 				pays_fee: Pays::Yes,
+				..Default::default()
 			};
 			assert_eq!(Pallet::<Runtime>::compute_fee(0, &dispatch_info, 0), 100);
 			// Tip + base fee works
@@ -423,6 +427,7 @@ fn compute_fee_works_without_multiplier() {
 				weight: Weight::from_parts(1000, 0),
 				class: DispatchClass::Operational,
 				pays_fee: Pays::Yes,
+				..Default::default()
 			};
 			assert_eq!(Pallet::<Runtime>::compute_fee(0, &dispatch_info, 0), 1100);
 		});
@@ -443,6 +448,7 @@ fn compute_fee_works_with_multiplier() {
 				weight: Weight::from_parts(0, 0),
 				class: DispatchClass::Operational,
 				pays_fee: Pays::Yes,
+				..Default::default()
 			};
 			assert_eq!(Pallet::<Runtime>::compute_fee(0, &dispatch_info, 0), 100);
 
@@ -451,6 +457,7 @@ fn compute_fee_works_with_multiplier() {
 				weight: Weight::from_parts(123, 0),
 				class: DispatchClass::Operational,
 				pays_fee: Pays::Yes,
+				..Default::default()
 			};
 			// 123 weight, 456 length, 100 base
 			assert_eq!(
@@ -476,6 +483,7 @@ fn compute_fee_works_with_negative_multiplier() {
 				weight: Weight::from_parts(0, 0),
 				class: DispatchClass::Operational,
 				pays_fee: Pays::Yes,
+				..Default::default()
 			};
 			assert_eq!(Pallet::<Runtime>::compute_fee(0, &dispatch_info, 0), 100);
 
@@ -484,6 +492,7 @@ fn compute_fee_works_with_negative_multiplier() {
 				weight: Weight::from_parts(123, 0),
 				class: DispatchClass::Operational,
 				pays_fee: Pays::Yes,
+				..Default::default()
 			};
 			// 123 weight, 456 length, 100 base
 			assert_eq!(
@@ -506,6 +515,7 @@ fn compute_fee_does_not_overflow() {
 				weight: Weight::MAX,
 				class: DispatchClass::Operational,
 				pays_fee: Pays::Yes,
+				..Default::default()
 			};
 			assert_eq!(
 				Pallet::<Runtime>::compute_fee(u32::MAX, &dispatch_info, u64::MAX),
@@ -596,6 +606,7 @@ fn zero_transfer_on_free_transaction() {
 				weight: Weight::from_parts(100, 0),
 				pays_fee: Pays::No,
 				class: DispatchClass::Normal,
+				..Default::default()
 			};
 			let user = 69;
 			let pre = ChargeTransactionPayment::<Runtime>::from(0)
@@ -669,6 +680,7 @@ fn should_alter_operational_priority() {
 			weight: Weight::from_parts(100, 0),
 			class: DispatchClass::Normal,
 			pays_fee: Pays::Yes,
+			..Default::default()
 		};
 		let priority = ChargeTransactionPayment::<Runtime>(tip)
 			.validate(&2, CALL, &normal, len)
@@ -690,6 +702,7 @@ fn should_alter_operational_priority() {
 			weight: Weight::from_parts(100, 0),
 			class: DispatchClass::Operational,
 			pays_fee: Pays::Yes,
+			..Default::default()
 		};
 		let priority = ChargeTransactionPayment::<Runtime>(tip)
 			.validate(&2, CALL, &op, len)
@@ -715,6 +728,7 @@ fn no_tip_has_some_priority() {
 			weight: Weight::from_parts(100, 0),
 			class: DispatchClass::Normal,
 			pays_fee: Pays::Yes,
+			..Default::default()
 		};
 		let priority = ChargeTransactionPayment::<Runtime>(tip)
 			.validate(&2, CALL, &normal, len)
@@ -729,6 +743,7 @@ fn no_tip_has_some_priority() {
 			weight: Weight::from_parts(100, 0),
 			class: DispatchClass::Operational,
 			pays_fee: Pays::Yes,
+			..Default::default()
 		};
 		let priority = ChargeTransactionPayment::<Runtime>(tip)
 			.validate(&2, CALL, &op, len)
@@ -749,6 +764,7 @@ fn higher_tip_have_higher_priority() {
 				weight: Weight::from_parts(100, 0),
 				class: DispatchClass::Normal,
 				pays_fee: Pays::Yes,
+				..Default::default()
 			};
 			priority1 = ChargeTransactionPayment::<Runtime>(tip)
 				.validate(&2, CALL, &normal, len)
@@ -761,6 +777,7 @@ fn higher_tip_have_higher_priority() {
 				weight: Weight::from_parts(100, 0),
 				class: DispatchClass::Operational,
 				pays_fee: Pays::Yes,
+				..Default::default()
 			};
 			priority2 = ChargeTransactionPayment::<Runtime>(tip)
 				.validate(&2, CALL, &op, len)

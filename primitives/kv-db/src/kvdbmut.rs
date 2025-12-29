@@ -6,7 +6,7 @@ use hash_db::{HashDB, HashDBRef, Hasher};
 use log::trace;
 use crate::{DBValue, KVCache, KVMut, rstd::vec::Vec, STORAGE_HASH};
 
-const NULL_DATA: [u8; 1] = [0u8];
+const NULL_DATA: [u8; 0] = [];
 
 pub struct KVDBMut<'a, 'cache, H: Hasher> {
     db: &'a mut dyn HashDB<H, DBValue>,
@@ -76,11 +76,6 @@ impl <'db, 'cache, H: Hasher> KVDBMut<'db, 'cache, H> {
     ) {
         #[cfg(all(feature = "std", feature = "dev-time"))]
         let start = std::time::Instant::now();
-        if value == NULL_DATA.to_vec() {
-            // to avoid null data `vec![0u8]`.
-            // for encoded value, this should not exist. we refactor it to empty vec encode.
-            value = [1u8].to_vec();
-        }
         if self.direct {
             self.db_insert(key, None, value);
         } else {
@@ -212,8 +207,6 @@ impl<'db, 'cache, H: Hasher> KVMut<'db, H> for KVDBMut<'db, 'cache, H> {
         match self.get_data(key, true).map(|v| v.clone()) {
             Some(v) => if v == NULL_DATA.to_vec() {
                 None
-            } else if v == [1u8].to_vec() {
-                Some(NULL_DATA.to_vec())
             } else {
                 Some(v)
             },

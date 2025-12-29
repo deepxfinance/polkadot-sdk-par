@@ -23,7 +23,7 @@ use crate::{
 		self, DispatchInfoOf, Dispatchable, MaybeDisplay, Member, PostDispatchInfoOf,
 		SignedExtension, ValidateUnsigned,
 	},
-	transaction_validity::{TransactionSource, TransactionValidity},
+	transaction_validity::{TransactionSource, TransactionValidity, RCGroup},
 };
 
 /// Definition of something that the external world might want to say; its
@@ -49,20 +49,34 @@ where
 {
 	type Call = Call;
 
-	fn validate<U: ValidateUnsigned<Call = Self::Call>>(
+	type AccountId = AccountId;
+
+	fn validate<U: ValidateUnsigned<Call = Self::Call>, RCG: RCGroup<AccountId, Call>>(
 		&self,
 		// TODO [#5006;ToDr] should source be passed to `SignedExtension`s?
 		// Perhaps a change for 2.0 to avoid breaking too much APIs?
 		source: TransactionSource,
 		info: &DispatchInfoOf<Self::Call>,
 		len: usize,
+		groups: bool,
 	) -> TransactionValidity {
 		if let Some((ref id, ref extra)) = self.signed {
-			Extra::validate(extra, id, &self.function, info, len)
+			let valid = Extra::validate(extra, id, &self.function, info, len)?;
+			let call_group = if groups {
+				RCG::call_groups(Some(id), &self.function, source)?
+			} else {
+				<() as RCGroup<AccountId, Call>>::call_groups(Some(id), &self.function, source)?
+			};
+			Ok(valid.combine_with(call_group))
 		} else {
 			let valid = Extra::validate_unsigned(&self.function, info, len)?;
 			let unsigned_validation = U::validate_unsigned(source, &self.function)?;
-			Ok(valid.combine_with(unsigned_validation))
+			let call_group = if groups {
+				RCG::call_groups(None, &self.function, source)?
+			} else {
+				<() as RCGroup<AccountId, Call>>::call_groups(None, &self.function, source)?
+			};
+			Ok(valid.combine_with(unsigned_validation).combine_with(call_group))
 		}
 	}
 

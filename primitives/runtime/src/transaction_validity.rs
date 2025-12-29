@@ -17,6 +17,7 @@
 
 //! Transaction validity interface.
 
+use sp_std::collections::btree_set::BTreeSet;
 use crate::{
 	codec::{Decode, Encode},
 	RuntimeDebug,
@@ -34,6 +35,9 @@ pub type TransactionLongevity = u64;
 /// Tag for a transaction. No two transactions with the same tag should be placed on-chain.
 pub type TransactionTag = Vec<u8>;
 
+/// Tag for group info, No two transactions with the same tag should be placed at different groups.
+pub type GroupTag = Vec<u8>;
+
 /// An invalid transaction validity.
 #[derive(Clone, PartialEq, Eq, Encode, Decode, Copy, RuntimeDebug, TypeInfo)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -46,6 +50,8 @@ pub enum InvalidTransaction {
 	Future,
 	/// General error to do with the transaction being outdated (e.g. nonce too low).
 	Stale,
+	/// General error to do with the transaction being outdated(special for time nonce).
+	TimeStale,
 	/// General error to do with the transaction's proofs (e.g. signature).
 	///
 	/// # Possible causes
@@ -98,6 +104,10 @@ impl InvalidTransaction {
 		self == &Self::Stale
 	}
 
+	pub fn time_stale(&self) -> bool {
+		self == &Self::TimeStale
+	}
+
 	pub fn future(&self) -> bool {
 		self == &Self::Future
 	}
@@ -114,6 +124,7 @@ impl From<InvalidTransaction> for &'static str {
 			InvalidTransaction::Call => "Transaction call is not expected",
 			InvalidTransaction::Future => "Transaction will be valid in the future",
 			InvalidTransaction::Stale => "Transaction is outdated",
+			InvalidTransaction::TimeStale => "Transaction is outdated(time)",
 			InvalidTransaction::BadProof => "Transaction has a bad signature",
 			InvalidTransaction::AncientBirthBlock => "Transaction has an ancient birth block",
 			InvalidTransaction::ExhaustsResources => "Transaction would exhaust the block limits",
@@ -181,7 +192,14 @@ impl TransactionValidityError {
 
 	pub fn stale(&self) -> bool {
 		match self {
-			Self::Invalid(e) => e.future(),
+			Self::Invalid(e) => e.stale(),
+			Self::Unknown(_) => false,
+		}
+	}
+
+	pub fn time_stale(&self) -> bool {
+		match self {
+			Self::Invalid(e) => e.time_stale(),
 			Self::Unknown(_) => false,
 		}
 	}
@@ -286,6 +304,11 @@ pub enum TransactionSource {
 /// Information concerning a valid transaction.
 #[derive(Clone, PartialEq, Eq, Encode, Decode, RuntimeDebug, TypeInfo)]
 pub struct ValidTransaction {
+	/// Group information for transaction
+	///
+	/// Transactions with same GroupTag should be placed at same group.
+	/// `None` means the transaction's group info is not parsed.
+	pub groups: Option<Vec<GroupTag>>,
 	/// Priority of the transaction.
 	///
 	/// Priority determines the ordering of two transactions that have all
@@ -319,6 +342,7 @@ pub struct ValidTransaction {
 impl Default for ValidTransaction {
 	fn default() -> Self {
 		Self {
+			groups: None,
 			priority: 0,
 			requires: vec![],
 			provides: vec![],
@@ -342,6 +366,18 @@ impl ValidTransaction {
 	/// the logic *And* of the propagate flags.
 	pub fn combine_with(mut self, mut other: ValidTransaction) -> Self {
 		Self {
+			groups: self.groups.take()
+				.map(|tags| match other.groups.take() {
+					Some(other_tags) => {
+						let mut tag_set = tags.into_iter().collect::<BTreeSet<_>>();
+						for other_tag in other_tags {
+							tag_set.insert(other_tag);
+						}
+						tag_set.into_iter().collect()
+					},
+					None => tags,
+				})
+				.or(other.groups.take()),
 			priority: self.priority.saturating_add(other.priority),
 			requires: {
 				self.requires.append(&mut other.requires);
@@ -369,6 +405,11 @@ pub struct ValidTransactionBuilder {
 }
 
 impl ValidTransactionBuilder {
+	/// Set the groups of a transaction.
+	pub fn groups(mut self, groups: Vec<GroupTag>) -> Self {
+		self.validity.groups = Some(groups);
+		self
+	}
 	/// Set the priority of a transaction.
 	///
 	/// Note that the final priority for `FRAME` is combined from all `SignedExtension`s.
@@ -454,6 +495,15 @@ impl From<ValidTransactionBuilder> for ValidTransaction {
 	}
 }
 
+/// Trait for parse extrinsic's group infos
+pub trait RCGroup<AccountId, Call> {
+	/// parse runtime call, return group data for dispatch call to groups
+	/// If return empty return, we will execute the transaction in a single thread for unknow transaction.
+	fn call_groups(_signer: Option<&AccountId>, _call: &Call, _source: TransactionSource) -> Result<ValidTransaction, TransactionValidityError> { Ok(Default::default()) }
+}
+
+impl<AccountId, Call> RCGroup<AccountId, Call> for () {}
+
 #[cfg(test)]
 mod tests {
 	use super::*;
@@ -461,6 +511,7 @@ mod tests {
 	#[test]
 	fn should_encode_and_decode() {
 		let v: TransactionValidity = Ok(ValidTransaction {
+			groups: None,
 			priority: 5,
 			requires: vec![vec![1, 2, 3, 4]],
 			provides: vec![vec![4, 5, 6]],
@@ -497,6 +548,7 @@ mod tests {
 		assert_eq!(
 			a,
 			ValidTransaction {
+				groups: None,
 				propagate: false,
 				longevity: 5,
 				priority: 6,

@@ -2353,6 +2353,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "extend-account"
+version = "0.1.0"
+dependencies = [
+ "frame-support",
+ "parity-scale-codec",
+ "scale-info",
+ "sp-core",
+ "sp-std",
+ "sp-timestamp",
+]
+
+[[package]]
 name = "fake-simd"
 version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2850,6 +2862,7 @@ version = "4.0.0-dev"
 dependencies = [
  "cfg-if",
  "criterion",
+ "extend-account",
  "frame-support",
  "log",
  "parity-scale-codec",
@@ -2860,6 +2873,7 @@ dependencies = [
  "sp-io",
  "sp-runtime",
  "sp-std",
+ "sp-timestamp",
  "sp-version",
  "sp-weights",
  "substrate-test-runtime-client",
@@ -5616,6 +5630,7 @@ dependencies = [
  "jsonrpsee",
  "node-template-runtime",
  "pallet-hotstuff",
+ "pallet-quota",
  "pallet-transaction-payment",
  "pallet-transaction-payment-rpc",
  "parity-scale-codec",
@@ -5679,6 +5694,7 @@ dependencies = [
  "pallet-aura",
  "pallet-balances",
  "pallet-hotstuff",
+ "pallet-quota",
  "pallet-sudo",
  "pallet-template",
  "pallet-timestamp",
@@ -7098,6 +7114,20 @@ dependencies = [
  "scale-info",
  "sp-core",
  "sp-io",
+ "sp-runtime",
+ "sp-std",
+]
+
+[[package]]
+name = "pallet-quota"
+version = "0.1.0"
+dependencies = [
+ "frame-benchmarking",
+ "frame-support",
+ "frame-system",
+ "log",
+ "parity-scale-codec",
+ "scale-info",
  "sp-runtime",
  "sp-std",
 ]
