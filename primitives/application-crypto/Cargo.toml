@@ -23,6 +23,10 @@ sp-std = { version = "5.0.0", default-features = false, path = "../std" }
 sp-io = { version = "7.0.0", default-features = false, path = "../io" }
 
 [features]
+bls-experimental = [
+	"sp-core/bls-experimental",
+	"sp-io/bls-experimental",
+]
 default = [ "std" ]
 std = [
 	"full_crypto",

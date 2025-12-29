@@ -927,7 +927,7 @@ async fn test_bad_justification() {
 
 	let full_client = client.as_client();
 	let mut builder = full_client
-		.new_block_at(full_client.chain_info().genesis_hash, Default::default(), false)
+		.new_block_at(full_client.chain_info().genesis_hash, Default::default(), false, None)
 		.unwrap();
 
 	add_scheduled_change(
@@ -1886,7 +1886,7 @@ async fn imports_justification_for_regular_blocks_on_import() {
 
 	let full_client = client.as_client();
 	let builder = full_client
-		.new_block_at(full_client.chain_info().genesis_hash, Default::default(), false)
+		.new_block_at(full_client.chain_info().genesis_hash, Default::default(), false, None)
 		.unwrap();
 	let block = builder.build().unwrap().block;
 

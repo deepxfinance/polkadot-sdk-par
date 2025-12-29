@@ -59,8 +59,12 @@ pub fn open<H: Clone + AsRef<[u8]>>(
 			}
 
 			let state_col = &mut config.columns[columns::STATE as usize];
-			state_col.ref_counted = true;
-			state_col.preimage = true;
+			let kv_mode =
+				std::env::var("DB_KV_MODE").map(|s| s.parse().unwrap_or(false)).unwrap_or(false);
+			if !kv_mode {
+				state_col.ref_counted = true;
+				state_col.preimage = true;
+			}
 			state_col.uniform = true;
 
 			let tx_col = &mut config.columns[columns::TRANSACTION as usize];

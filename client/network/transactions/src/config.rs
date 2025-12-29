@@ -53,6 +53,9 @@ pub enum TransactionImport {
 /// Future resolving to transaction import result.
 pub type TransactionImportFuture = Pin<Box<dyn Future<Output = TransactionImport> + Send>>;
 
+/// Future resolving to batch transaction import result.
+pub type BatchTransactionImportFuture = Pin<Box<dyn Future<Output = Vec<TransactionImport>> + Send>>;
+
 /// Transaction pool interface
 pub trait TransactionPool<H: ExHashT, B: BlockT>: Send + Sync {
 	/// Get transactions from the pool that are ready to be propagated.
@@ -63,6 +66,10 @@ pub trait TransactionPool<H: ExHashT, B: BlockT>: Send + Sync {
 	///
 	/// This will return future.
 	fn import(&self, transaction: B::Extrinsic) -> TransactionImportFuture;
+	/// Import a batch of transactions into the pool.
+	///
+	/// This will return future.
+	fn import_batch(&self, transactions: Vec<B::Extrinsic>) -> BatchTransactionImportFuture;
 	/// Notify the pool about transactions broadcast.
 	fn on_broadcasted(&self, propagations: HashMap<H, Vec<String>>);
 	/// Get transaction by hash.
@@ -88,6 +95,10 @@ impl<H: ExHashT + Default, B: BlockT> TransactionPool<H, B> for EmptyTransaction
 
 	fn import(&self, _transaction: B::Extrinsic) -> TransactionImportFuture {
 		Box::pin(future::ready(TransactionImport::KnownGood))
+	}
+
+	fn import_batch(&self, transactions: Vec<B::Extrinsic>) -> BatchTransactionImportFuture {
+		Box::pin(future::ready(transactions.iter().map(|_| TransactionImport::KnownGood).collect()))
 	}
 
 	fn on_broadcasted(&self, _: HashMap<H, Vec<String>>) {}

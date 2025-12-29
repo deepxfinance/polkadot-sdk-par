@@ -1015,6 +1015,10 @@ pub trait Checkable<Context>: Sized {
 	/// Check self, given an instance of Context.
 	fn check(self, c: &Context) -> Result<Self::Checked, TransactionValidityError>;
 
+	fn check_if_verify(self, c: &Context, _verify: bool) -> Result<Self::Checked, TransactionValidityError> {
+		self.check(c)
+	}
+
 	/// Blindly check self.
 	///
 	/// ## WARNING

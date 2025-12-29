@@ -59,6 +59,7 @@ impl ChainApi for TestApi {
 	type Block = Block;
 	type Error = error::Error;
 	type ValidationFuture = futures::future::Ready<error::Result<TransactionValidity>>;
+	type ValidationsFuture = futures::future::Ready<error::Result<Vec<TransactionValidity>>>;
 	type BodyFuture = futures::future::Ready<error::Result<Option<Vec<Extrinsic>>>>;
 
 	/// Verify extrinsic at given block.
@@ -144,6 +145,14 @@ impl ChainApi for TestApi {
 		};
 
 		futures::future::ready(Ok(res))
+	}
+
+	fn validate_transactions(
+		&self,
+		_at: &BlockId<Self::Block>,
+		_uxts: Vec<(TransactionSource, <Self::Block as BlockT>::Extrinsic)>,
+	) -> Self::ValidationsFuture {
+		unimplemented!()
 	}
 
 	/// Returns a block number given the block id.

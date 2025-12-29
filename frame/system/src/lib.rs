@@ -589,6 +589,18 @@ pub mod pallet {
 	pub(super) type Events<T: Config> =
 		StorageValue<_, Vec<Box<EventRecord<T::RuntimeEvent, T::Hash>>>, ValueQuery>;
 
+	/// EventsMap deposited for the history block.
+	///
+	/// NOTE: The item is unbound and should therefore never be read on chain.
+	/// It could otherwise inflate the PoV size of a block.
+	///
+	/// Events have a large in-memory size. Box the events to not go out-of-memory
+	/// just in case someone still reads them from within the runtime.
+	#[pallet::storage]
+	#[pallet::unbounded]
+	pub(super) type EventsMap<T: Config> =
+	StorageMap<_, Blake2_128Concat, T::BlockNumber, Vec<Box<EventRecord<T::RuntimeEvent, T::Hash>>>, ValueQuery>;
+
 	/// The number of events in the `Events<T>` list.
 	#[pallet::storage]
 	#[pallet::whitelist_storage]
@@ -1331,6 +1343,8 @@ impl<T: Config> Pallet<T> {
 	/// Remove temporary "environment" entries in storage, compute the storage root and return the
 	/// resulting header for this block.
 	pub fn finalize() -> T::Header {
+		#[cfg(feature = "std")]
+		let finalize_start = std::time::Instant::now();
 		log::debug!(
 			target: LOG_TARGET,
 			"[{:?}] {} extrinsics, length: {} (normal {}%, op: {}%, mandatory {}%) / normal weight:\
@@ -1383,11 +1397,17 @@ impl<T: Config> Pallet<T> {
 		let number = <Number<T>>::get();
 		let parent_hash = <ParentHash<T>>::get();
 		let digest = <Digest<T>>::get();
+		// We have to store events by block number since `Events` keep change.
+		<EventsMap<T>>::insert(number, <Events<T>>::get());
 
-		let extrinsics = (0..ExtrinsicCount::<T>::take().unwrap_or_default())
+		#[cfg(feature = "std")]
+		let extrinsics_root_start = std::time::Instant::now();
+		let extrinsics = (1..ExtrinsicCount::<T>::take().unwrap_or_default())
 			.map(ExtrinsicData::<T>::take)
 			.collect();
 		let extrinsics_root = extrinsics_data_root::<T::Hashing>(extrinsics);
+		#[cfg(feature = "std")]
+		let extrinsics_root_time = extrinsics_root_start.elapsed().as_micros();
 
 		// move block hash pruning window by one block
 		let block_hash_count = T::BlockHashCount::get();
@@ -1399,9 +1419,18 @@ impl<T: Config> Pallet<T> {
 		}
 
 		let version = T::Version::get().state_version();
+		#[cfg(feature = "std")]
+		let storage_root_start = std::time::Instant::now();
 		let storage_root = T::Hash::decode(&mut &sp_io::storage::root(version)[..])
 			.expect("Node is configured to use the same hash; qed");
-
+		#[cfg(feature = "std")]
+		let storage_root_time = storage_root_start.elapsed().as_micros();
+		#[cfg(feature = "std")]
+		log::debug!(
+			target: "authorship",
+			"finalize block {} micros(extrinsic_root: {extrinsics_root_time} micros, storage_root: {storage_root_time} micros)",
+			finalize_start.elapsed().as_micros(),
+		);
 		<T::Header as traits::Header>::new(
 			number,
 			extrinsics_root,
@@ -1573,6 +1602,11 @@ impl<T: Config> Pallet<T> {
 			},
 		});
 
+		Self::note_next_extrinsic();
+	}
+
+	/// Event can't apply extrinsic, we still record and add index.
+	pub fn note_next_extrinsic() {
 		let next_extrinsic_index = Self::extrinsic_index().unwrap_or_default() + 1u32;
 
 		storage::unhashed::put(well_known_keys::EXTRINSIC_INDEX, &next_extrinsic_index);

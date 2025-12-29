@@ -135,6 +135,7 @@ use sp_runtime::{
 	transaction_validity::{TransactionSource, TransactionValidity},
 	ApplyExtrinsicResult,
 };
+use sp_runtime::transaction_validity::TransactionValidityError;
 use sp_std::{marker::PhantomData, prelude::*};
 
 #[cfg(feature = "try-runtime")]
@@ -146,6 +147,17 @@ const LOG_TARGET: &str = "runtime::executive";
 pub type CheckedOf<E, C> = <E as Checkable<C>>::Checked;
 pub type CallOf<E, C> = <CheckedOf<E, C> as Applyable>::Call;
 pub type OriginOf<E, C> = <CallOf<E, C> as Dispatchable>::RuntimeOrigin;
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub enum BatchStrategy {
+	/// Execute all batch transactions(when time enough).
+	#[default]
+	All,
+	/// Exit if any transaction execution return error(except exhausted_resources).
+	ExitOnNoneResourceError,
+	/// Exit if any transaction execution return error.
+	ExitOnAnyError,
+}
 
 /// Main entry point for certain runtime actions as e.g. `execute_block`.
 ///
@@ -552,31 +564,63 @@ where
 		let encoded_len = encoded.len();
 		sp_tracing::enter_span!(sp_tracing::info_span!("apply_extrinsic",
 				ext=?sp_core::hexdisplay::HexDisplay::from(&encoded)));
-		// Verify that the signature is good.
-		let xt = uxt.check(&Default::default())?;
-
-		// We don't need to make sure to `note_extrinsic` only after we know it's going to be
-		// executed to prevent it from leaking in storage since at this point, it will either
-		// execute or panic (and revert storage changes).
+		let result = uxt.check_if_verify(&Default::default(), false).map(|xt| {
+			let dispatch_info = xt.get_dispatch_info();
+			let r = Applyable::apply::<UnsignedValidator>(xt, &dispatch_info, encoded_len);
+			(dispatch_info, r)
+		});
 		<frame_system::Pallet<System>>::note_extrinsic(encoded);
-
-		// AUDIT: Under no circumstances may this function panic from here onwards.
-
-		// Decode parameters and dispatch
-		let dispatch_info = xt.get_dispatch_info();
-		let r = Applyable::apply::<UnsignedValidator>(xt, &dispatch_info, encoded_len)?;
-
-		// Mandatory(inherents) are not allowed to fail.
-		//
-		// The entire block should be discarded if an inherent fails to apply. Otherwise
-		// it may open an attack vector.
-		if r.is_err() && dispatch_info.class == DispatchClass::Mandatory {
-			return Err(InvalidTransaction::BadMandatory.into())
+		match result {
+			Ok((dispatch_info, r)) => match r {
+				Ok(dispatch_result) => {
+					<frame_system::Pallet<System>>::note_applied_extrinsic(&dispatch_result, dispatch_info);
+					Ok(dispatch_result.map(|_| ()).map_err(|e| e.error))
+				},
+				Err(e) => {
+					<frame_system::Pallet<System>>::note_next_extrinsic();
+					if dispatch_info.class == DispatchClass::Mandatory {
+						Err(InvalidTransaction::BadMandatory.into())
+					} else {
+						Err(e)
+					}
+				},
+			},
+			Err(e) => {
+				<frame_system::Pallet<System>>::note_next_extrinsic();
+				Err(e)
+			}
 		}
+	}
 
-		<frame_system::Pallet<System>>::note_applied_extrinsic(&r, dispatch_info);
-
-		Ok(r.map(|_| ()).map_err(|e| e.error))
+	pub fn apply_extrinsics(extrinsics: Vec<Block::Extrinsic>, _timeout: u128, strategy: Option<BatchStrategy>) -> Vec<ApplyExtrinsicResult> {
+		#[cfg(feature = "std")]
+		let timeout = std::time::Duration::from_nanos(_timeout as u64);
+		#[cfg(feature = "std")]
+		let start = std::time::Instant::now();
+		let strategy = strategy.unwrap_or_default();
+		let mut result = Vec::new();
+		for ext in extrinsics {
+			#[cfg(feature = "std")]
+			if start.elapsed() >= timeout {
+				break;
+			}
+			let res = Self::apply_extrinsic(ext);
+			match &res {
+				Ok(_) => (),
+				Err(TransactionValidityError::Invalid(e)) if e.exhausted_resources() => {
+					if strategy == BatchStrategy::ExitOnAnyError {
+						result.push(res);
+						break;
+					}
+				},
+				Err(_) => if strategy != BatchStrategy::All {
+					result.push(res);
+					break;
+				},
+			}
+			result.push(res);
+		}
+		result
 	}
 
 	fn final_checks(header: &System::Header) {
@@ -648,6 +692,50 @@ where
 			sp_tracing::Level::TRACE, "validate";
 			xt.validate::<UnsignedValidator>(source, &dispatch_info, encoded_len)
 		}
+	}
+	
+	pub fn validate_transactions(
+		uxts: Vec<(TransactionSource, Block::Extrinsic)>,
+		block_hash: Block::Hash,
+	) -> Vec<TransactionValidity> {
+		sp_io::init_tracing();
+		use sp_tracing::{enter_span, within_span};
+
+		<frame_system::Pallet<System>>::initialize(
+			&(frame_system::Pallet::<System>::block_number() + One::one()),
+			&block_hash,
+			&Default::default(),
+		);
+
+		enter_span! { sp_tracing::Level::TRACE, "validate_transactions" };
+		let mut result = Vec::with_capacity(uxts.len());
+		for (source, uxt) in uxts {
+			let encoded_len = within_span! { sp_tracing::Level::TRACE, "using_encoded";
+				uxt.using_encoded(|d| d.len())
+			};
+	
+			let res= match within_span! { sp_tracing::Level::TRACE, "check";
+				uxt.check(&Default::default())
+			} {
+				Ok(xt) => {
+					let dispatch_info = within_span! { sp_tracing::Level::TRACE, "dispatch_info";
+						xt.get_dispatch_info()
+					};
+
+					if dispatch_info.class == DispatchClass::Mandatory {
+						Err(InvalidTransaction::MandatoryValidation.into())
+					} else {
+						within_span! {
+							sp_tracing::Level::TRACE, "validate";
+							xt.validate::<UnsignedValidator>(source, &dispatch_info, encoded_len)
+						}
+					}
+				},
+				Err(e) => Err(e),
+			};
+			result.push(res);
+		}
+		result
 	}
 
 	/// Start an offchain worker and generate extrinsics.

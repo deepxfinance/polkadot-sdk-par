@@ -38,7 +38,7 @@ use sc_client_api::{
 	},
 	execution_extensions::ExecutionExtensions,
 	notifications::{StorageEventStream, StorageNotifications},
-	CallExecutor, CloneForExecution, ExecutorProvider, KeysIter, OnFinalityAction, OnImportAction, PairsIter,
+	CallExecutor, ExecutorProvider, KeysIter, OnFinalityAction, OnImportAction, PairsIter,
 	ProofProvider, UsageProvider,
 };
 use sc_consensus::{
@@ -57,13 +57,10 @@ use sp_blockchain::{
 use sp_consensus::{BlockOrigin, BlockStatus, Error as ConsensusError};
 
 use sc_utils::mpsc::{tracing_unbounded, TracingUnboundedSender};
-use sp_core::{
-	storage::{
-		well_known_keys, ChildInfo, ChildType, PrefixedStorageKey, StorageChild, StorageData,
-		StorageKey,
-	},
-	traits::SpawnNamed,
-};
+use sp_core::{storage::{
+	well_known_keys, ChildInfo, ChildType, PrefixedStorageKey, StorageChild, StorageData,
+	StorageKey,
+}, traits::SpawnNamed, ExecutionContext};
 #[cfg(feature = "test-helpers")]
 use sp_keystore::KeystorePtr;
 use sp_runtime::{
@@ -260,33 +257,6 @@ where
 		telemetry,
 		config,
 	)
-}
-
-impl<B, E, Block, RA> CloneForExecution for Client<B, E, Block, RA>
-where
-	B: backend::Backend<Block>,
-	E: CallExecutor<Block> + Clone,
-	Block: BlockT,
-{
-	/// Only clone for build runtime api to execute extrinsic.
-	fn clone_for_execution(&self) -> Self {
-		Client {
-			backend: self.backend.clone(),
-			executor: self.executor.clone(),
-			storage_notifications: StorageNotifications::new(None),
-			import_notification_sinks: Default::default(),
-			every_import_notification_sinks: Default::default(),
-			finality_notification_sinks: Default::default(),
-			import_actions: Default::default(),
-			finality_actions: Default::default(),
-			importing_block: Default::default(),
-			block_rules: BlockRules::new(None, None),
-			config: self.config.clone(),
-			telemetry: self.telemetry.clone(),
-			unpin_worker_sender: self.unpin_worker_sender.clone(),
-			_phantom: Default::default(),
-		}
-	}
 }
 
 impl<B, E, Block, RA> BlockOf for Client<B, E, Block, RA>
@@ -1459,6 +1429,7 @@ where
 		parent: Block::Hash,
 		inherent_digests: Digest,
 		record_proof: R,
+		context: Option<ExecutionContext>,
 	) -> sp_blockchain::Result<sc_block_builder::BlockBuilder<Block, Self, B>> {
 		sc_block_builder::BlockBuilder::new(
 			self,
@@ -1467,6 +1438,22 @@ where
 			record_proof.into(),
 			inherent_digests,
 			&self.backend,
+			context,
+		)
+	}
+
+	fn new_with_other(
+		&self,
+		parent: Block::Hash,
+		estimated_header_size: usize,
+		context: Option<ExecutionContext>,
+	) -> sp_blockchain::Result<sc_block_builder::BlockBuilder<Block, Self, B>> {
+		sc_block_builder::BlockBuilder::new_with_other(
+			self,
+			parent,
+			estimated_header_size,
+			&self.backend,
+			context,
 		)
 	}
 
@@ -1482,6 +1469,7 @@ where
 			RecordProof::No,
 			inherent_digests,
 			&self.backend,
+			None,
 		)
 	}
 }

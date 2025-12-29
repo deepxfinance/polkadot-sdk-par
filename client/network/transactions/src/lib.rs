@@ -118,6 +118,27 @@ impl<H: ExHashT> Future for PendingTransaction<H> {
 	}
 }
 
+#[pin_project::pin_project]
+struct PendingTransactionBatch<H> {
+	#[pin]
+	validation: BatchTransactionImportFuture,
+	tx_hashes: Vec<H>,
+}
+
+impl<H: ExHashT> Future for PendingTransactionBatch<H> {
+	type Output = Vec<(H, TransactionImport)>;
+
+	fn poll(self: Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<Self::Output> {
+		let mut this = self.project();
+
+		if let Poll::Ready(import_result) = Pin::new(&mut this.validation).poll_unpin(cx) {
+			return Poll::Ready(this.tx_hashes.clone().into_iter().zip(import_result.into_iter()).collect())
+		}
+
+		Poll::Pending
+	}
+}
+
 /// Prototype for a [`TransactionsHandler`].
 pub struct TransactionsHandlerPrototype {
 	protocol_name: ProtocolName,
@@ -230,11 +251,19 @@ impl<H: ExHashT> TransactionsHandlerController<H> {
 	pub fn propagate_transaction(&self, hash: H) {
 		let _ = self.to_handler.unbounded_send(ToHandler::PropagateTransaction(hash));
 	}
+
+	/// You must call when new transactions are imported by the transaction pool.
+	///
+	/// This transactions will be fetched from the `TransactionPool`.
+	pub fn propagate_transaction_batch(&self, hashes: Vec<H>) {
+		let _ = self.to_handler.unbounded_send(ToHandler::PropagateTransactionBatch(hashes));
+	}
 }
 
 enum ToHandler<H: ExHashT> {
 	PropagateTransactions,
 	PropagateTransaction(H),
+	PropagateTransactionBatch(Vec<H>),
 }
 
 /// Handler for transactions. Call [`TransactionsHandler::run`] to start the processing.
@@ -248,7 +277,7 @@ pub struct TransactionsHandler<
 	/// Interval at which we call `propagate_transactions`.
 	propagate_timeout: stream::Fuse<Pin<Box<dyn Stream<Item = ()> + Send>>>,
 	/// Pending transactions verification tasks.
-	pending_transactions: FuturesUnordered<PendingTransaction<H>>,
+	pending_transactions: FuturesUnordered<PendingTransactionBatch<H>>,
 	/// As multiple peers can send us the same transaction, we group
 	/// these peers using the transaction hash while the transaction is
 	/// imported. This prevents that we import the same transaction
@@ -293,11 +322,13 @@ where
 				_ = self.propagate_timeout.next() => {
 					self.propagate_transactions();
 				},
-				(tx_hash, result) = self.pending_transactions.select_next_some() => {
-					if let Some(peers) = self.pending_transactions_peers.remove(&tx_hash) {
-						peers.into_iter().for_each(|p| self.on_handle_transaction_import(p, result));
-					} else {
-						warn!(target: "sub-libp2p", "Inconsistent state, no peers for pending transaction!");
+				results = self.pending_transactions.select_next_some() => {
+					for (tx_hash, result) in results {
+						if let Some(peers) = self.pending_transactions_peers.remove(&tx_hash) {
+							peers.into_iter().for_each(|p| self.on_handle_transaction_import(p, result));
+						} else {
+							warn!(target: "sub-libp2p", "Inconsistent state, no peers for pending transaction!");
+						}
 					}
 				},
 				network_event = self.net_event_stream.next() => {
@@ -320,6 +351,7 @@ where
 					match message {
 						ToHandler::PropagateTransaction(hash) => self.propagate_transaction(&hash),
 						ToHandler::PropagateTransactions => self.propagate_transactions(),
+						ToHandler::PropagateTransactionBatch(hashes) => self.propagate_transaction_batch(&hashes),
 					}
 				},
 			}
@@ -403,6 +435,8 @@ where
 
 		trace!(target: "sync", "Received {} transactions from {}", transactions.len(), who);
 		if let Some(ref mut peer) = self.peers.get_mut(&who) {
+			let mut verify = Vec::with_capacity(transactions.len());
+			let mut tx_hashes = Vec::with_capacity(transactions.len());
 			for t in transactions {
 				if self.pending_transactions.len() > MAX_PENDING_TRANSACTIONS {
 					debug!(
@@ -420,16 +454,20 @@ where
 
 				match self.pending_transactions_peers.entry(hash.clone()) {
 					Entry::Vacant(entry) => {
-						self.pending_transactions.push(PendingTransaction {
-							validation: self.transaction_pool.import(t),
-							tx_hash: hash,
-						});
+						verify.push(t);
+						tx_hashes.push(hash);
 						entry.insert(vec![who]);
 					},
 					Entry::Occupied(mut entry) => {
 						entry.get_mut().push(who);
 					},
 				}
+			}
+			if !verify.is_empty() {
+				self.pending_transactions.push(PendingTransactionBatch {
+					validation: self.transaction_pool.import_batch(verify),
+					tx_hashes,
+				});
 			}
 		}
 	}
@@ -456,6 +494,22 @@ where
 			let propagated_to = self.do_propagate_transactions(&[(hash.clone(), transaction)]);
 			self.transaction_pool.on_broadcasted(propagated_to);
 		}
+	}
+
+	/// Propagate batch transaction.
+	pub fn propagate_transaction_batch(&mut self, hashes: &[H]) {
+		// Accept transactions only when node is not major syncing
+		if self.sync.is_major_syncing() {
+			return
+		}
+
+		debug!(target: "sync", "Propagating transaction batch [{:?}]", hashes);
+		let propagates: Vec<_> = hashes
+			.iter()
+			.filter_map(|hash| self.transaction_pool.transaction(hash).map(|tx| (hash.clone(), tx)))
+			.collect();
+		let propagated_to = self.do_propagate_transactions(&propagates);
+		self.transaction_pool.on_broadcasted(propagated_to);
 	}
 
 	fn do_propagate_transactions(

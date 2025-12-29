@@ -51,5 +51,11 @@ sp_api::decl_runtime_apis! {
 			tx: <Block as BlockT>::Extrinsic,
 			block_hash: Block::Hash,
 		) -> TransactionValidity;
+
+		/// Validate multi transactions.
+		fn validate_transactions(
+			txs: sp_std::vec::Vec<(TransactionSource, <Block as BlockT>::Extrinsic)>,
+			block_hash: Block::Hash,
+		) -> sp_std::vec::Vec<TransactionValidity>;
 	}
 }

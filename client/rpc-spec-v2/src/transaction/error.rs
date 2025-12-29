@@ -95,6 +95,10 @@ impl<Hash> From<Error> for TransactionEvent<Hash> {
 				TransactionEvent::Invalid(TransactionError {
 					error: "The pool is not accepting future transactions".into(),
 				}),
+			Error::Pool(PoolError::GroupInfo(e)) =>
+				TransactionEvent::Invalid(TransactionError {
+					error: format!("The transaction group info failed for {e}"),
+				}),
 		}
 	}
 }

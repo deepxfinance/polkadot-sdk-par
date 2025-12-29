@@ -79,6 +79,7 @@ mod sealed {
 
 /// Builder for creating a [`TrieBackend`].
 pub struct TrieBackendBuilder<S: TrieBackendStorage<H>, H: Hasher, C = LocalTrieCache<H>> {
+	kv_mode: bool,
 	storage: S,
 	root: H::Out,
 	#[cfg(feature = "std")]
@@ -94,6 +95,7 @@ where
 	/// Create a new builder instance.
 	pub fn new(storage: S, root: H::Out) -> Self {
 		Self {
+			kv_mode: false,
 			storage,
 			root,
 			#[cfg(feature = "std")]
@@ -117,6 +119,7 @@ where
 	/// The backend storage and the cache will be taken from `other`.
 	pub fn wrap(other: &TrieBackend<S, H, C>) -> TrieBackendBuilder<&S, H, &C> {
 		TrieBackendBuilder {
+			kv_mode: other.kv_mode,
 			storage: other.essence.backend_storage(),
 			root: *other.essence.root(),
 			#[cfg(feature = "std")]
@@ -126,6 +129,10 @@ where
 			#[cfg(not(feature = "std"))]
 			cache: None,
 		}
+	}
+
+	pub fn set_kv_mode(self, kv_mode: bool) -> Self {
+		Self { kv_mode, ..self }
 	}
 
 	/// Use the given optional `recorder` for the to be configured [`TrieBackend`].
@@ -144,6 +151,7 @@ where
 	#[cfg(feature = "std")]
 	pub fn with_optional_cache<LC>(self, cache: Option<LC>) -> TrieBackendBuilder<S, H, LC> {
 		TrieBackendBuilder {
+			kv_mode: self.kv_mode,
 			cache,
 			root: self.root,
 			storage: self.storage,
@@ -155,6 +163,7 @@ where
 	#[cfg(feature = "std")]
 	pub fn with_cache<LC>(self, cache: LC) -> TrieBackendBuilder<S, H, LC> {
 		TrieBackendBuilder {
+			kv_mode: self.kv_mode,
 			cache: Some(cache),
 			root: self.root,
 			storage: self.storage,
@@ -166,6 +175,7 @@ where
 	#[cfg(feature = "std")]
 	pub fn build(self) -> TrieBackend<S, H, C> {
 		TrieBackend {
+			kv_mode: self.kv_mode,
 			essence: TrieBackendEssence::new_with_cache_and_recorder(
 				self.storage,
 				self.root,
@@ -182,6 +192,7 @@ where
 		let _ = self.cache;
 
 		TrieBackend {
+			kv_mode: self.kv_mode,
 			essence: TrieBackendEssence::new(self.storage, self.root),
 			next_storage_key_cache: Default::default(),
 		}
@@ -224,6 +235,7 @@ fn access_cache<T, R>(cell: &CacheCell<T>, callback: impl FnOnce(&mut T) -> R) -
 
 /// Patricia trie-based backend. Transaction type is an overlay of changes to commit.
 pub struct TrieBackend<S: TrieBackendStorage<H>, H: Hasher, C = LocalTrieCache<H>> {
+	pub(crate) kv_mode: bool,
 	pub(crate) essence: TrieBackendEssence<S, H, C>,
 	next_storage_key_cache: CacheCell<Option<CachedIter<S, H, C>>>,
 }
@@ -234,7 +246,7 @@ where
 {
 	#[cfg(test)]
 	pub(crate) fn from_essence(essence: TrieBackendEssence<S, H, C>) -> Self {
-		Self { essence, next_storage_key_cache: Default::default() }
+		Self { kv_mode: false, essence, next_storage_key_cache: Default::default() }
 	}
 
 	/// Get backend essence reference.
@@ -295,10 +307,16 @@ where
 	type RawIter = crate::trie_backend_essence::RawIter<S, H, C>;
 
 	fn storage_hash(&self, key: &[u8]) -> Result<Option<H::Out>, Self::Error> {
+		if self.kv_mode {
+			return self.essence.kv_storage_hash(key);
+		}
 		self.essence.storage_hash(key)
 	}
 
 	fn storage(&self, key: &[u8]) -> Result<Option<StorageValue>, Self::Error> {
+		if self.kv_mode {
+			return self.essence.kv_storage(key);
+		}
 		self.essence.storage(key)
 	}
 
@@ -307,6 +325,9 @@ where
 		child_info: &ChildInfo,
 		key: &[u8],
 	) -> Result<Option<H::Out>, Self::Error> {
+		if self.kv_mode {
+			return Ok(None);
+		}
 		self.essence.child_storage_hash(child_info, key)
 	}
 
@@ -315,10 +336,16 @@ where
 		child_info: &ChildInfo,
 		key: &[u8],
 	) -> Result<Option<StorageValue>, Self::Error> {
+		if self.kv_mode {
+			return self.essence.kv_child_storage(child_info, key);
+		}
 		self.essence.child_storage(child_info, key)
 	}
 
 	fn next_storage_key(&self, key: &[u8]) -> Result<Option<StorageKey>, Self::Error> {
+		if self.kv_mode {
+			return Ok(None);
+		}
 		let (is_cached, mut cache) = access_cache(&self.next_storage_key_cache, Option::take)
 			.map(|cache| (cache.last_key == key, cache))
 			.unwrap_or_default();
@@ -360,10 +387,19 @@ where
 		child_info: &ChildInfo,
 		key: &[u8],
 	) -> Result<Option<StorageKey>, Self::Error> {
+		if self.kv_mode {
+			return Ok(None);
+		}
 		self.essence.next_child_storage_key(child_info, key)
 	}
 
 	fn raw_iter(&self, args: IterArgs) -> Result<Self::RawIter, Self::Error> {
+		if self.kv_mode {
+			#[cfg(feature = "std")]
+			return Err("kv_mode doesn't support `raw_iter`".into());
+			#[cfg(not(feature = "std"))]
+			return Err(crate::DefaultError);
+		}
 		self.essence.raw_iter(args)
 	}
 
@@ -375,6 +411,9 @@ where
 	where
 		H::Out: Ord,
 	{
+		if self.kv_mode {
+			return self.essence.kv_storage_root(delta, state_version);
+		}
 		self.essence.storage_root(delta, state_version)
 	}
 
@@ -387,6 +426,9 @@ where
 	where
 		H::Out: Ord,
 	{
+		if self.kv_mode {
+			return self.essence.kv_child_storage_root(child_info, delta, state_version);
+		}
 		self.essence.child_storage_root(child_info, delta, state_version)
 	}
 

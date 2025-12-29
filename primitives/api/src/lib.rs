@@ -593,6 +593,14 @@ pub trait ApiExt<Block: BlockT> {
 	fn debug_info(&self) -> String
 	where
 		Self: Sized;
+
+	fn execute_times(&self) -> (Vec<(Vec<u8>, [u128; 4])>, (u128, u128))
+	where
+		Self: Sized;
+
+	fn top_keys_by_prefix(&self, prefix: &StorageKey) -> Vec<StorageKey>
+	where
+		Self: Sized;
 	
 	fn get_top_change(&self, key: &StorageKey) -> Option<Option<StorageValue>>
 	where
@@ -609,6 +617,7 @@ pub trait ApiExt<Block: BlockT> {
 	fn set_changes(&mut self, changes: OverlayedChanges)
 	where
 		Self: Sized;
+
 	fn set_recorder(&mut self, recorder: Option<ProofRecorder<Block>>)
 	where
 		Self: Sized;

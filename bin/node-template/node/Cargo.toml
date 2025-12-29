@@ -17,6 +17,7 @@ targets = ["x86_64-unknown-linux-gnu"]
 name = "node-template"
 
 [dependencies]
+hex = "0.4.3"
 clap = { version = "4.2.5", features = ["derive"] }
 futures = { version = "0.3.21", features = ["thread-pool"]}
 codec = { package = "parity-scale-codec", version = "3.2.2", features = ["derive" ] }
@@ -27,7 +28,6 @@ sc-executor = { version = "0.10.0-dev", path = "../../../client/executor" }
 sc-network = { version = "0.10.0-dev", path = "../../../client/network" }
 sc-service = { version = "0.10.0-dev", path = "../../../client/service" }
 sc-telemetry = { version = "4.0.0-dev", path = "../../../client/telemetry" }
-sc-keystore = { version = "4.0.0-dev", path = "../../../client/keystore" }
 sc-transaction-pool = { version = "4.0.0-dev", path = "../../../client/transaction-pool" }
 sc-transaction-pool-api = { version = "4.0.0-dev", path = "../../../client/transaction-pool/api" }
 sc-statement-store = { version = "4.0.0-dev", path = "../../../client/statement-store" }
@@ -46,10 +46,17 @@ sp-keyring = { version = "7.0.0", path = "../../../primitives/keyring" }
 frame-system = { version = "4.0.0-dev", path = "../../../frame/system" }
 pallet-transaction-payment = { version = "4.0.0-dev", default-features = false, path = "../../../frame/transaction-payment" }
 
+# Hotstuff Consensus
+hotstuff-consensus = { path = "../../../hotstuff/consensus" }
+pallet-hotstuff = { default-features = false, path = "../../../hotstuff/pallets/hotstuff" }
+hotstuff-primitives = { default-features = false, path = "../../../hotstuff/primitives", features = ["bls-experimental"] }
+
 # These dependencies are used for the node template's RPCs
 jsonrpsee = { version = "0.16.2", features = ["server"] }
 sc-rpc = { version = "4.0.0-dev", path = "../../../client/rpc" }
 sp-api = { version = "4.0.0-dev", path = "../../../primitives/api" }
+sp-spot-api = { version = "4.0.0-dev", path = "../../../primitives/spot-api" }
+sp-perp-api = { version = "4.0.0-dev", path = "../../../primitives/perp-api" }
 sc-rpc-api = { version = "0.10.0-dev", path = "../../../client/rpc-api" }
 sp-blockchain = { version = "4.0.0-dev", path = "../../../primitives/blockchain" }
 sp-block-builder = { version = "4.0.0-dev", path = "../../../primitives/block-builder" }

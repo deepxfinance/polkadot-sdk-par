@@ -108,6 +108,29 @@ where
 			})
 	}
 
+	async fn submit_extrinsics(&self, exts: Bytes) -> RpcResult<Vec<std::result::Result<TxHash<P>, String>>> {
+		let xts = match Decode::decode(&mut &exts[..]) {
+			Ok(xts) => xts,
+			Err(err) => return Err(Error::Client(Box::new(err)).into()),
+		};
+		let best_block_hash = self.client.info().best_hash;
+		self
+			.pool
+			.submit_multi(&generic::BlockId::hash(best_block_hash), TX_SOURCE, xts)
+			.await
+			.map(|r| r
+				.into_iter()
+				.map(|r| r.map_err(|e| format!("{e:?}")))
+				.collect()
+			)
+			.map_err(|e| {
+				e.into_pool_error()
+					.map(|e| Error::Pool(e))
+					.unwrap_or_else(|e| Error::Verification(Box::new(e)))
+					.into()
+			})
+	}
+
 	fn insert_key(&self, key_type: String, suri: String, public: Bytes) -> RpcResult<()> {
 		self.deny_unsafe.check_if_safe()?;
 

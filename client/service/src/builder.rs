@@ -562,8 +562,8 @@ async fn transaction_notifications<Block, ExPool>(
 	// transaction notifications
 	transaction_pool
 		.import_notification_stream()
-		.for_each(move |hash| {
-			tx_handler_controller.propagate_transaction(hash);
+		.for_each(move |hashes| {
+			tx_handler_controller.propagate_transaction_batch(hashes);
 			let status = transaction_pool.status();
 			telemetry!(
 				telemetry;

@@ -179,6 +179,8 @@ pub trait InPoolTransaction {
 	fn provides(&self) -> &[TransactionTag];
 	/// Return a flag indicating if the transaction should be propagated to other peers.
 	fn is_propagable(&self) -> bool;
+	/// Return special group infos.
+	fn group_info(&self) -> &[Vec<u8>];
 }
 
 /// Transaction pool interface.
@@ -203,6 +205,7 @@ pub trait TransactionPool: Send + Sync {
 		at: &BlockId<Self::Block>,
 		source: TransactionSource,
 		xts: Vec<TransactionFor<Self>>,
+		multi: bool,
 	) -> PoolFuture<Vec<Result<TxHash<Self>, Self::Error>>, Self::Error>;
 
 	/// Returns a future that imports one unverified transaction to the pool.
@@ -212,6 +215,13 @@ pub trait TransactionPool: Send + Sync {
 		source: TransactionSource,
 		xt: TransactionFor<Self>,
 	) -> PoolFuture<TxHash<Self>, Self::Error>;
+
+	fn submit_multi(
+		&self,
+		at: &BlockId<Self::Block>,
+		source: TransactionSource,
+		xts: Vec<TransactionFor<Self>>,
+	) -> PoolFuture<Vec<Result<TxHash<Self>, Self::Error>>, Self::Error>;
 
 	/// Returns a future that import a single transaction and starts to watch their progress in the
 	/// pool.
@@ -251,7 +261,7 @@ pub trait TransactionPool: Send + Sync {
 
 	// *** logging / RPC / networking
 	/// Return an event stream of transactions imported to the pool.
-	fn import_notification_stream(&self) -> ImportNotificationStream<TxHash<Self>>;
+	fn import_notification_stream(&self) -> ImportNotificationStream<Vec<TxHash<Self>>>;
 
 	// *** networking
 	/// Notify the pool about transactions broadcast.

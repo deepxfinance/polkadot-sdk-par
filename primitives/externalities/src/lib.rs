@@ -80,6 +80,10 @@ impl MultiRemovalResults {
 ///
 /// Provides access to the storage and to other registered extensions.
 pub trait Externalities: ExtensionStore {
+	fn io_time(&self) -> (u128, u128, u128) { (0, 0, 0) }
+
+	fn execute_time(&mut self, _method: &str, _times: [u128; 4]) {}
+
 	/// Write a key value pair to the offchain storage database.
 	fn set_offchain_storage(&mut self, key: &[u8], value: Option<&[u8]>);
 

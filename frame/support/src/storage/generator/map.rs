@@ -338,7 +338,24 @@ impl<K: FullEncode, V: FullCodec, G: StorageMap<K, V>> storage::StorageMap<K, V>
 			String::from_utf8(Self::storage_prefix().to_vec()).unwrap(),
 		);
 		let key = Self::storage_map_final_key(key);
-		sp_io::storage::append(&key, item.encode());
+		#[cfg(feature = "std")]
+		let start = std::time::Instant::now();
+		let encoded = item.encode();
+		#[cfg(feature = "std")]
+		{
+			let time = start.elapsed();
+			let mut key = key.clone();
+			if key.len() > 32 {
+				key.resize(32, 0);
+			}
+			let mut lock = crate::storage::unhashed::GLOBAL_ENCODE.lock().unwrap();
+			if let Some(v) = lock.get_mut(&key) {
+				v.push((time, encoded.len()));
+			} else {
+				lock.insert(key.to_vec(), vec![(time, encoded.len())]);
+			}
+		}
+		sp_io::storage::append(&key, encoded);
 	}
 
 	fn migrate_key<OldHasher: StorageHasher, KeyArg: EncodeLike<K>>(key: KeyArg) -> Option<V> {

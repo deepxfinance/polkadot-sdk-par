@@ -18,6 +18,7 @@
 ///! Provides the [`SharedNodeCache`], the [`SharedValueCache`] and the [`SharedTrieCache`]
 ///! that combines both caches and is exported to the outside.
 use super::{CacheSize, NodeCached};
+use crate::cache::kv_cache::{KValueCacheMap, LocalValueCacheLimiter};
 use hash_db::Hasher;
 use hashbrown::{hash_set::Entry as SetEntry, HashSet};
 use nohash_hasher::BuildNoHashHasher;
@@ -563,10 +564,82 @@ impl<H: Eq + std::hash::Hash + Clone + Copy + AsRef<[u8]>> SharedValueCache<H> {
 	}
 }
 
+/// The shared kv cache
+pub(super) struct SharedKVCache {
+	/// The cached kv values, ordered by least recently used.
+	pub(super) lru: KValueCacheMap,
+}
+
+impl SharedKVCache {
+	/// Create a new instance.
+	fn new(max_inline_size: usize, max_heap_size: usize) -> Self {
+		Self {
+			lru: schnellru::LruMap::with_hasher(
+				LocalValueCacheLimiter {
+					max_inline_size,
+					max_heap_size,
+					heap_size: 0,
+					items_evicted: 0,
+					max_items_evicted: 0, // Will be set during `update`.
+				},
+				Default::default(),
+			),
+		}
+	}
+
+	/// Update the cache with the `added` values.
+	pub fn update(
+		&mut self,
+		added: impl IntoIterator<Item = (super::kv_cache::ValueCacheKey, kv_db::DBValue)>,
+	) {
+		let mut add_count = 0;
+		let mut remove_count = 0;
+
+		self.lru.limiter_mut().items_evicted = 0;
+		self.lru.limiter_mut().max_items_evicted =
+			self.lru.len() * 100 / super::SHARED_KV_CACHE_MAX_REPLACE_PERCENT;
+
+		for (key, value) in added {
+			if value == vec![0u8] {
+				remove_count += 1;
+				self.lru.remove(&key);
+			} else {
+				add_count += 1;
+				self.lru.insert(key, value);
+			}
+
+			if self.lru.limiter().items_evicted > self.lru.limiter().max_items_evicted {
+				// Stop when we've evicted a big enough chunk of the shared cache.
+				break
+			}
+		}
+
+		tracing::debug!(
+			target: super::KV_LOG_TARGET,
+			"Updated the shared kv cache: {} new values, {} removed, {}/{} evicted (length = {}, inline size={}/{}, heap size={}/{})",
+			add_count,
+			remove_count,
+			self.lru.limiter().items_evicted,
+			self.lru.limiter().max_items_evicted,
+			self.lru.len(),
+			self.lru.memory_usage(),
+			self.lru.limiter().max_inline_size,
+			self.lru.limiter().heap_size,
+			self.lru.limiter().max_heap_size,
+		);
+	}
+
+	/// Reset the cache.
+	fn reset(&mut self) {
+		self.lru.clear();
+	}
+}
+
 /// The inner of [`SharedTrieCache`].
 pub(super) struct SharedTrieCacheInner<H: Hasher> {
 	node_cache: SharedNodeCache<H::Out>,
 	value_cache: SharedValueCache<H::Out>,
+	kv_cache: SharedKVCache,
 }
 
 impl<H: Hasher> SharedTrieCacheInner<H> {
@@ -579,6 +652,11 @@ impl<H: Hasher> SharedTrieCacheInner<H> {
 	/// Returns a mutable reference to the [`SharedValueCache`].
 	pub(super) fn value_cache_mut(&mut self) -> &mut SharedValueCache<H::Out> {
 		&mut self.value_cache
+	}
+
+	/// Returns a mutable reference to the [`KVValueCache`].
+	pub(super) fn kv_cache_mut(&mut self) -> &mut SharedKVCache {
+		&mut self.kv_cache
 	}
 
 	/// Returns a reference to the [`SharedNodeCache`].
@@ -615,14 +693,24 @@ impl<H: Hasher> SharedTrieCache<H> {
 	pub fn new(cache_size: CacheSize) -> Self {
 		let total_budget = cache_size.0;
 
-		// Split our memory budget between the two types of caches.
-		let value_cache_budget = (total_budget as f32 * 0.20) as usize; // 20% for the value cache
-		let node_cache_budget = total_budget - value_cache_budget; // 80% for the node cache
+		let kv_mode =
+			std::env::var("DB_KV_MODE").map(|s| s.parse().unwrap_or(false)).unwrap_or(false);
+		let (value_cache_ratio, kv_cache_ratio) = if  kv_mode {
+			(0f32, 1f32)
+		} else {
+			(0.2f32, 0f32)
+		};
+
+		// Split our memory budget between the three types of caches.
+		let value_cache_budget = (total_budget as f32 * value_cache_ratio) as usize;
+		let kv_cache_budget = (total_budget as f32 * kv_cache_ratio) as usize;
+		let node_cache_budget = total_budget - value_cache_budget - kv_cache_budget; // rest for the node cache
 
 		// Split our memory budget between what we'll be holding inline in the map,
 		// and what we'll be holding on the heap.
 		let value_cache_inline_budget = (value_cache_budget as f32 * 0.70) as usize;
 		let node_cache_inline_budget = (node_cache_budget as f32 * 0.70) as usize;
+		let kv_cache_inline_budget = (kv_cache_budget as f32 * 0.70) as usize;
 
 		// Calculate how much memory the maps will be allowed to hold inline given our budget.
 		let value_cache_max_inline_size =
@@ -633,18 +721,24 @@ impl<H: Hasher> SharedTrieCache<H> {
 		let node_cache_max_inline_size =
 			SharedNodeCacheMap::<H::Out>::memory_usage_for_memory_budget(node_cache_inline_budget);
 
+		let kv_cache_max_inline_size =
+			KValueCacheMap::memory_usage_for_memory_budget(kv_cache_inline_budget);
+
 		// And this is how much data we'll at most keep on the heap for each cache.
 		let value_cache_max_heap_size = value_cache_budget - value_cache_max_inline_size;
 		let node_cache_max_heap_size = node_cache_budget - node_cache_max_inline_size;
+		let kv_cache_max_heap_size = kv_cache_budget - kv_cache_max_inline_size;
 
 		tracing::debug!(
 			target: super::LOG_TARGET,
-			"Configured a shared trie cache with a budget of ~{} bytes (node_cache_max_inline_size = {}, node_cache_max_heap_size = {}, value_cache_max_inline_size = {}, value_cache_max_heap_size = {})",
+			"Configured a shared trie cache with a budget of ~{} bytes (node_cache_max_inline_size = {}, node_cache_max_heap_size = {}, value_cache_max_inline_size = {}, value_cache_max_heap_size = {}, kv_cache_max_inline_size = {}, kv_cache_max_heap_size = {})",
 			total_budget,
 			node_cache_max_inline_size,
 			node_cache_max_heap_size,
 			value_cache_max_inline_size,
 			value_cache_max_heap_size,
+			kv_cache_max_inline_size,
+			kv_cache_max_heap_size,
 		);
 
 		Self {
@@ -657,6 +751,10 @@ impl<H: Hasher> SharedTrieCache<H> {
 					value_cache_max_inline_size,
 					value_cache_max_heap_size,
 				),
+				kv_cache: SharedKVCache::new(
+					kv_cache_max_inline_size,
+					kv_cache_max_heap_size,
+				),
 			})),
 		}
 	}
@@ -666,6 +764,7 @@ impl<H: Hasher> SharedTrieCache<H> {
 		super::LocalTrieCache {
 			shared: self.clone(),
 			node_cache: Default::default(),
+			kv_cache: Default::default(),
 			value_cache: Default::default(),
 			shared_value_cache_access: Mutex::new(super::ValueAccessSet::with_hasher(
 				schnellru::ByLength::new(super::SHARED_VALUE_CACHE_MAX_PROMOTED_KEYS),
@@ -683,6 +782,12 @@ impl<H: Hasher> SharedTrieCache<H> {
 	#[inline]
 	pub fn peek_node(&self, key: &H::Out) -> Option<NodeOwned<H::Out>> {
 		self.inner.read().node_cache.lru.peek(key).cloned()
+	}
+
+	/// Get a copy of the kv value for `key`.
+	#[inline]
+	pub fn peek_kv_value(&self, key: &[u8]) -> Option<kv_db::DBValue> {
+		self.inner.read().kv_cache.lru.peek(key).cloned()
 	}
 
 	/// Get a copy of the [`CachedValue`] for `key`.

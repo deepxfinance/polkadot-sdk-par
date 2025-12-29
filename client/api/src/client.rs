@@ -57,12 +57,6 @@ pub trait BlockOf {
 	type Type: BlockT;
 }
 
-/// Requirement for a client to get a new copy with just a new executor.
-pub trait CloneForExecution {
-	/// Clone a copy for new executor.
-	fn clone_for_execution(&self) -> Self;
-}
-
 /// A source of blockchain events.
 pub trait BlockchainEvents<Block: BlockT> {
 	/// Get block import event stream.

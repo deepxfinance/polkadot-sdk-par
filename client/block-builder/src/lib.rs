@@ -26,6 +26,7 @@
 
 #![warn(missing_docs)]
 
+use std::sync::Arc;
 use codec::Encode;
 
 use sp_api::{
@@ -121,6 +122,17 @@ where
 		parent: Block::Hash,
 		inherent_digests: Digest,
 		record_proof: R,
+		context: Option<ExecutionContext>,
+	) -> sp_blockchain::Result<BlockBuilder<Block, RA, B>>;
+
+	/// Create a new block with some state.
+	///
+	/// This is used to copy other builder.
+	fn new_with_other(
+		&self,
+		parent: Block::Hash,
+		estimated_header_size: usize,
+		context: Option<ExecutionContext>,
 	) -> sp_blockchain::Result<BlockBuilder<Block, RA, B>>;
 
 	/// Create a new block, built on the head of the chain.
@@ -132,15 +144,18 @@ where
 
 /// Utility for building new (valid) blocks from a stream of extrinsics.
 pub struct BlockBuilder<'a, Block: BlockT, A: ProvideRuntimeApi<Block>, B> {
+	/// execution context,
+	pub context: ExecutionContext,
 	/// current applied extrinsic list.
 	pub extrinsics: Vec<Block::Extrinsic>,
 	/// Runtime api env.
 	pub api: ApiRef<'a, A::Api>,
-	version: u32,
+	/// api_version.
+	pub version: u32,
 	/// parent hash
 	pub parent_hash: Block::Hash,
 	/// backend
-	pub backend: &'a B,
+	pub backend: &'a Arc<B>,
 	/// The estimated size of the block header.
 	pub estimated_header_size: usize,
 }
@@ -164,7 +179,8 @@ where
 		parent_number: NumberFor<Block>,
 		record_proof: RecordProof,
 		inherent_digests: Digest,
-		backend: &'a B,
+		backend: &'a Arc<B>,
+		context: Option<ExecutionContext>,
 	) -> Result<Self, Error> {
 		let header = <<Block as BlockT>::Header as HeaderT>::new(
 			parent_number + One::one(),
@@ -181,10 +197,10 @@ where
 		if record_proof.yes() {
 			api.record_proof();
 		}
-
+		let context = context.unwrap_or(ExecutionContext::BlockConstruction);
 		api.initialize_block_with_context(
 			parent_hash,
-			ExecutionContext::BlockConstruction,
+			context.clone(),
 			&header,
 		)?;
 
@@ -193,6 +209,32 @@ where
 			.ok_or_else(|| Error::VersionInvalid("BlockBuilderApi".to_string()))?;
 
 		Ok(Self {
+			context,
+			parent_hash,
+			extrinsics: Vec::new(),
+			api,
+			version,
+			backend,
+			estimated_header_size,
+		})
+	}
+
+	/// Create new BlockBuilder with other state.
+	pub fn new_with_other(
+		api: &'a A,
+		parent_hash: Block::Hash,
+		estimated_header_size: usize,
+		backend: &'a Arc<B>,
+		context: Option<ExecutionContext>,
+	) -> Result<Self, Error> {
+		let api = api.runtime_api();
+		let version = api
+			.api_version::<dyn BlockBuilderApi<Block>>(parent_hash)?
+			.ok_or_else(|| Error::VersionInvalid("BlockBuilderApi".to_string()))?;
+
+		let context = context.unwrap_or(ExecutionContext::BlockConstruction);
+		Ok(Self {
+			context,
 			parent_hash,
 			extrinsics: Vec::new(),
 			api,
@@ -215,28 +257,103 @@ where
 				#[allow(deprecated)]
 				api.apply_extrinsic_before_version_6_with_context(
 					parent_hash,
-					ExecutionContext::BlockConstruction,
+					self.context.clone(),
 					xt.clone(),
 				)
 				.map(legacy::byte_sized_error::convert_to_latest)
 			} else {
 				api.apply_extrinsic_with_context(
 					parent_hash,
-					ExecutionContext::BlockConstruction,
+					self.context.clone(),
 					xt.clone(),
 				)
 			};
 
+			extrinsics.push(xt);
 			match res {
-				Ok(Ok(_)) => {
-					extrinsics.push(xt);
-					TransactionOutcome::Commit(Ok(()))
-				},
-				Ok(Err(tx_validity)) => TransactionOutcome::Rollback(Err(
+				Ok(Ok(_)) => TransactionOutcome::Commit(Ok(())),
+				Ok(Err(tx_validity)) => TransactionOutcome::Commit(Err(
 					ApplyExtrinsicFailed::Validity(tx_validity).into(),
 				)),
 				Err(e) => TransactionOutcome::Rollback(Err(Error::from(e))),
 			}
+		})
+	}
+
+	/// Push onto the block's list of extrinsics.
+	pub fn push_batch(&mut self, xts: Vec<<Block as BlockT>::Extrinsic>, timeout: std::time::Duration)
+		-> (Vec<Result<(), Error>>, Vec<(usize, Error)>, Vec<(usize, Error)>)
+	{
+		let parent_hash = self.parent_hash;
+		let extrinsics = &mut self.extrinsics;
+		let version = self.version;
+		let mut invalid = Vec::new();
+		let mut future_or_exhausted = Vec::new();
+        let mut batch_results = Vec::with_capacity(xts.len());
+
+		self.api.execute_in_transaction(|api| {
+			let res = if version < 6 {
+				let start = std::time::Instant::now();
+				for (i, xt) in xts.clone().into_iter().enumerate() {
+					#[allow(deprecated)]
+					match api.apply_extrinsic_before_version_6_with_context(
+						parent_hash,
+						self.context.clone(),
+						xt.clone(),
+					)
+						.map(legacy::byte_sized_error::convert_to_latest) {
+						Ok(result) => {
+                            if let Err(e) = &result {
+								if e.exhausted_resources() || e.future() {
+									future_or_exhausted.push((i, ApplyExtrinsicFailed::Validity(*e).into()));
+								} else {
+									invalid.push((i, ApplyExtrinsicFailed::Validity(*e).into()));
+								}
+                            }
+							batch_results.push(result.map_err(|e| ApplyExtrinsicFailed::Validity(e).into()));
+                        },
+						Err(e) => {
+							invalid.push((i, Error::from(e)));
+							break;
+						},
+					}
+					if start.elapsed() >= timeout {
+						break;
+					}
+				}
+				batch_results
+			} else {
+				match api.apply_extrinsics_with_context(
+					parent_hash,
+					ExecutionContext::BlockConstruction,
+					xts.clone(),
+					timeout.as_nanos(),
+				) {
+					Ok(results) => {
+                        for (i, result) in results.into_iter().enumerate() {
+                            if let Err(e) = &result {
+								if e.exhausted_resources() || e.future() {
+									future_or_exhausted.push((i, ApplyExtrinsicFailed::Validity(*e).into()));
+								} else {
+									invalid.push((i, ApplyExtrinsicFailed::Validity(*e).into()));
+								}
+                            }
+							batch_results.push(result.map_err(|e| ApplyExtrinsicFailed::Validity(e).into()));
+                        }
+                        batch_results
+					},
+					Err(e) => {
+						invalid.push((0, Error::from(e)));
+						vec![]
+					},
+				}
+			};
+			let mut results = Vec::new();
+			for (res, xt) in res.into_iter().zip(xts.into_iter()) {
+				extrinsics.push(xt.clone());
+				results.push(res.map(|_| ()));
+			}
+			TransactionOutcome::Commit((results, invalid, future_or_exhausted))
 		})
 	}
 
@@ -335,6 +452,7 @@ mod tests {
 			RecordProof::Yes,
 			Default::default(),
 			&*backend,
+			None,
 		)
 		.unwrap()
 		.build()
@@ -366,6 +484,7 @@ mod tests {
 			RecordProof::Yes,
 			Default::default(),
 			&*backend,
+			None,
 		)
 		.unwrap();
 
@@ -382,6 +501,7 @@ mod tests {
 			RecordProof::Yes,
 			Default::default(),
 			&*backend,
+			None,
 		)
 		.unwrap();
 

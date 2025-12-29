@@ -69,6 +69,9 @@ pub enum Error {
 
 	#[error("The pool is not accepting future transactions")]
 	RejectedFutureTransaction,
+
+	#[error("RCGroup: {0}")]
+	GroupInfo(String),
 }
 
 /// Transaction pool error conversion.

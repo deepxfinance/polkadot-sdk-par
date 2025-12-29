@@ -20,10 +20,18 @@
 use codec::{Decode, Encode};
 use sp_std::prelude::*;
 
+#[cfg(feature = "std")]
+lazy_static::lazy_static! {
+	pub static ref GLOBAL_ENCODE: std::sync::Mutex<std::collections::HashMap<Vec<u8>, Vec<(std::time::Duration, usize)>>> = std::sync::Mutex::new(std::collections::HashMap::new());
+	pub static ref GLOBAL_DECODE: std::sync::Mutex<std::collections::HashMap<Vec<u8>, Vec<(std::time::Duration, usize)>>> = std::sync::Mutex::new(std::collections::HashMap::new());
+}
+
 /// Return the value of the item in storage under `key`, or `None` if there is no explicit entry.
 pub fn get<T: Decode + Sized>(key: &[u8]) -> Option<T> {
 	sp_io::storage::get(key).and_then(|val| {
-		Decode::decode(&mut &val[..]).map(Some).unwrap_or_else(|e| {
+		#[cfg(feature = "std")]
+		let start = std::time::Instant::now();
+		let res = Decode::decode(&mut &val[..]).map(Some).unwrap_or_else(|e| {
 			// TODO #3700: error should be handleable.
 			log::error!(
 				target: "runtime::storage",
@@ -32,7 +40,22 @@ pub fn get<T: Decode + Sized>(key: &[u8]) -> Option<T> {
 				e,
 			);
 			None
-		})
+		});
+		#[cfg(feature = "std")]
+		if res.is_some() {
+			let time = start.elapsed();
+			let mut lock = GLOBAL_DECODE.lock().unwrap();
+			let mut key = key.to_vec();
+			if key.len() > 32 {
+				key.resize(32, 0);
+			}
+			if let Some(v) = lock.get_mut(&key) {
+				v.push((time, val.len()));
+			} else {
+				lock.insert(key, vec![(time, val.len())]);
+			}
+		}
+		res
 	})
 }
 
@@ -56,7 +79,25 @@ pub fn get_or_else<T: Decode + Sized, F: FnOnce() -> T>(key: &[u8], default_valu
 
 /// Put `value` in storage under `key`.
 pub fn put<T: Encode + ?Sized>(key: &[u8], value: &T) {
-	value.using_encoded(|slice| sp_io::storage::set(key, slice));
+	#[cfg(feature = "std")]
+	let start = std::time::Instant::now();
+	let slice = value.encode();
+	#[cfg(feature = "std")]
+	{
+		let time = start.elapsed();
+		let mut lock = GLOBAL_ENCODE.lock().unwrap();
+		let mut key = key.to_vec();
+		if key.len() > 32 {
+			key.resize(32, 0);
+		}
+		if let Some(v) = lock.get_mut(&key) {
+			v.push((time, slice.len()));
+		} else {
+			lock.insert(key, vec![(time, slice.len())]);
+		}
+	}
+	sp_io::storage::set(key, slice.as_slice());
+	// value.using_encoded(|slice| sp_io::storage::set(key, slice));
 }
 
 /// Remove `key` from storage, returning its value if it had an explicit entry or `None` otherwise.

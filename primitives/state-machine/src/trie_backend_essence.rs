@@ -39,7 +39,7 @@ use sp_trie::{
 };
 #[cfg(feature = "std")]
 use std::{collections::HashMap, sync::Arc};
-
+use kv_db::{KVCache, KVDBMut, KVMut, KV, KVDB};
 // In this module, we only use layout for read operation and empty root,
 // where V1 and V0 are equivalent.
 use sp_trie::LayoutV1 as Layout;
@@ -383,6 +383,34 @@ impl<S: TrieBackendStorage<H>, H: Hasher, C: AsLocalTrieCache<H>> TrieBackendEss
 	) -> R {
 		callback(None, None).1
 	}
+
+	/// Call the given closure passing it the cache.
+	#[cfg(feature = "std")]
+	#[inline]
+	fn with_kv_cache<R>(
+		&self,
+		callback: impl FnOnce(
+			Option<&mut dyn KVCache<H>>,
+		) -> R,
+	) -> R {
+		if let Some(local_cache) = self.trie_node_cache.as_ref() {
+			let mut cache = local_cache.as_local_trie_cache().as_trie_db_mut_cache();
+			callback(Some(&mut cache))
+		} else {
+			callback(None)
+		}
+	}
+
+	#[cfg(not(feature = "std"))]
+	#[inline]
+	fn with_kv_cache<R>(
+		&self,
+		callback: impl FnOnce(
+			Option<&mut dyn KVCache<H>>,
+		) -> R,
+	) -> R {
+		callback(None)
+	}
 }
 
 impl<S: TrieBackendStorage<H>, H: Hasher, C: AsLocalTrieCache<H> + Send + Sync>
@@ -516,12 +544,28 @@ where
 		})
 	}
 
+	/// Returns the hash value
+	pub fn kv_storage_hash(&self, key: &[u8]) -> Result<Option<H::Out>> {
+		let map_e = |e| format!("Trie lookup error: {}", e);
+
+		self.with_kv_cache(|cache| {
+			KVDB::new(self, &self.root, cache).get_hash(key).map_err(map_e)
+		})
+	}
+
 	/// Get the value of storage at given key.
 	pub fn storage(&self, key: &[u8]) -> Result<Option<StorageValue>> {
 		let map_e = |e| format!("Trie lookup error: {}", e);
 
 		self.with_recorder_and_cache(None, |recorder, cache| {
 			read_trie_value::<Layout<H>, _>(self, &self.root, key, recorder, cache).map_err(map_e)
+		})
+	}
+
+	/// Get the value of storage at given key by kv_db.
+	pub fn kv_storage(&self, key: &[u8]) -> Result<Option<StorageValue>> {
+		self.with_kv_cache(|cache| {
+			Ok(KVDB::new(self, &self.root, cache).get(key))
 		})
 	}
 
@@ -570,6 +614,18 @@ where
 				cache,
 			)
 			.map_err(map_e)
+		})
+	}
+
+	/// Get the value of child storage at given key by kv_db.
+	pub fn kv_child_storage(
+		&self,
+		child_info: &ChildInfo,
+		key: &[u8],
+	) -> Result<Option<StorageValue>> {
+		self.with_kv_cache(|cache| {
+			let child_key = [child_info.storage_key(), key].concat();
+			Ok(KVDB::new(self, &self.root, cache).get(&child_key))
 		})
 	}
 
@@ -647,6 +703,27 @@ where
 		(root, write_overlay)
 	}
 
+	/// Return the storage kv_db transaction.
+	pub fn kv_storage_root<'a>(
+		&self,
+		delta: impl Iterator<Item = (&'a [u8], Option<&'a [u8]>)>,
+		_state_version: StateVersion,
+	) -> (H::Out, S::Overlay) {
+		let mut write_overlay = S::Overlay::default();
+		self.with_kv_cache(|cache| {
+			let mut kvdb = KVDBMut::new(&mut write_overlay, &self.root, cache);
+			for (k, v) in delta {
+				if let Some(v) = v {
+					kvdb.insert(k, v.to_vec());
+				} else {
+					kvdb.remove(k);
+				}
+			}
+			let changes_root = kvdb.commit();
+			(changes_root, write_overlay)
+		})
+	}
+
 	/// Returns the child storage root for the child trie `child_info` after applying the given
 	/// `delta`.
 	pub fn child_storage_root<'a>(
@@ -702,6 +779,29 @@ where
 		let is_default = new_child_root == default_root;
 
 		(new_child_root, is_default, write_overlay)
+	}
+
+	/// Returns the child storage kv_db transaction.
+	pub fn kv_child_storage_root<'a>(
+		&self,
+		child_info: &ChildInfo,
+		delta: impl Iterator<Item = (&'a [u8], Option<&'a [u8]>)>,
+		_state_version: StateVersion,
+	) -> (H::Out, bool, S::Overlay) {
+		let mut write_overlay = S::Overlay::default();
+		self.with_kv_cache(|cache| {
+			let mut kvdb = KVDBMut::new(&mut write_overlay, &self.root, cache);
+			for (k, v) in delta {
+				let k = [child_info.storage_key(), k].concat();
+				if let Some(v) = v {
+					kvdb.insert(&k, v.to_vec());
+				} else {
+					kvdb.remove(&k);
+				}
+			}
+			let changes_root = kvdb.commit();
+			(changes_root, true, write_overlay)
+		})
 	}
 }
 

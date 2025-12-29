@@ -104,6 +104,12 @@ pub struct OverlayedChanges {
 	collect_extrinsics: bool,
 	/// Collect statistic on this execution.
 	stats: StateMachineStats,
+	#[cfg(feature = "std")]
+	exe_times: Vec<(Vec<u8>, [u128; 4])>,
+	#[cfg(feature = "std")]
+	commit_time: u128,
+	#[cfg(feature = "std")]
+	rollback_time: u128,
 }
 
 /// Error type returned when merge [OverlayedChanges].
@@ -138,11 +144,57 @@ impl sp_std::fmt::Debug for MergeErr {
 }
 
 impl OverlayedChanges {
+	pub fn commit_rollback_time(&self) -> (u128, u128) {
+		#[cfg(feature = "std")]
+		{(self.commit_time, self.rollback_time)}
+		#[cfg(not(feature = "std"))]
+		(0, 0)
+	}
+
+	pub fn execute_time(&mut self, method: &str, times: [u128; 4]) {
+		#[cfg(feature = "std")]
+		self.exe_times.push((method.as_bytes().to_vec(), times));
+	}
+
+	pub fn get_execute_times(&self) -> Vec<(Vec<u8>, [u128; 4])> {
+		#[cfg(feature = "std")]
+		{ self.exe_times.clone() }
+		#[cfg(not(feature = "std"))]
+		Vec::new()
+	}
+
+	pub fn execute_times(&self) -> Vec<(Vec<u8>, [u128; 4])> {
+		#[cfg(feature = "std")]
+		{ self.exe_times.clone() }
+		#[cfg(not(feature = "std"))]
+		Vec::new()
+	}
+
+	// get all top changes' key which start with prefix.
+	pub fn top_keys_by_prefix(&self, prefix: &StorageKey) -> Vec<StorageKey> {
+		let mut previous_key = prefix.clone();
+		let mut keys = Vec::new();
+		loop {
+			match self.top
+				.changes_after(&previous_key)
+				.find_map(|(k, v)| v.value().map(|_| k.to_vec()))
+				.filter(|n| n.starts_with(prefix))
+			{
+				Some(key) => {
+					previous_key = key.clone();
+					keys.push(key);
+				}
+				None => break,
+			}
+		}
+		keys
+	}
+
 	/// get keys for top changes.
 	pub fn top_keys(&self) -> Vec<StorageKey> {
 		self.top.changes().map(|(k, _)| k.clone()).collect()
 	}
-	
+
 	/// get top change for some key
 	pub fn top_change(&self, key: &StorageKey) -> Option<Option<StorageValue>> {
 		self.top.get(key).map(|e| e.value_ref().clone())
@@ -493,6 +545,8 @@ impl OverlayedChanges {
 	/// Any changes made during that transaction are discarded. Returns an error if
 	/// there is no open transaction that can be rolled back.
 	pub fn rollback_transaction(&mut self) -> Result<(), NoOpenTransaction> {
+		#[cfg(feature = "std")]
+		let rollback_start = std::time::Instant::now();
 		self.top.rollback_transaction()?;
 		retain_map(&mut self.children, |_, (changeset, _)| {
 			changeset
@@ -504,6 +558,8 @@ impl OverlayedChanges {
 			.overlay_mut()
 			.rollback_transaction()
 			.expect("Top and offchain changesets are started in lockstep; qed");
+		#[cfg(feature = "std")]
+		{ self.rollback_time += rollback_start.elapsed().as_nanos(); }
 		Ok(())
 	}
 
@@ -512,6 +568,8 @@ impl OverlayedChanges {
 	/// Any changes made during that transaction are committed. Returns an error if there
 	/// is no open transaction that can be committed.
 	pub fn commit_transaction(&mut self) -> Result<(), NoOpenTransaction> {
+		#[cfg(feature = "std")]
+		let commit_start = std::time::Instant::now();
 		self.top.commit_transaction()?;
 		for (_, (changeset, _)) in self.children.iter_mut() {
 			changeset
@@ -522,6 +580,8 @@ impl OverlayedChanges {
 			.overlay_mut()
 			.commit_transaction()
 			.expect("Top and offchain changesets are started in lockstep; qed");
+		#[cfg(feature = "std")]
+		{ self.commit_time += commit_start.elapsed().as_nanos(); }
 		Ok(())
 	}
 

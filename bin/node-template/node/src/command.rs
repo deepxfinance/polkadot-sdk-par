@@ -101,8 +101,14 @@ pub fn run() -> sc_cli::Result<()> {
 			runner.async_run(|config| {
 				let PartialComponents { client, task_manager, backend, .. } =
 					service::new_partial(&config)?;
-				let aux_revert = Box::new(|client, _, blocks| {
-					sc_consensus_grandpa::revert(client, blocks)?;
+				let aux_revert = Box::new(|client: std::sync::Arc<service::FullClient>, _, blocks| {
+					// default we request revert_to should be Latest;
+					if blocks > 0u32.into() {
+						return Err(sc_cli::Error::Input("!!!HotstuffRevert to latest, block number should not > 0, please add `0` number to last command".to_string()));
+					}
+					if let Err(e) = hotstuff_consensus::revert::revert(&client) {
+						println!("!!!HotstuffRevert failed for {e:?}");
+					}
 					Ok(())
 				});
 				Ok((cmd.run(client, backend, Some(aux_revert)), task_manager))

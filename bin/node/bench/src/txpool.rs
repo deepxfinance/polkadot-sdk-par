@@ -22,10 +22,10 @@
 //! the transaction pool for the next block.
 
 use std::borrow::Cow;
-
+use std::sync::Arc;
 use node_testing::bench::{BenchDb, BlockType, DatabaseType, KeyTypes, Profile};
 
-use sc_transaction_pool::BasicPool;
+use sc_transaction_pool::{BasicPool, DefaultRCGroup, FullPool};
 use sc_transaction_pool_api::{TransactionPool, TransactionSource};
 use sp_runtime::generic::BlockId;
 
@@ -70,7 +70,7 @@ impl core::Benchmark for PoolBenchmark {
 		}
 
 		let executor = sp_core::testing::TaskExecutor::new();
-		let txpool = BasicPool::new_full(
+		let txpool: Arc<FullPool<_, _, DefaultRCGroup>> = BasicPool::new_full(
 			Default::default(),
 			true.into(),
 			None,

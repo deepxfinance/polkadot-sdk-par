@@ -73,7 +73,7 @@ use sp_runtime::{
 		self, BlakeTwo256, Block as BlockT, Bounded, ConvertInto, NumberFor, OpaqueKeys,
 		SaturatedConversion, StaticLookup,
 	},
-	transaction_validity::{TransactionPriority, TransactionSource, TransactionValidity},
+	transaction_validity::{TransactionPriority, TransactionSource, TransactionValidity, InvalidTransaction, TransactionValidityError},
 	ApplyExtrinsicResult, FixedPointNumber, FixedU128, Perbill, Percent, Permill, Perquintill,
 };
 use sp_std::prelude::*;
@@ -2046,6 +2046,10 @@ impl_runtime_apis! {
 			Executive::apply_extrinsic(extrinsic)
 		}
 
+		fn apply_extrinsics(extrinsics: Vec<<Block as BlockT>::Extrinsic>, timeout: u128) -> sp_std::vec::Vec<ApplyExtrinsicResult> {
+			Executive::apply_extrinsics(extrinsics, timeout, None)
+		}
+
 		fn finalize_block() -> <Block as BlockT>::Header {
 			Executive::finalize_block()
 		}
@@ -2066,6 +2070,12 @@ impl_runtime_apis! {
 			block_hash: <Block as BlockT>::Hash,
 		) -> TransactionValidity {
 			Executive::validate_transaction(source, tx, block_hash)
+		}
+		fn validate_transactions(
+			txs: Vec<(TransactionSource, <Block as BlockT>::Extrinsic)>,
+			block_hash: <Block as BlockT>::Hash,
+		) -> Vec<TransactionValidity> {
+			Executive::validate_transactions(txs, block_hash)
 		}
 	}
 

@@ -205,6 +205,7 @@ members = [
 	"primitives/io",
 	"primitives/keyring",
 	"primitives/keystore",
+	"primitives/kv-db",
 	"primitives/maybe-compressed-blob",
 	"primitives/merkle-mountain-range",
 	"primitives/metadata-ir",
@@ -225,6 +226,7 @@ members = [
 	"primitives/statement-store",
 	"primitives/std",
 	"primitives/storage",
+	"primitives/spot-api",
 	"primitives/test-primitives",
 	"primitives/timestamp",
 	"primitives/tracing",
@@ -258,6 +260,9 @@ members = [
 	"utils/prometheus",
 	"utils/wasm-builder",
 	"utils/binary-merkle-tree",
+	"hotstuff/consensus",
+	"hotstuff/pallets/hotstuff",
+	"hotstuff/primitives",
 ]
 
 # The list of dependencies below (which can be both direct and indirect dependencies) are crates

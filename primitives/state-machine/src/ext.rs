@@ -32,7 +32,7 @@ use sp_core::storage::{
 use sp_externalities::{Extension, ExtensionStore, Externalities, MultiRemovalResults};
 use sp_trie::{empty_child_trie_root, LayoutV1};
 
-use crate::{log_error, trace, warn, StorageTransactionCache};
+use crate::{log_error, trace, warn, debug, StorageTransactionCache};
 use sp_std::{
 	any::{Any, TypeId},
 	boxed::Box,
@@ -42,6 +42,8 @@ use sp_std::{
 };
 #[cfg(feature = "std")]
 use std::error;
+#[cfg(feature = "std")]
+use std::sync::RwLock;
 
 const EXT_NOT_ALLOWED_TO_FAIL: &str = "Externalities not allowed to fail within runtime";
 const BENCHMARKING_FN: &str = "\
@@ -108,6 +110,12 @@ where
 	/// Extensions registered with this instance.
 	#[cfg(feature = "std")]
 	extensions: Option<OverlayedExtensions<'a>>,
+	#[cfg(feature = "std")]
+	read_time: RwLock<u128>,
+	#[cfg(feature = "std")]
+	b_read_time: RwLock<u128>,
+	#[cfg(feature = "std")]
+	write_time: RwLock<u128>,
 }
 
 impl<'a, H, B> Ext<'a, H, B>
@@ -139,6 +147,9 @@ where
 			storage_transaction_cache,
 			id: rand::random(),
 			extensions: extensions.map(OverlayedExtensions::new),
+			read_time: RwLock::new(0),
+			b_read_time: RwLock::new(0),
+			write_time: RwLock::new(0),
 		}
 	}
 
@@ -179,18 +190,53 @@ where
 	H::Out: Ord + 'static + codec::Codec,
 	B: Backend<H>,
 {
+	fn io_time(&self) -> (u128, u128, u128) {
+		#[cfg(feature = "std")]
+		{
+			let mut read_time = self.read_time.write().unwrap();
+			let r_time = *read_time;
+			let mut b_read_time = self.b_read_time.write().unwrap();
+			let b_r_time = *b_read_time;
+			let mut write_time = self.write_time.write().unwrap();
+			let w_time = *write_time;
+			*read_time = 0;
+			*b_read_time = 0;
+			*write_time = 0;
+			(r_time, b_r_time, w_time)
+		}
+		#[cfg(not(feature = "std"))]
+		(0, 0, 0)
+	}
+
+	fn execute_time(&mut self, method: &str, times: [u128; 4]) {
+		self.overlay.execute_time(method, times);
+	}
+
 	fn set_offchain_storage(&mut self, key: &[u8], value: Option<&[u8]>) {
 		self.overlay.set_offchain_storage(key, value)
 	}
 
 	fn storage(&self, key: &[u8]) -> Option<StorageValue> {
+		#[cfg(feature = "std")]
+		let start = std::time::Instant::now();
+		let mut backend = false;
 		let _guard = guard();
 		let result = self
 			.overlay
 			.storage(key)
 			.map(|x| x.map(|x| x.to_vec()))
-			.unwrap_or_else(|| self.backend.storage(key).expect(EXT_NOT_ALLOWED_TO_FAIL));
-
+			.unwrap_or_else(|| { backend = true; self.backend.storage(key).expect(EXT_NOT_ALLOWED_TO_FAIL) });
+		#[cfg(feature = "std")]
+		{
+			let time = start.elapsed().as_nanos();
+			*self.read_time.write().unwrap() += time;
+			if backend {
+				*self.b_read_time.write().unwrap() += time;
+			}
+			if time >= 1000 {
+				debug!(target: "ext-dev", "ext {} get storage key: {key:?}, time: {time} nanos, backend: {backend}", self.id);
+			}
+		}
 		// NOTE: be careful about touching the key names – used outside substrate!
 		trace!(
 			target: "state",
@@ -391,6 +437,8 @@ where
 	}
 
 	fn place_storage(&mut self, key: StorageKey, value: Option<StorageValue>) {
+		#[cfg(feature = "std")]
+		let start = std::time::Instant::now();
 		let _guard = guard();
 		if is_child_storage_key(&key) {
 			warn!(target: "trie", "Refuse to directly set child storage key");
@@ -413,7 +461,15 @@ where
 		);
 
 		self.mark_dirty();
-		self.overlay.set_storage(key, value);
+		self.overlay.set_storage(key.clone(), value);
+		#[cfg(feature = "std")]
+		{
+			let time = start.elapsed().as_nanos();
+			*self.write_time.write().unwrap() += time;
+			if time >= 1000 {
+				debug!(target: "ext-dev", "ext {} place storage key {key:?}, time: {} nanos", start.elapsed().as_nanos(), self.id);
+			}
+		}
 	}
 
 	fn place_child_storage(
@@ -513,6 +569,8 @@ where
 	}
 
 	fn storage_append(&mut self, key: Vec<u8>, value: Vec<u8>) {
+		#[cfg(feature = "std")]
+		let start = std::time::Instant::now();
 		trace!(
 			target: "state",
 			method = "Append",
@@ -529,6 +587,14 @@ where
 			backend.storage(&key).expect(EXT_NOT_ALLOWED_TO_FAIL).unwrap_or_default()
 		});
 		StorageAppend::new(current_value).append(value);
+		#[cfg(feature = "std")]
+		{
+			let time = start.elapsed().as_nanos();
+			*self.write_time.write().unwrap() += time;
+			if time >= 1000 {
+				debug!(target: "ext-dev", "ext {} append storage key {key:?}, time: {} nanos", start.elapsed().as_nanos(), self.id);
+			}
+		}
 	}
 
 	fn storage_root(&mut self, state_version: StateVersion) -> Vec<u8> {

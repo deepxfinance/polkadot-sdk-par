@@ -105,6 +105,8 @@ pub struct Transaction<Hash, Extrinsic> {
 	pub propagate: bool,
 	/// Source of that transaction.
 	pub source: Source,
+	/// Special group info.
+	pub group_info: Vec<Vec<u8>>,
 }
 
 impl<Hash, Extrinsic> AsRef<Extrinsic> for Transaction<Hash, Extrinsic> {
@@ -144,6 +146,8 @@ impl<Hash, Extrinsic> InPoolTransaction for Transaction<Hash, Extrinsic> {
 	fn is_propagable(&self) -> bool {
 		self.propagate
 	}
+
+	fn group_info(&self) -> &[Vec<u8>] { &self.group_info }
 }
 
 impl<Hash: Clone, Extrinsic: Clone> Transaction<Hash, Extrinsic> {
@@ -163,6 +167,7 @@ impl<Hash: Clone, Extrinsic: Clone> Transaction<Hash, Extrinsic> {
 			requires: self.requires.clone(),
 			provides: self.provides.clone(),
 			propagate: self.propagate,
+			group_info: self.group_info.clone(),
 		}
 	}
 }
@@ -550,6 +555,7 @@ mod tests {
 		provides: vec![],
 		propagate: true,
 		source: Source::External,
+		group_info: vec![],
 	};
 
 	#[test]

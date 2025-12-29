@@ -210,7 +210,8 @@ pub fn expand_call(def: &mut Def) -> proc_macro2::TokenStream {
 				method.block = syn::parse_quote! {{
 					// We execute all dispatchable in a new storage layer, allowing them
 					// to return an error at any point, and undoing any storage changes.
-					#frame_support::storage::with_storage_layer(|| #block)
+					// #frame_support::storage::with_storage_layer(|| #block)
+					#block
 				}};
 			}
 		});

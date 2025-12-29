@@ -1,10 +1,10 @@
 use node_template_runtime::{
-	AccountId, AuraConfig, BalancesConfig, GenesisConfig, GrandpaConfig, Signature, SudoConfig,
+	AccountId, BalancesConfig, GenesisConfig, Signature, SudoConfig,
 	SystemConfig, WASM_BINARY,
 };
 use sc_service::ChainType;
-use sp_consensus_aura::sr25519::AuthorityId as AuraId;
-use sp_consensus_grandpa::AuthorityId as GrandpaId;
+use hotstuff_consensus::AuthorityId as HotstuffId;
+use hotstuff_primitives::RuntimeAuthorityId;
 use sp_core::{sr25519, Pair, Public};
 use sp_runtime::traits::{IdentifyAccount, Verify};
 
@@ -31,9 +31,15 @@ where
 	AccountPublic::from(get_from_seed::<TPublic>(seed)).into_account()
 }
 
-/// Generate an Aura authority key.
-pub fn authority_keys_from_seed(s: &str) -> (AuraId, GrandpaId) {
-	(get_from_seed::<AuraId>(s), get_from_seed::<GrandpaId>(s))
+/// Generate an authority key.
+/// Hotstuff BLS not supported.
+pub fn authority_keys_from_seed(s: &str) -> HotstuffId {
+	get_from_seed::<HotstuffId>(s)
+}
+
+pub fn authority_keys_from_str(id: &str) -> HotstuffId {
+	let id = id.strip_prefix("0x").expect("should have id");
+	RuntimeAuthorityId(hex::decode(id).unwrap()).into()
 }
 
 pub fn development_config() -> Result<ChainSpec, String> {
@@ -49,7 +55,18 @@ pub fn development_config() -> Result<ChainSpec, String> {
 			testnet_genesis(
 				wasm_binary,
 				// Initial PoA authorities
-				vec![authority_keys_from_seed("Alice")],
+				vec![
+					// seed: 0xf9feb7df9c22a42b13ddb756333b72e2bed7107ad47e27d0ee374fcde7b845e3
+					authority_keys_from_str("0xb924a64b63d509c53c4ddcaf2250d5c470214772dde76611d5e608cfaddf7f2a068218a333c3a13caf54a5ba77db739e03af59c6963496af6860489a6e1f79fabc793802975a2e56e0e4b10f732cfb619c85b349f0ae65b7850fec1f4e19eeb1"),
+					// seed: 0x0427d3a91a2338878ecd27abcc5fce1a8cbbc4422d6f50ae6a6af53cb54bbda1
+					authority_keys_from_str("0xb72ebf82ca150fedba25627692bd2047e3c3ad672d02ee07437f09787ad441730c99a1a40aa2d9867f1d32fd86c20a690605ba4754fa25e824af7486b261beeb0feeef9beb229d0c04f325ebd94aa32a85f30cfd1e46a8678709b265e6e735f2"),
+					// seed: 0x34ac80e2d28566637259c726a7febfe3a3fd0746174f54307449427a7fe147aa
+					authority_keys_from_str("0xa7ca99b5b874a2c83d0ad646e78757ca47b93ce7df59bd29ec4946606cbdd3ca6b88c442d61af31a8745f0507bcaf75f037d1bd552a64971bbfc0497eef9c2dd7e4826731b4af24635bb5433b5ec0e87443c4e67c91a500d525b27964627bb98"),
+					// seed: 0xa450812cd1ff9a08ee7abe0cea32ad1a2dc48d1dae06e15752a8fef3de7df9f4
+					authority_keys_from_str("0x936b4b21974369ec2f78cc972cb75cc86b71887d2596bd3410a49a7283da1737c7ce19b369b549fc7c53017cffe1c3c60c3b41e05efc75d7ce2cec9d8779488ecccdcd5a2bfb861e09f42cd44065db596d653fd2d3333e78a08021044cfff6a9"),
+					// seed: 0xa2a04e87fa6f698a7247d7df8475b37df661ebeaae6db21d8d0d929df484c1f6
+					authority_keys_from_str("0x8fd9271b34c7983240cb136dbacbd9df26e27a58621484c4bd54b3c1cfbf8144305eafb61b6190081062f674a730241e0ceb538d4c7b557f1ad41cfa969619676abd43660b36b19bca61deff3463f65d900fa82591031707f2d57313840f6432"),
+				],
 				// Sudo account
 				get_account_id_from_seed::<sr25519::Public>("Alice"),
 				// Pre-funded accounts
@@ -89,7 +106,18 @@ pub fn local_testnet_config() -> Result<ChainSpec, String> {
 			testnet_genesis(
 				wasm_binary,
 				// Initial PoA authorities
-				vec![authority_keys_from_seed("Alice"), authority_keys_from_seed("Bob")],
+				vec![
+					// seed: 0xf9feb7df9c22a42b13ddb756333b72e2bed7107ad47e27d0ee374fcde7b845e3
+					authority_keys_from_str("0xb924a64b63d509c53c4ddcaf2250d5c470214772dde76611d5e608cfaddf7f2a068218a333c3a13caf54a5ba77db739e03af59c6963496af6860489a6e1f79fabc793802975a2e56e0e4b10f732cfb619c85b349f0ae65b7850fec1f4e19eeb1"),
+					// seed: 0x0427d3a91a2338878ecd27abcc5fce1a8cbbc4422d6f50ae6a6af53cb54bbda1
+					authority_keys_from_str("0xb72ebf82ca150fedba25627692bd2047e3c3ad672d02ee07437f09787ad441730c99a1a40aa2d9867f1d32fd86c20a690605ba4754fa25e824af7486b261beeb0feeef9beb229d0c04f325ebd94aa32a85f30cfd1e46a8678709b265e6e735f2"),
+					// seed: 0x34ac80e2d28566637259c726a7febfe3a3fd0746174f54307449427a7fe147aa
+					authority_keys_from_str("0xa7ca99b5b874a2c83d0ad646e78757ca47b93ce7df59bd29ec4946606cbdd3ca6b88c442d61af31a8745f0507bcaf75f037d1bd552a64971bbfc0497eef9c2dd7e4826731b4af24635bb5433b5ec0e87443c4e67c91a500d525b27964627bb98"),
+					// seed: 0xa450812cd1ff9a08ee7abe0cea32ad1a2dc48d1dae06e15752a8fef3de7df9f4
+					authority_keys_from_str("0x936b4b21974369ec2f78cc972cb75cc86b71887d2596bd3410a49a7283da1737c7ce19b369b549fc7c53017cffe1c3c60c3b41e05efc75d7ce2cec9d8779488ecccdcd5a2bfb861e09f42cd44065db596d653fd2d3333e78a08021044cfff6a9"),
+					// seed: 0xa2a04e87fa6f698a7247d7df8475b37df661ebeaae6db21d8d0d929df484c1f6
+					authority_keys_from_str("0x8fd9271b34c7983240cb136dbacbd9df26e27a58621484c4bd54b3c1cfbf8144305eafb61b6190081062f674a730241e0ceb538d4c7b557f1ad41cfa969619676abd43660b36b19bca61deff3463f65d900fa82591031707f2d57313840f6432"),
+				],
 				// Sudo account
 				get_account_id_from_seed::<sr25519::Public>("Alice"),
 				// Pre-funded accounts
@@ -127,7 +155,7 @@ pub fn local_testnet_config() -> Result<ChainSpec, String> {
 /// Configure initial storage state for FRAME modules.
 fn testnet_genesis(
 	wasm_binary: &[u8],
-	initial_authorities: Vec<(AuraId, GrandpaId)>,
+	initial_authorities: Vec<HotstuffId>,
 	root_key: AccountId,
 	endowed_accounts: Vec<AccountId>,
 	_enable_println: bool,
@@ -141,11 +169,8 @@ fn testnet_genesis(
 			// Configure endowed accounts with initial balance of 1 << 60.
 			balances: endowed_accounts.iter().cloned().map(|k| (k, 1 << 60)).collect(),
 		},
-		aura: AuraConfig {
-			authorities: initial_authorities.iter().map(|x| (x.0.clone())).collect(),
-		},
-		grandpa: GrandpaConfig {
-			authorities: initial_authorities.iter().map(|x| (x.1.clone(), 1)).collect(),
+		hotstuff: pallet_hotstuff::GenesisConfig {
+			authorities: initial_authorities.iter().map(|x| x.clone().into()).collect(),
 		},
 		sudo: SudoConfig {
 			// Assign network admin rights.

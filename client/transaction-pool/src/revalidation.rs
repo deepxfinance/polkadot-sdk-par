@@ -31,7 +31,7 @@ use crate::{
 use sc_utils::mpsc::{tracing_unbounded, TracingUnboundedReceiver, TracingUnboundedSender};
 use sp_runtime::{
 	generic::BlockId,
-	traits::{SaturatedConversion, Zero},
+	traits::{SaturatedConversion, Zero, Block as BlockT},
 	transaction_validity::TransactionValidityError,
 };
 
@@ -51,22 +51,22 @@ struct WorkerPayload<Api: ChainApi> {
 /// Async revalidation worker.
 ///
 /// Implements future and can be spawned in place or in background.
-struct RevalidationWorker<Api: ChainApi> {
+struct RevalidationWorker<Api: ChainApi, RCG: crate::graph::RCGroup<<Api::Block as BlockT>::Extrinsic, Error=Api::Error>> {
 	api: Arc<Api>,
-	pool: Arc<Pool<Api>>,
+	pool: Arc<Pool<Api, RCG>>,
 	best_block: NumberFor<Api>,
 	block_ordered: BTreeMap<NumberFor<Api>, HashSet<ExtrinsicHash<Api>>>,
 	members: HashMap<ExtrinsicHash<Api>, NumberFor<Api>>,
 }
 
-impl<Api: ChainApi> Unpin for RevalidationWorker<Api> {}
+impl<Api: ChainApi, RCG: crate::graph::RCGroup<<Api::Block as BlockT>::Extrinsic, Error=Api::Error>> Unpin for RevalidationWorker<Api, RCG> {}
 
 /// Revalidate batch of transaction.
 ///
 /// Each transaction is validated  against chain, and invalid are
 /// removed from the `pool`, while valid are resubmitted.
-async fn batch_revalidate<Api: ChainApi>(
-	pool: Arc<Pool<Api>>,
+async fn batch_revalidate<Api: ChainApi, RCG: crate::graph::RCGroup<<Api::Block as BlockT>::Extrinsic, Error=Api::Error>>(
+	pool: Arc<Pool<Api, RCG>>,
 	api: Arc<Api>,
 	at: NumberFor<Api>,
 	batch: impl IntoIterator<Item = ExtrinsicHash<Api>>,
@@ -104,17 +104,29 @@ async fn batch_revalidate<Api: ChainApi>(
 				);
 			},
 			Ok(Ok(validity)) => {
-				revalidated.insert(
+				match ValidatedTransaction::valid_at::<RCG>(
+					at.saturated_into::<u64>(),
 					ext_hash,
-					ValidatedTransaction::valid_at(
-						at.saturated_into::<u64>(),
-						ext_hash,
-						ext.source,
-						ext.data.clone(),
-						api.hash_and_length(&ext.data).1,
-						validity,
-					),
-				);
+					ext.source,
+					ext.data.clone(),
+					api.hash_and_length(&ext.data).1,
+					validity,
+				) {
+					Ok(validated) => {
+						revalidated.insert(
+							ext_hash,
+							validated,
+						);
+					},
+					Err(e) => {
+						log::debug!(
+							target: LOG_TARGET,
+							"[{e:?}]: Removing due to error during revalidation: {}",
+							ext_hash,
+						);
+						invalid_hashes.push(ext_hash);
+					},
+				};
 			},
 			Err(validation_err) => {
 				log::debug!(
@@ -134,8 +146,8 @@ async fn batch_revalidate<Api: ChainApi>(
 	}
 }
 
-impl<Api: ChainApi> RevalidationWorker<Api> {
-	fn new(api: Arc<Api>, pool: Arc<Pool<Api>>) -> Self {
+impl<Api: ChainApi, RCG: crate::graph::RCGroup<<Api::Block as BlockT>::Extrinsic, Error=Api::Error>> RevalidationWorker<Api, RCG> {
+	fn new(api: Arc<Api>, pool: Arc<Pool<Api, RCG>>) -> Self {
 		Self {
 			api,
 			pool,
@@ -283,25 +295,25 @@ impl<Api: ChainApi> RevalidationWorker<Api> {
 ///
 /// Can be configured background (`new_background`)
 /// or immediate (just `new`).
-pub struct RevalidationQueue<Api: ChainApi> {
-	pool: Arc<Pool<Api>>,
+pub struct RevalidationQueue<Api: ChainApi, RCG: crate::graph::RCGroup<<Api::Block as BlockT>::Extrinsic, Error=Api::Error> + 'static> {
+	pool: Arc<Pool<Api, RCG>>,
 	api: Arc<Api>,
 	background: Option<TracingUnboundedSender<WorkerPayload<Api>>>,
 }
 
-impl<Api: ChainApi> RevalidationQueue<Api>
+impl<Api: ChainApi, RCG: crate::graph::RCGroup<<Api::Block as BlockT>::Extrinsic, Error=Api::Error> + 'static> RevalidationQueue<Api, RCG>
 where
 	Api: 'static,
 {
 	/// New revalidation queue without background worker.
-	pub fn new(api: Arc<Api>, pool: Arc<Pool<Api>>) -> Self {
+	pub fn new(api: Arc<Api>, pool: Arc<Pool<Api, RCG>>) -> Self {
 		Self { api, pool, background: None }
 	}
 
 	/// New revalidation queue with background worker.
 	pub fn new_with_interval(
 		api: Arc<Api>,
-		pool: Arc<Pool<Api>>,
+		pool: Arc<Pool<Api, RCG>>,
 		interval: Duration,
 	) -> (Self, Pin<Box<dyn Future<Output = ()> + Send>>) {
 		let (to_worker, from_queue) = tracing_unbounded("mpsc_revalidation_queue", 100_000);
@@ -316,7 +328,7 @@ where
 	/// New revalidation queue with background worker.
 	pub fn new_background(
 		api: Arc<Api>,
-		pool: Arc<Pool<Api>>,
+		pool: Arc<Pool<Api, RCG>>,
 	) -> (Self, Pin<Box<dyn Future<Output = ()> + Send>>) {
 		Self::new_with_interval(api, pool, BACKGROUND_REVALIDATION_INTERVAL)
 	}

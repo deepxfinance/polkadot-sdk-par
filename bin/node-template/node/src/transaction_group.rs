@@ -1,16 +1,23 @@
 use codec::{Decode, Encode};
 use node_template_runtime::{UncheckedExtrinsic, RuntimeCall, BalancesCall};
-use sc_basic_authorship::RCGroup;
+use sc_transaction_pool::RCGroup;
+use sp_runtime::OpaqueExtrinsic as Extrinsic;
+use sc_transaction_pool::error::Error;
+use sc_transaction_pool_api::error::Error as PoolError;
+use sp_runtime::transaction_validity::TransactionSource;
 
 pub struct DefaultRCGroup;
 
-impl RCGroup for DefaultRCGroup {
-    fn call_dependent_data(tx_data: Vec<u8>) -> Result<Vec<Vec<u8>>, String> {
+impl RCGroup<Extrinsic> for DefaultRCGroup {
+    type Error = Error;
+    fn call_dependent_data(extrinsic: &mut Extrinsic, _source: TransactionSource) -> Result<Vec<Vec<u8>>, Self::Error> {
         let mut group_data = vec![];
         // if parse extrinsic failed, it means native code don't know the call might be runtime updated.
-        let utx: UncheckedExtrinsic = match Decode::decode(&mut tx_data.as_slice()) {
+        let utx: UncheckedExtrinsic = match Decode::decode(&mut extrinsic.encode().as_slice()) {
             Ok(utx) => utx,
-            Err(_) => return Ok(Vec::new()),
+            Err(e) => {
+                return Err(Error::Pool(PoolError::GroupInfo(e.to_string())));
+            },
         };
         match utx.function {
             RuntimeCall::Balances(balance_call) => {

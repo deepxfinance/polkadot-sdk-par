@@ -49,14 +49,17 @@ use std::{
 	time::Duration,
 };
 use trie_db::{node::NodeOwned, CachedValue};
+use kv_db::{DBValue, KVCache};
 
 mod shared_cache;
+mod kv_cache;
 
 pub use shared_cache::SharedTrieCache;
-
+use crate::cache::kv_cache::KValueCacheMap;
 use self::shared_cache::ValueCacheKeyHash;
 
 const LOG_TARGET: &str = "trie-cache";
+const KV_LOG_TARGET: &str = "kv-cache";
 
 /// The maximum amount of time we'll wait trying to acquire the shared cache lock
 /// when the local cache is dropped and synchronized with the share cache.
@@ -81,7 +84,8 @@ const SHARED_VALUE_CACHE_MAX_PROMOTED_KEYS: u32 = 1792;
 const SHARED_NODE_CACHE_MAX_REPLACE_PERCENT: usize = 33;
 /// Same as [`SHARED_NODE_CACHE_MAX_REPLACE_PERCENT`].
 const SHARED_VALUE_CACHE_MAX_REPLACE_PERCENT: usize = 33;
-
+/// Same as [`SHARED_NODE_CACHE_MAX_REPLACE_PERCENT`].
+const SHARED_KV_CACHE_MAX_REPLACE_PERCENT: usize = 33;
 /// The maximum inline capacity of the local cache, in bytes.
 ///
 /// This is just an upper limit; since the maps are resized in powers of two
@@ -336,6 +340,9 @@ pub struct LocalTrieCache<H: Hasher> {
 	/// The local cache for the trie nodes.
 	node_cache: Mutex<NodeCacheMap<H::Out>>,
 
+	/// The local cache for the key values.
+	kv_cache: Mutex<KValueCacheMap>,
+
 	/// The local cache for the values.
 	value_cache: Mutex<ValueCacheMap<H::Out>>,
 
@@ -367,6 +374,7 @@ impl<H: Hasher> LocalTrieCache<H> {
 		TrieCache {
 			shared_cache: self.shared.clone(),
 			local_cache: self.node_cache.lock(),
+			local_kv_cache: self.kv_cache.lock(),
 			value_cache,
 			stats: &self.stats,
 		}
@@ -383,6 +391,7 @@ impl<H: Hasher> LocalTrieCache<H> {
 		TrieCache {
 			shared_cache: self.shared.clone(),
 			local_cache: self.node_cache.lock(),
+			local_kv_cache: self.kv_cache.lock(),
 			value_cache: ValueCache::Fresh(Default::default()),
 			stats: &self.stats,
 		}
@@ -420,6 +429,8 @@ impl<H: Hasher> Drop for LocalTrieCache<H> {
 			self.value_cache.get_mut().drain(),
 			self.shared_value_cache_access.get_mut().drain().map(|(key, ())| key),
 		);
+
+		shared_inner.kv_cache_mut().update(self.kv_cache.get_mut().drain())
 	}
 }
 
@@ -517,6 +528,7 @@ impl<H: Hasher> ValueCache<'_, H> {
 pub struct TrieCache<'a, H: Hasher> {
 	shared_cache: SharedTrieCache<H>,
 	local_cache: MutexGuard<'a, NodeCacheMap<H::Out>>,
+	local_kv_cache: MutexGuard<'a, KValueCacheMap>,
 	value_cache: ValueCache<'a, H>,
 	stats: &'a TrieHitStats,
 }
@@ -648,6 +660,26 @@ impl<'a, H: Hasher> trie_db::TrieCache<NodeCodec<H>> for TrieCache<'a, H> {
 		);
 
 		self.value_cache.insert(key, data);
+	}
+}
+
+impl<'a, H: Hasher> KVCache<H> for TrieCache<'a, H> {
+	fn lookup_value_for_key(&mut self, hash: H::Out, key: &[u8], pad: Option<u8>) -> Option<DBValue> {
+		let full_key = [hash.as_ref(), key, [pad.unwrap_or_default()].as_slice()].concat();
+		if let Some(value) = self.local_kv_cache.peek(&full_key) {
+			return Some(value.clone());
+		}
+		self.shared_cache.peek_kv_value(full_key.as_slice())
+	}
+
+	fn cache_value_for_key(&mut self, hash: H::Out, key: &[u8], pad: Option<u8>, value: DBValue) {
+		let full_key = [hash.as_ref(), key, [pad.unwrap_or_default()].as_slice()].concat();
+		self.local_kv_cache.insert(full_key, value);
+	}
+
+	fn remove_value_for_key(&mut self, hash: H::Out, key: &[u8], pad: Option<u8>) {
+		let key = [hash.as_ref(), key, [pad.unwrap_or_default()].as_slice()].concat();
+		self.local_kv_cache.remove(&key);
 	}
 }
 

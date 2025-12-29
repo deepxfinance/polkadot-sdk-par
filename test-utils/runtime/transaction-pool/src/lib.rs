@@ -243,6 +243,7 @@ impl sc_transaction_pool::ChainApi for TestApi {
 	type Block = Block;
 	type Error = Error;
 	type ValidationFuture = futures::future::Ready<Result<TransactionValidity, Error>>;
+	type ValidationsFuture = futures::future::Ready<Result<Vec<TransactionValidity>, Error>>;
 	type BodyFuture = futures::future::Ready<Result<Option<Vec<Extrinsic>>, Error>>;
 
 	fn validate_transaction(
@@ -300,6 +301,14 @@ impl sc_transaction_pool::ChainApi for TestApi {
 		(self.valid_modifier.read())(&mut validity);
 
 		ready(Ok(Ok(validity)))
+	}
+
+	fn validate_transactions(
+		&self,
+		_at: &BlockId<Self::Block>,
+		_uxts: Vec<(TransactionSource, <Self::Block as BlockT>::Extrinsic)>,
+	) -> Self::ValidationsFuture {
+		unimplemented!()
 	}
 
 	fn block_id_to_number(

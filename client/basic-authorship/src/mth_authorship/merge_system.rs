@@ -3,6 +3,7 @@
 use std::collections::BTreeMap;
 use std::fmt::Debug;
 use std::marker::PhantomData;
+use std::sync::Arc;
 use codec::{Compact, Decode, Encode, EncodeAppend};
 use sp_api::ApiExt;
 use sp_runtime::Digest;
@@ -45,7 +46,7 @@ impl<RE: Encode + Decode + Debug + Clone> Default for MergeSystem<RE> {
 }
 
 impl<RE: Encode + Decode + Debug + Clone, B, Block: BlockT, Api: ApiExt<Block>> super::MultiThreadBlockBuilder<B, Block, Api> for MergeSystem<RE> {
-    fn prepare(&mut self, _backend: &B, _parent: &Block::Hash, api: &Api) {
+    fn prepare(&mut self, _backend: &Arc<B>, _parent: &Block::Hash, api: &Api) {
         self.init_index = get_top_value(api, &EXTRINSIC_INDEX.to_vec()).unwrap_or_default();
         self.init_event_count = get_top_value(api, &SYSTEM_EVENT_COUNT.to_vec()).unwrap_or_default();
         self.init_block_weight = get_top_value(api, &SYSTEM_BLOCK_WEIGHT.to_vec());
@@ -210,7 +211,7 @@ impl<RE: Encode + Decode + Debug + Clone> MergeChange<StorageKey, Option<Storage
                                 *e = e.saturating_add(offset).saturating_sub(init_index);
                                 Some(event)
                             }
-                        },
+                        }
                         Phase::Finalization => Some(event),
                     })
                     .collect();

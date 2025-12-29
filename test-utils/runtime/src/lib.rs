@@ -507,11 +507,21 @@ impl_runtime_apis! {
 			log::trace!(target: LOG_TARGET, "validate_transaction {:?} {:?}", utx, validity);
 			validity
 		}
+		fn validate_transactions(
+			txs: Vec<(TransactionSource, <Block as BlockT>::Extrinsic)>,
+			block_hash: <Block as BlockT>::Hash,
+		) -> Vec<TransactionValidity> {
+			Executive::validate_transactions(txs, block_hash)
+		}
 	}
 
 	impl sp_block_builder::BlockBuilder<Block> for Runtime {
 		fn apply_extrinsic(extrinsic: <Block as BlockT>::Extrinsic) -> ApplyExtrinsicResult {
 			Executive::apply_extrinsic(extrinsic)
+		}
+
+		fn apply_extrinsics(extrinsics: Vec<<Block as BlockT>::Extrinsic>, timeout: u128) -> sp_std::vec::Vec<ApplyExtrinsicResult> {
+			Executive::apply_extrinsics(extrinsics, timeout, None)
 		}
 
 		fn finalize_block() -> <Block as BlockT>::Header {
