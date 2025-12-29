@@ -212,7 +212,7 @@ impl<RE: Encode + Decode + Debug + Clone> MergeChange<StorageKey, Option<Storage
                                 Some(event)
                             }
                         }
-                        Phase::Finalization => Some(event)
+                        Phase::Finalization => Some(event),
                     })
                     .collect();
                 let final_events_encoded = <Vec<EventRecord<RE>> as EncodeAppend>::append_or_new(local_event_data, append_events)
