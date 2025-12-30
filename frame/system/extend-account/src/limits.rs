@@ -30,7 +30,7 @@ impl<Free: Get<u64>, From: Get<u64>, To: Get<u64>, Window: Get<u32>> CallLimits 
     }
 
     fn time_range() -> (u64, u64) {
-        (Free::get(), To::get())
+        (From::get(), To::get())
     }
 
     fn window_size() -> u32 {
