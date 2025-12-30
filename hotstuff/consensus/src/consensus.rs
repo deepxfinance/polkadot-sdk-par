@@ -267,7 +267,14 @@ where
         self.recover();
         self.try_wait_sync().await;
         self.local_timer.reset();
-        info!(target: CLIENT_LOG_TARGET, "Start with round {} processed: {}, commit: {}, high_qc {}", self.state.round, self.processed.round(), self.commit.round(), self.state.high_qc.round());
+        info!(
+            target: CLIENT_LOG_TARGET, "Start with round {} processed: {}, commit: {}, high_qc {}, authorities {}",
+            self.state.round,
+            self.processed.round(),
+            self.commit.round(),
+            self.state.high_qc.round(),
+            self.state.authority_list(self.state.view()).unwrap().len(),
+        );
         loop {
             let _ = tokio::select! {
                 _ = &mut self.local_timer => if let Err(e) = self.handle_local_timer().await {
@@ -597,6 +604,9 @@ where
                     self.handle_qc_timestamp(&mut qc).await?;
                     // if this stage finish, should not be next proposer
                     if let Some(commit_qc) = self.state.make_commit_qc(qc.clone()) {
+                        if let Err(e) = self.consensus_msg_tx.send((true, ConsensusMessage::CommitQC(commit_qc.clone()))).await {
+                            warn!(target: CLIENT_LOG_TARGET, "~~ handle_vote. Can't inform self of `CommitQc` for {e:?}.");
+                        }
                         let message = ConsensusMessage::CommitQC(commit_qc);
                         self.network.gossip_engine.lock().gossip_message(ConsensusMessage::<B>::gossip_topic(), message.encode(), false);
                     }
