@@ -39,6 +39,9 @@ pub type ImportNotifications<Block> = TracingUnboundedReceiver<BlockImportNotifi
 /// A stream of block finality notifications.
 pub type FinalityNotifications<Block> = TracingUnboundedReceiver<FinalityNotification<Block>>;
 
+/// A stream of block consensus notifications.
+pub type ConsensusNotifications<Block> = TracingUnboundedReceiver<ConsensusNotification<Block>>;
+
 /// Expected hashes of blocks at given heights.
 ///
 /// This may be used as chain spec extension to set trusted checkpoints, i.e.
@@ -72,6 +75,9 @@ pub trait BlockchainEvents<Block: BlockT> {
 	/// Get a stream of finality notifications. Not guaranteed to be fired for every
 	/// finalized block.
 	fn finality_notification_stream(&self) -> FinalityNotifications<Block>;
+
+	/// Get a stream of consensus notifications.
+	fn consensus_notification_stream(&self) -> ConsensusNotifications<Block>;
 
 	/// Get storage changes event stream.
 	///
@@ -381,6 +387,24 @@ pub struct FinalityNotification<Block: BlockT> {
 	unpin_handle: UnpinHandle<Block>,
 }
 
+/// Summary of a block consensus.
+#[derive(Clone, Debug)]
+pub struct ConsensusNotification<Block: BlockT> {
+	/// Consensus block number.
+	pub block: NumberFor<Block>,
+	/// consensus block transaction hashes.
+	pub hashes: Vec<Block::Hash>,
+}
+
+impl<Block: BlockT> From<(NumberFor<Block>, Vec<Block::Hash>)> for ConsensusNotification<Block> {
+	fn from(value: (NumberFor<Block>, Vec<Block::Hash>)) -> Self {
+		Self {
+			block: value.0,
+			hashes: value.1,
+		}
+	}
+}
+
 impl<B: BlockT> TryFrom<BlockImportNotification<B>> for ChainEvent<B> {
 	type Error = ();
 
@@ -396,6 +420,12 @@ impl<B: BlockT> TryFrom<BlockImportNotification<B>> for ChainEvent<B> {
 impl<B: BlockT> From<FinalityNotification<B>> for ChainEvent<B> {
 	fn from(n: FinalityNotification<B>) -> Self {
 		Self::Finalized { hash: n.hash, tree_route: n.tree_route }
+	}
+}
+
+impl<B: BlockT> From<ConsensusNotification<B>> for ChainEvent<B> {
+	fn from(n: ConsensusNotification<B>) -> Self {
+		Self::Consensus { block: n.block, hashes: n.hashes }
 	}
 }
 

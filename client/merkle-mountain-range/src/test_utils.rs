@@ -19,10 +19,7 @@
 use crate::MmrGadget;
 use parking_lot::Mutex;
 use sc_block_builder::BlockBuilderProvider;
-use sc_client_api::{
-	Backend as BackendT, BlockchainEvents, FinalityNotifications, ImportNotifications,
-	StorageEventStream, StorageKey,
-};
+use sc_client_api::{Backend as BackendT, BlockchainEvents, ConsensusNotifications, FinalityNotifications, ImportNotifications, StorageEventStream, StorageKey};
 use sc_offchain::OffchainDb;
 use sp_api::{ApiRef, ProvideRuntimeApi};
 use sp_blockchain::{BlockStatus, CachedHeaderMetadata, HeaderBackend, HeaderMetadata, Info};
@@ -271,6 +268,10 @@ impl BlockchainEvents<Block> for MockClient {
 
 	fn finality_notification_stream(&self) -> FinalityNotifications<Block> {
 		self.client.lock().finality_notification_stream()
+	}
+
+	fn consensus_notification_stream(&self) -> ConsensusNotifications<Block> {
+		unimplemented!()
 	}
 
 	fn storage_changes_notification_stream(

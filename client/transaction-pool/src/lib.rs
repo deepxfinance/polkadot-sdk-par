@@ -734,6 +734,12 @@ where
 			self.revalidation_strategy.lock().clear();
 		}
 	}
+
+	async fn handle_consensus(&self, block: NumberFor<Block>, hashes: Vec<Block::Hash>) {
+		log::trace!(target: LOG_TARGET, "handle_consensus block: {block:?}");
+		let pool = self.pool.clone();
+		pool.validated_pool().on_consensus(block, hashes);
+	}
 }
 
 #[async_trait]
@@ -772,6 +778,9 @@ where
 			Ok(EnactmentAction::HandleEnactment(tree_route)) => {
 				self.handle_enactment(tree_route).await;
 			},
+			Ok(EnactmentAction::HandleConsensus(block, hashes)) => {
+				self.handle_consensus(block, hashes).await;
+			}
 		};
 
 		if let ChainEvent::Finalized { hash, tree_route } = event {
@@ -806,8 +815,12 @@ where
 		.filter_map(|n| ready(n.try_into().ok()))
 		.fuse();
 	let finality_stream = client.finality_notification_stream().map(Into::into).fuse();
+	let consensus_stream = client.consensus_notification_stream().map(Into::into).fuse();
 
-	futures::stream::select(import_stream, finality_stream)
+	futures::stream::select(
+		consensus_stream,
+		futures::stream::select(import_stream, finality_stream),
+	)
 		.for_each(|evt| txpool.maintain(evt))
 		.await
 }
