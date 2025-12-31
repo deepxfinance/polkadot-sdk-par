@@ -73,12 +73,21 @@ async fn batch_revalidate<Api: ChainApi>(
 ) {
 	let mut invalid_hashes = Vec::new();
 	let mut revalidated = HashMap::new();
-
+	let mut skip_consensus = 0usize;
 	let validation_results = futures::future::join_all(batch.into_iter().filter_map(|ext_hash| {
-		pool.validated_pool().ready_by_hash(&ext_hash).map(|ext| {
-			api.validate_transaction(&BlockId::Number(at), ext.source, ext.data.clone())
-				.map(move |validation_result| (validation_result, ext_hash, ext))
-		})
+		let validated_pool = pool.validated_pool();
+		match validated_pool.ready_by_hash(&ext_hash) {
+			Some(ext) => if validated_pool.consensus_confirmed(&at, &ext_hash) {
+				skip_consensus += 1;
+				None
+			} else {
+				Some(
+					api.validate_transaction(&BlockId::Number(at), ext.source, ext.data.clone())
+						.map(move |validation_result| (validation_result, ext_hash, ext))
+				)
+			},
+			None => None,
+		}
 	}))
 	.await;
 
@@ -139,7 +148,9 @@ async fn batch_revalidate<Api: ChainApi>(
 			},
 		}
 	}
-
+	if skip_consensus > 0 {
+		log::trace!(target: "txpool_consensus", "consensus_pool filter {skip_consensus} transactions for revalidate");
+	}
 	pool.validated_pool().remove_invalid(&invalid_hashes);
 	if revalidated.len() > 0 {
 		pool.resubmit(revalidated);

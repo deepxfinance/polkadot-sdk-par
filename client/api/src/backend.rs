@@ -34,7 +34,7 @@ use sp_state_machine::{
 };
 use sp_storage::{ChildInfo, StorageData, StorageKey};
 
-use crate::{blockchain::Backend as BlockchainBackend, UsageInfo};
+use crate::{blockchain::Backend as BlockchainBackend, ConsensusNotification, UsageInfo};
 
 pub use sp_state_machine::{Backend as StateBackend, KeyValueStates};
 
@@ -236,6 +236,12 @@ pub trait BlockImportOperation<Block: BlockT> {
 	/// Add a transaction index operation.
 	fn update_transaction_index(&mut self, index: Vec<IndexOperation>)
 		-> sp_blockchain::Result<()>;
+}
+
+/// Interface for notify consensus result through the backend.
+pub trait BlockConsensus<Block: BlockT> {
+	/// Send consensus nitification
+	fn notify_consensus(&self, _notification: ConsensusNotification<Block>) -> sp_blockchain::Result<()> { Ok(()) }
 }
 
 /// Interface for performing operations on the backend.

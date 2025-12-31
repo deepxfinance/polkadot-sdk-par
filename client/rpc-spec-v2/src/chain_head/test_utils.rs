@@ -17,12 +17,7 @@
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 use parking_lot::Mutex;
-use sc_client_api::{
-	execution_extensions::ExecutionExtensions, BlockBackend, BlockImportNotification,
-	BlockchainEvents, CallExecutor, ChildInfo, ExecutorProvider, FinalityNotification,
-	FinalityNotifications, FinalizeSummary, ImportNotifications, KeysIter, PairsIter, StorageData,
-	StorageEventStream, StorageKey, StorageProvider,
-};
+use sc_client_api::{execution_extensions::ExecutionExtensions, BlockBackend, BlockImportNotification, BlockchainEvents, CallExecutor, ChildInfo, ConsensusNotification, ExecutorProvider, FinalityNotification, FinalityNotifications, FinalizeSummary, ImportNotifications, KeysIter, PairsIter, StorageData, StorageEventStream, StorageKey, StorageProvider};
 use sc_utils::mpsc::{tracing_unbounded, TracingUnboundedSender};
 use sp_api::{CallApiAt, CallApiAtParams, NumberFor, RuntimeVersion};
 use sp_blockchain::{BlockStatus, CachedHeaderMetadata, HeaderBackend, HeaderMetadata, Info};
@@ -104,6 +99,10 @@ impl<Client> BlockchainEvents<Block> for ChainHeadMockClient<Client> {
 		let (sink, stream) = tracing_unbounded("finality_notification_stream", 1024);
 		self.finality_sinks.lock().push(sink);
 		stream
+	}
+	
+	fn consensus_notification_stream(&self) -> ConsensusNotification<Block> {
+		unimplemented!()
 	}
 
 	fn storage_changes_notification_stream(

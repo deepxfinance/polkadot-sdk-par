@@ -26,21 +26,14 @@ use prometheus_endpoint::Registry;
 use rand::Rng;
 use sc_block_builder::{BlockBuilderApi, BlockBuilderProvider, RecordProof};
 use sc_chain_spec::{resolve_state_version_from_wasm, BuildGenesisBlock};
-use sc_client_api::{
-	backend::{
-		self, apply_aux, BlockImportOperation, ClientImportOperation, FinalizeSummary, Finalizer,
-		ImportNotificationAction, ImportSummary, LockImportRun, NewBlockState, StorageProvider,
-	},
-	client::{
-		BadBlocks, BlockBackend, BlockImportNotification, BlockOf, BlockchainEvents, ClientInfo,
-		FinalityNotification, FinalityNotifications, ForkBlocks, ImportNotifications,
-		PreCommitActions, ProvideUncles,
-	},
-	execution_extensions::ExecutionExtensions,
-	notifications::{StorageEventStream, StorageNotifications},
-	CallExecutor, ExecutorProvider, KeysIter, OnFinalityAction, OnImportAction, PairsIter,
-	ProofProvider, UsageProvider,
-};
+use sc_client_api::{backend::{
+	self, apply_aux, BlockImportOperation, ClientImportOperation, FinalizeSummary, Finalizer,
+	ImportNotificationAction, ImportSummary, LockImportRun, NewBlockState, StorageProvider,
+}, client::{
+	BadBlocks, BlockBackend, BlockImportNotification, BlockOf, BlockchainEvents, ClientInfo,
+	FinalityNotification, FinalityNotifications, ForkBlocks, ImportNotifications,
+	PreCommitActions, ProvideUncles,
+}, execution_extensions::ExecutionExtensions, notifications::{StorageEventStream, StorageNotifications}, BlockConsensus, CallExecutor, ConsensusNotification, ConsensusNotifications, ExecutorProvider, KeysIter, OnFinalityAction, OnImportAction, PairsIter, ProofProvider, UsageProvider};
 use sc_consensus::{
 	BlockCheckParams, BlockImportParams, ForkChoiceStrategy, ImportResult, StateAction,
 };
@@ -103,6 +96,7 @@ where
 	import_notification_sinks: NotificationSinks<BlockImportNotification<Block>>,
 	every_import_notification_sinks: NotificationSinks<BlockImportNotification<Block>>,
 	finality_notification_sinks: NotificationSinks<FinalityNotification<Block>>,
+	consensus_notification_sinks: NotificationSinks<ConsensusNotification<Block>>,
 	// Collects auxiliary operations to be performed atomically together with
 	// block import operations.
 	import_actions: Mutex<Vec<OnImportAction<Block>>>,
@@ -375,6 +369,28 @@ where
 	}
 }
 
+impl<B, E, Block, RA> BlockConsensus<Block> for Client<B, E, Block, RA>
+where
+	Block: BlockT,
+	B: backend::Backend<Block>,
+	E: CallExecutor<Block>,
+{
+	fn notify_consensus(&self, notification: ConsensusNotification<Block>) -> sp_blockchain::Result<()> {
+		self.send_consensus_notify(notification)
+	}
+}
+
+impl<B, E, Block, RA> BlockConsensus<Block> for &Client<B, E, Block, RA>
+where
+	Block: BlockT,
+	B: backend::Backend<Block>,
+	E: CallExecutor<Block>,
+{
+	fn notify_consensus(&self, notification: ConsensusNotification<Block>) -> sp_blockchain::Result<()> {
+		(**self).notify_consensus(notification)
+	}
+}
+
 impl<B, E, Block, RA> Client<B, E, Block, RA>
 where
 	B: backend::Backend<Block>,
@@ -448,6 +464,7 @@ where
 			import_notification_sinks: Default::default(),
 			every_import_notification_sinks: Default::default(),
 			finality_notification_sinks: Default::default(),
+			consensus_notification_sinks: Default::default(),
 			import_actions: Default::default(),
 			finality_actions: Default::default(),
 			importing_block: Default::default(),
@@ -457,6 +474,12 @@ where
 			unpin_worker_sender,
 			_phantom: Default::default(),
 		})
+	}
+
+	/// returns a reference to the block consensus notification sinks
+	/// useful for test environments.
+	pub fn consensus_notification_sinks(&self) -> &NotificationSinks<ConsensusNotification<Block>> {
+		&self.consensus_notification_sinks
 	}
 
 	/// returns a reference to the block import notification sinks
@@ -1091,6 +1114,16 @@ where
 			},
 		}
 
+		Ok(())
+	}
+
+	fn send_consensus_notify(
+		&self,
+		notification: ConsensusNotification<Block>,
+	) -> sp_blockchain::Result<()> {
+		self.consensus_notification_sinks
+			.lock()
+			.retain(|sink| sink.unbounded_send(notification.clone()).is_ok());
 		Ok(())
 	}
 
@@ -1988,6 +2021,12 @@ where
 	fn finality_notification_stream(&self) -> FinalityNotifications<Block> {
 		let (sink, stream) = tracing_unbounded("mpsc_finality_notification_stream", 100_000);
 		self.finality_notification_sinks.lock().push(sink);
+		stream
+	}
+
+	fn consensus_notification_stream(&self) -> ConsensusNotifications<Block> {
+		let (sink, stream) = tracing_unbounded("consensus_notification_stream", 1024);
+		self.consensus_notification_sinks.lock().push(sink);
 		stream
 	}
 

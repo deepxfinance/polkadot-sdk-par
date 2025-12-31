@@ -18,12 +18,12 @@ use tokio::sync::mpsc::{channel, unbounded_channel, Receiver, Sender, UnboundedS
 use tokio::sync::RwLock;
 use frame_system::extrinsics_data_root;
 use sc_basic_authorship::{BlockPropose, GroupTransaction, BlockOracle};
-use sc_client_api::{Backend, CallExecutor, ExecutionStrategy};
+use sc_client_api::{Backend, CallExecutor, BlockConsensus, ExecutionStrategy};
 use sc_network::types::ProtocolName;
 use sc_network_gossip::TopicNotification;
 use sp_core::traits::CallContext;
 use sp_keystore::KeystorePtr;
-use sp_runtime::{generic::BlockId, traits::{Block as BlockT, Hash as HashT, Header as HeaderT}, Saturating};
+use sp_runtime::{generic::BlockId, traits, traits::{Block as BlockT, Hash as HashT, Header as HeaderT}, Saturating};
 use sc_consensus::BlockImport;
 use sc_consensus_slots::InherentDataProviderExt;
 use sp_consensus::SelectChain;
@@ -39,7 +39,7 @@ use sp_api::TransactionFor;
 use sp_consensus::{Environment, Error as ConsensusError, Proposer};
 use sp_consensus_slots::SlotDuration;
 use sp_inherents::CreateInherentDataProviders;
-use sp_runtime::traits::Zero;
+use sp_runtime::traits::{NumberFor, Zero};
 use sp_runtime::transaction_validity::TransactionSource;
 use sp_timestamp::Timestamp;
 use crate::executor::NewBlockMission;
@@ -91,7 +91,7 @@ impl<B, BE, C, N, S, PF, Error, O> ConsensusWorker<B, BE, C, N, S, PF, Error, O>
 where
     B: BlockT,
     BE: Backend<B>,
-    C: ClientForHotstuff<B, BE> + 'static,
+    C: ClientForHotstuff<B, BE> + BlockConsensus<B> + 'static,
     C::Api: HotstuffApi<B, RuntimeAuthorityId>,
     N: NetworkT<B> + Sync + 'static,
     S: SyncingT<B> + Sync + 'static,
@@ -780,6 +780,7 @@ where
                     if self.executor_tx.send(mission).is_err() {
                         warn!(target: CLIENT_LOG_TARGET, "~~ trigger_qc_mission({from}). block {new_block_number} execute mission send failed");
                     }
+                    self.notify_consensus_block(commit.block_number(), &extrinsics);
                     if let Some((pre_view, extrinsic)) = self.commit_extrinsic.get_mut(&commit.block_number()) {
                         if commit.view() > *pre_view {
                             *extrinsic = extrinsics;
@@ -1160,6 +1161,21 @@ where
         }
         Ok(false)
     }
+
+    fn notify_consensus_block(&self, block: NumberFor<B>, extrinsics: &Vec<Vec<Vec<B::Extrinsic>>>) {
+        // empty block
+        if extrinsics == &vec![vec![], vec![vec![]]] { return; }
+        // TODO faster parallel calculation.
+        let hashes = extrinsics
+            .iter()
+            .flatten()
+            .flatten()
+            .map(|e| <<B::Header as HeaderT>::Hashing as traits::Hash>::hash(&e.encode()))
+            .collect::<Vec<_>>();
+        if let Err(e) = self.client.notify_consensus((block, hashes).into()) {
+            warn!(target: CLIENT_LOG_TARGET, "notify_consensus_block {block} failed for err: {e:?}");
+        }
+    }
 }
 
 pub struct ConsensusNetwork<
@@ -1292,7 +1308,7 @@ where
     BE: Backend<B> + 'static,
     N: NetworkT<B> + Sync + 'static,
     S: SyncingT<B> + Sync + 'static,
-    C: ClientForHotstuff<B, BE> + Send + Sync + 'static,
+    C: ClientForHotstuff<B, BE> + BlockConsensus<B> + Send + Sync + 'static,
     C::Api: hotstuff_primitives::HotstuffApi<B, RuntimeAuthorityId>,
     PF: Environment<B, Error = Error> + Send + Sync + 'static,
     PF::Proposer: Proposer<B, Error = Error, Transaction = TransactionFor<C, B>>

@@ -313,6 +313,13 @@ pub enum ChainEvent<B: BlockT> {
 		/// Path from old finalized to new finalized parent.
 		tree_route: Arc<[B::Hash]>,
 	},
+	/// Consensus success for a block(Hotstuff).
+	Consensus {
+		/// Block number
+		block: NumberFor<B>,
+		/// Hash of consensus confirmed transactions. 
+		hashes: Vec<B::Hash>,
+	}
 }
 
 /// Trait for transaction pool maintenance.

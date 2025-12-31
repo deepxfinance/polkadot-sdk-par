@@ -29,6 +29,7 @@ use sp_runtime::{
 	},
 };
 use std::time::Instant;
+use parking_lot::RwLock;
 use super::{
 	base_pool as base,
 	validated_pool::{IsValidator, ValidatedPool, ValidatedTransaction},
@@ -360,6 +361,9 @@ impl<B: ChainApi> Pool<B> {
 		// inputs are pruned so such transaction would go to future again.
 		self.validated_pool
 			.ban(&Instant::now(), known_imported_hashes.clone().into_iter());
+
+		// clear imported hashes from validated_pool.consensus_pool
+		self.validated_pool.clear_consensus_hashes(at, known_imported_hashes.clone().into_iter());
 
 		// Try to re-validate pruned transactions since some of them might be still valid.
 		// note that `known_imported_hashes` will be rejected here due to temporary ban.

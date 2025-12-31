@@ -34,15 +34,9 @@ use sp_runtime::{
 };
 use std::time::Instant;
 
-use super::{
-	base_pool::{self as base, PruneStatus},
-	listener::Listener,
-	pool::{
-		BlockHash, ChainApi, EventStream, ExtrinsicFor, ExtrinsicHash, Options, TransactionFor,
-	},
-	rotator::PoolRotator,
-	watcher::Watcher,
-};
+use super::{base_pool::{self as base, PruneStatus}, listener::Listener, pool::{
+	BlockHash, ChainApi, EventStream, ExtrinsicFor, ExtrinsicHash, Options, TransactionFor,
+}, rotator::PoolRotator, watcher::Watcher, NumberFor};
 
 /// Pre-validated transaction. Validated pool only accepts transactions wrapped in this enum.
 #[derive(Debug)]
@@ -108,6 +102,7 @@ pub struct ValidatedPool<B: ChainApi> {
 	options: Options,
 	listener: RwLock<Listener<ExtrinsicHash<B>, B>>,
 	pool: RwLock<base::BasePool<ExtrinsicHash<B>, ExtrinsicFor<B>>>,
+	consensus_pool: RwLock<HashSet<ExtrinsicHash<B>>>, 
 	import_notification_sinks: Mutex<Vec<Sender<Vec<ExtrinsicHash<B>>>>>,
 	rotator: PoolRotator<ExtrinsicHash<B>>,
 }
@@ -123,6 +118,7 @@ impl<B: ChainApi> ValidatedPool<B> {
 			listener: Default::default(),
 			api,
 			pool: RwLock::new(base_pool),
+			consensus_pool: RwLock::new(HashSet::new()),
 			import_notification_sinks: Default::default(),
 			rotator: PoolRotator::new(ban_time),
 		}
@@ -694,6 +690,27 @@ impl<B: ChainApi> ValidatedPool<B> {
 	/// Notify the listener of retracted blocks
 	pub fn on_block_retracted(&self, block_hash: BlockHash<B>) {
 		self.listener.write().retracted(block_hash)
+	}
+	
+	pub fn on_consensus(&self, _block: NumberFor<B>, hashes: Vec<ExtrinsicHash<B>>) {
+		if hashes.len() > 0 {
+			log::trace!(target: "txpool_consensus", "consensus_pool on consensus block {_block}, {} hashes registered", hashes.len());
+		}
+		let mut consensus_pool = self.consensus_pool.write();
+		hashes.into_iter().for_each(|tx| { consensus_pool.insert(tx); });
+	}
+	
+	pub fn consensus_confirmed(&self, _block: &NumberFor<B>, hash: &ExtrinsicHash<B>) -> bool {
+		self.consensus_pool.read().contains(hash)
+	}
+
+	pub fn clear_consensus_hashes(&self, _at: &BlockId<B::Block>, hashes: impl IntoIterator<Item = ExtrinsicHash<B>>) {
+		let mut consensus_pool= self.consensus_pool.write();
+		let mut count = 0usize;
+		hashes.into_iter().for_each(|hash| { count += 1; consensus_pool.remove(&hash); });
+		if count > 1 {
+			log::trace!(target: "txpool_consensus", "consensus_pool on block {_at}, {} hashes cleared", count - 1);
+		}
 	}
 }
 
