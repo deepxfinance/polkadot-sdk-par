@@ -58,6 +58,13 @@ impl<B: BlockT, O: BlockOracle<B>> HotstuffOracle<B, O> {
         }
         verify_percent = verify_percent * consensus_percent;
 
+        let mut verify_per_tx = 100u64;
+        if let Ok(value) = env::var("HOTSTUFF_VERIFY_PER_TX") {
+            if let Ok(time) = value.parse::<u64>() {
+                verify_per_tx = time;
+            }
+        }
+
         let mut filter_blocks = 50u32;
         if let Ok(value) = env::var("HOTSTUFF_FILTER_BLOCKS") {
             if let Ok(blocks) = value.parse::<u32>() {
@@ -68,7 +75,7 @@ impl<B: BlockT, O: BlockOracle<B>> HotstuffOracle<B, O> {
             inner,
             hotstuff_duration,
             verify_percent: Arc::new(Mutex::new(verify_percent)),
-            verify_time_per_tx: Arc::new(Mutex::new(Duration::from_micros(200))),
+            verify_time_per_tx: Arc::new(Mutex::new(Duration::from_micros(verify_per_tx))),
             filter_blocks,
             transaction_filter: Arc::new(Mutex::new(BTreeMap::new())),
             network_notification_limit: network_notification_limit.unwrap_or(1024 * 1024 * 5),

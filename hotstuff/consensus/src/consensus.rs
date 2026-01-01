@@ -81,7 +81,9 @@ pub struct ConsensusWorker<
     processed: Proposal<B>,
     /// consensus success block waiting to execute.
     commit: BlockCommit<B>,
-    commit_extrinsic: HashMap<<B::Header as HeaderT>::Number, (ViewNumber, Vec<Vec<Vec<B::Extrinsic>>>)>,
+    commit_extrinsic: HashMap<<B::Header as HeaderT>::Number, (ViewNumber, Vec<B::Hash>)>,
+    /// Tmp proposal extrinsic hashes for faster consensus notify.
+    proposal_extrinsic_hashes: HashMap<ViewNumber, Vec<B::Hash>>,
 
     network_notification_limit: usize,
     phantom: PhantomData<BE>,
@@ -150,6 +152,7 @@ where
             processed,
             commit,
             commit_extrinsic: HashMap::new(),
+            proposal_extrinsic_hashes: HashMap::new(),
             network_notification_limit,
             phantom: PhantomData,
         }
@@ -780,13 +783,14 @@ where
                     if self.executor_tx.send(mission).is_err() {
                         warn!(target: CLIENT_LOG_TARGET, "~~ trigger_qc_mission({from}). block {new_block_number} execute mission send failed");
                     }
-                    self.notify_consensus_block(commit.block_number(), &extrinsics);
-                    if let Some((pre_view, extrinsic)) = self.commit_extrinsic.get_mut(&commit.block_number()) {
-                        if commit.view() > *pre_view {
-                            *extrinsic = extrinsics;
+                    if let Some(hashes) = self.notify_consensus_block(&commit, &extrinsics) {
+                        if let Some((pre_view, pre_hashes)) = self.commit_extrinsic.get_mut(&commit.block_number()) {
+                            if commit.view() > *pre_view {
+                                *pre_hashes = hashes;
+                            }
+                        } else {
+                            self.commit_extrinsic.insert(commit.block_number(), (commit.view(), hashes));
                         }
-                    } else {
-                        self.commit_extrinsic.insert(commit.block_number(), (commit.view(), extrinsics));
                     }
                     self.state.update_commit_qc(&qc);
                     self.commit = commit;
@@ -1014,13 +1018,9 @@ where
         let mut block = self.client.info().best_number.saturating_add(1u32.into());
         loop {
             if block > block_number { break; }
-            if let Some((_, extrinsic)) = self.commit_extrinsic.get(&block) {
+            if let Some((_, hashes)) = self.commit_extrinsic.get(&block) {
                 // this processed block extrinsic are not executed, should exclude it for
-                for round in extrinsic {
-                    for hash in round.iter().flatten().map(|tx| <<B::Header as HeaderT>::Hashing as HashT>::hash(&tx.encode())) {
-                        filter.insert(hash);
-                    }
-                }
+                filter.extend(hashes.clone());
             }
             block = block.saturating_add(1u32.into());
         }
@@ -1113,12 +1113,16 @@ where
             )
             .flatten()
             .collect();
-        let mut check_tasks: Vec<JoinHandle<Result<(usize, Duration), HotstuffError>>> = vec![];
+        let mut check_tasks: Vec<JoinHandle<Result<((usize, Duration), Vec<B::Hash>), HotstuffError>>> = vec![];
         for thread_extrinsic in extrinsic {
             let client = self.client.clone();
             let task = std::thread::spawn(move || {
                 let thread_start = std::time::Instant::now();
                 let length = thread_extrinsic.len();
+                let hashes = thread_extrinsic
+                    .iter()
+                    .map(|e| <<B::Header as HeaderT>::Hashing as traits::Hash>::hash(&e.encode()))
+                    .collect::<Vec<_>>();
                 let validate_results = client
                     .clone()
                     .runtime_api()
@@ -1132,16 +1136,18 @@ where
                         }
                     }
                 }
-                Ok((length, thread_start.elapsed()))
+                Ok(((length, thread_start.elapsed()), hashes))
             });
             check_tasks.push(task);
         }
         let mut threads_verify = vec![];
+        let mut all_hashes = vec![];
         for task in check_tasks {
-            let res = task
+            let (res, hashes) = task
                 .join()
                 .map_err(|e| HotstuffError::Payload(PayloadError::ExtrinsicErr(format!("validate_transactions meet err: {e:?}"))))??;
             threads_verify.push(res);
+            all_hashes.extend(hashes);
         }
         match extrinsics_root.join() {
             Ok(root) => if root != payload.block.extrinsics_root {
@@ -1162,19 +1168,24 @@ where
         Ok(false)
     }
 
-    fn notify_consensus_block(&self, block: NumberFor<B>, extrinsics: &Vec<Vec<Vec<B::Extrinsic>>>) {
+    fn notify_consensus_block(&mut self, commit: &BlockCommit<B>, extrinsics: &Vec<Vec<Vec<B::Extrinsic>>>) -> Option<Vec<B::Hash>> {
         // empty block
-        if extrinsics == &vec![vec![], vec![vec![]]] { return; }
-        // TODO faster parallel calculation.
-        let hashes = extrinsics
-            .iter()
-            .flatten()
-            .flatten()
-            .map(|e| <<B::Header as HeaderT>::Hashing as traits::Hash>::hash(&e.encode()))
-            .collect::<Vec<_>>();
-        if let Err(e) = self.client.notify_consensus((block, hashes).into()) {
+        if extrinsics == &vec![vec![], vec![vec![]]] { return None; }
+        let hashes = self.proposal_extrinsic_hashes.remove(&commit.view())
+            .unwrap_or(
+                // TODO faster parallel calculation.
+                extrinsics
+                    .iter()
+                    .flatten()
+                    .flatten()
+                    .map(|e| <<B::Header as HeaderT>::Hashing as traits::Hash>::hash(&e.encode()))
+                    .collect::<Vec<_>>()
+            );
+        let block = commit.block_number();
+        if let Err(e) = self.client.notify_consensus((block, hashes.clone()).into()) {
             warn!(target: CLIENT_LOG_TARGET, "notify_consensus_block {block} failed for err: {e:?}");
         }
+        Some(hashes)
     }
 }
 
