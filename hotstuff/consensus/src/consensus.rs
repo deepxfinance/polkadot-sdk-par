@@ -7,7 +7,6 @@ use std::{
 use std::collections::{HashMap, HashSet};
 use std::marker::PhantomData;
 use std::str::FromStr;
-use std::thread::JoinHandle;
 use std::time::Duration;
 use async_recursion::async_recursion;
 use futures::{channel::mpsc::Receiver as Recv, Future, StreamExt};
@@ -556,7 +555,7 @@ where
             return Ok(());
         }
         if check_payload {
-            match self.check_payload(proposal) {
+            match self.check_payload(proposal).await {
                 Ok(true) => {
                     self.pending_proposal = Some(proposal.clone());
                     self.try_wait_sync().await;
@@ -1051,7 +1050,7 @@ where
     }
 
     // return if we should keep pending_proposal.
-    fn check_payload(&self, proposal: &Proposal<B>) -> Result<bool, HotstuffError> {
+    async fn check_payload(&self, proposal: &Proposal<B>) -> Result<bool, HotstuffError> {
         let info = self.client.info();
         let payload = &proposal.payload;
         if payload.block_number() > info.best_number.saturating_add(2u32.into()) && self.state.find_authority(proposal.view).is_some() {
@@ -1091,7 +1090,7 @@ where
             return Err(PayloadError::ExtrinsicErr("No need to propose empty block since not reach MaxEmpty".to_string()).into());
         }
         // spawn extrinsics_root check thread.
-        let extrinsics_root = std::thread::spawn(|| {
+        let extrinsics_root = tokio::spawn(async move {
             let extrinsic_data: Vec<_> = extrinsics
                 .into_iter()
                 .flatten()
@@ -1113,10 +1112,10 @@ where
             )
             .flatten()
             .collect();
-        let mut check_tasks: Vec<JoinHandle<Result<((usize, Duration), Vec<B::Hash>), HotstuffError>>> = vec![];
+        let mut check_tasks: Vec<tokio::task::JoinHandle<Result<((usize, Duration), Vec<B::Hash>), HotstuffError>>> = vec![];
         for thread_extrinsic in extrinsic {
             let client = self.client.clone();
-            let task = std::thread::spawn(move || {
+            let task = tokio::spawn(async move {
                 let thread_start = std::time::Instant::now();
                 let length = thread_extrinsic.len();
                 let hashes = thread_extrinsic
@@ -1144,12 +1143,12 @@ where
         let mut all_hashes = vec![];
         for task in check_tasks {
             let (res, hashes) = task
-                .join()
+                .await
                 .map_err(|e| HotstuffError::Payload(PayloadError::ExtrinsicErr(format!("validate_transactions meet err: {e:?}"))))??;
             threads_verify.push(res);
             all_hashes.extend(hashes);
         }
-        match extrinsics_root.join() {
+        match extrinsics_root.await {
             Ok(root) => if root != payload.block.extrinsics_root {
                 return Err(PayloadError::ExtrinsicErr(format!("Incorrect extrinsics_root/payload: {root}/{})", payload.block.extrinsics_root)).into());
             },
