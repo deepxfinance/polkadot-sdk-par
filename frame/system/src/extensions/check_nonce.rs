@@ -82,12 +82,15 @@ where
 		let mut account = crate::Account::<T>::get(who);
 		if self.0 != account.nonce {
 			return Err(if self.0 < account.nonce {
+				log::debug!(target: "pre_dispatch", "[CheckNonce] Stale {who:?}({:?}/{:?})", self.0, account.nonce);
 				InvalidTransaction::Stale
 			} else {
+				log::debug!(target: "pre_dispatch", "[CheckNonce] Future {who:?}({:?}/{:?})", self.0, account.nonce);
 				InvalidTransaction::Future
 			}
 			.into())
 		}
+		log::trace!(target: "pre_dispatch", "[CheckNonce] Correct {who:?}({:?}/{:?})", self.0, account.nonce);
 		account.nonce += T::Index::one();
 		crate::Account::<T>::insert(who, account);
 		Ok(())
