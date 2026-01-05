@@ -846,7 +846,9 @@ where
             }
         };
         let execute_time = execute_timer.elapsed().as_millis();
-
+        let extend_start = time::Instant::now();
+        E::extra_execute(&*block_builder.api, block_builder.parent_hash);
+        let extend_time = extend_start.elapsed().as_millis();
         let build_timer = time::Instant::now();
         match block_builder.build() {
             Ok(res) => {
@@ -855,7 +857,7 @@ where
                 let (block_res, storage_changes_res, _proof_res) = res.into_inner();
                 // total block hash check
                 if block_res.header().state_root() == block.header().state_root() {
-                    info!(target: LOG_TARGET, "[OTC Block {number}({block_time}({init_time} {execute_time} {build_time}) ms)] Check Block Hash success");
+                    info!(target: LOG_TARGET, "[OTC Block {number}({block_time}({init_time} {execute_time} {extend_time} {build_time}) ms)] Check Block Hash success");
                     return;
                 }
                 let change_diff = |mth: &Vec<(StorageKey, Option<StorageValue>)>, oth: &Vec<(StorageKey, Option<StorageValue>)>| {
