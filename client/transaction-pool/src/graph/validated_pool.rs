@@ -102,7 +102,7 @@ pub struct ValidatedPool<B: ChainApi> {
 	options: Options,
 	listener: RwLock<Listener<ExtrinsicHash<B>, B>>,
 	pool: RwLock<base::BasePool<ExtrinsicHash<B>, ExtrinsicFor<B>>>,
-	consensus_pool: RwLock<HashSet<ExtrinsicHash<B>>>, 
+	consensus_pool: RwLock<HashSet<ExtrinsicHash<B>>>,
 	import_notification_sinks: Mutex<Vec<Sender<Vec<ExtrinsicHash<B>>>>>,
 	rotator: PoolRotator<ExtrinsicHash<B>>,
 }
@@ -281,7 +281,7 @@ impl<B: ChainApi> ValidatedPool<B> {
 		if ready_limit.is_exceeded(status.ready, status.ready_bytes) ||
 			future_limit.is_exceeded(status.future, status.future_bytes)
 		{
-			log::debug!(
+			log::warn!(
 				target: LOG_TARGET,
 				"Enforcing limits ({}/{}kB ready, {}/{}kB future",
 				ready_limit.count,
@@ -303,7 +303,7 @@ impl<B: ChainApi> ValidatedPool<B> {
 				removed
 			};
 			if !removed.is_empty() {
-				log::debug!(target: LOG_TARGET, "Enforcing limits: {} dropped", removed.len());
+				log::warn!(target: LOG_TARGET, "Enforcing limits: {} dropped", removed.len());
 			}
 
 			// run notifications

@@ -726,7 +726,11 @@ where
 		self.ready_poll
 			.lock()
 			.trigger(*block_number, move || Box::new(extra_pool.validated_pool().ready()));
-
+		log::info!(
+			target: LOG_TARGET,
+			"Block {:?} enactment finished",
+			block_number,
+		);
 		if next_action.revalidate {
 			let hashes = pool.validated_pool().ready().map(|tx| tx.hash).collect();
 			self.revalidation_queue.revalidate_later(*block_number, hashes).await;

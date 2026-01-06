@@ -7,6 +7,7 @@ use codec::Encode;
 use futures::{select, FutureExt};
 use log::{trace, debug};
 use sc_transaction_pool_api::{InPoolTransaction, TransactionPool};
+use sp_runtime::Saturating;
 use sp_runtime::traits::{Block as BlockT, Header as HeaderT, One};
 use crate::{GroupInfo, GroupTxInput, GroupTxOutput};
 
@@ -51,7 +52,7 @@ where
         let start = Instant::now();
         let deadline = start + max_time;
         let block = parent_number + One::one();
-        let mut t1 = self.transaction_pool.ready_at(parent_number).fuse();
+        let mut t1 = self.transaction_pool.ready_at(parent_number.saturating_sub(One::one())).fuse();
         let mut t2 = futures_timer::Delay::new(wait_pool).fuse();
         let mut pending_iterator = select! {
 			res = t1 => res,
@@ -87,6 +88,7 @@ where
                 break;
             };
             if filter.remove(pending_tx.hash()) {
+                log::info!(target: LOG_TARGET, "[GroupTx B {block}] filter pending_tx: {:?}", pending_tx.hash());
                 filtered += 1;
                 continue;
             }
