@@ -830,7 +830,7 @@ where
         let mut block_builder = match client.new_block_at(parent_hash, inherent_digests, PR::ENABLED, None) {
             Ok(builder) => builder,
             Err(e) => {
-                warn!(target: LOG_TARGET, "[OTC Block {number}] Create BlockBuilder error: {e:?}");
+                warn!(target: "OTC", "[OTC Block {number}] Create BlockBuilder error: {e:?}");
                 return;
             },
         };
@@ -839,7 +839,7 @@ where
         for (index, pending_tx_data) in extrinsic.into_iter().enumerate() {
             if let Err(e) = sc_block_builder::BlockBuilder::push(&mut block_builder, pending_tx_data.clone()) {
                 error!(
-                    target: LOG_TARGET,
+                    target: "OTC",
                     "[OTC Block {number}] push extrinsic {index} error: {e:?}"
                 );
                 return;
@@ -857,7 +857,7 @@ where
                 let (block_res, storage_changes_res, _proof_res) = res.into_inner();
                 // total block hash check
                 if block_res.header().state_root() == block.header().state_root() {
-                    info!(target: LOG_TARGET, "[OTC Block {number}({block_time}({init_time} {execute_time} {extend_time} {build_time}) ms)] Check Block Hash success");
+                    info!(target: "OTC", "[OTC Block {number}({block_time}({init_time} {execute_time} {extend_time} {build_time}) ms)] Check Block Hash success");
                     return;
                 }
                 let change_diff = |mth: &Vec<(StorageKey, Option<StorageValue>)>, oth: &Vec<(StorageKey, Option<StorageValue>)>| {
@@ -883,6 +883,7 @@ where
                         if let Some(v) = mth_changes.remove(k) {
                             if &v != v_res {
                                 if filter.iter().any(|f| k.starts_with(f)) { continue; }
+                                trace!(target: "OTC", "[OTC Block {number}] otc diff value: {v_res:?} for key: {k:?}");
                                 oth_diff.push(k.clone());
                             }
                         } else {
@@ -900,11 +901,11 @@ where
                 // main_storage_changes check if block different.
                 let (oth_main_less, oth_main_diff, oth_main_extra) = change_diff(&main_storage_changes, &storage_changes_res.main_storage_changes);
                 if oth_main_less.is_empty() && oth_main_diff.is_empty() && oth_main_extra.is_empty() {
-                    info!(target: LOG_TARGET, "[OTC Block {number}({block_time}({init_time} {execute_time} {build_time}) ms)] Check Block state success");
+                    info!(target: "OTC", "[OTC Block {number}({block_time}({init_time} {execute_time} {build_time}) ms)] Check Block state success");
                     return;
                 }
                 error!(
-                    target: LOG_TARGET,
+                    target: "OTC",
                     "[OTC Block {number}({block_time} ({init_time} {execute_time} {build_time}) ms)] [one thread/multi threads] main change differences, less: {oth_main_less:?}, diff: {oth_main_diff:?}, extra: {oth_main_extra:?}",
                 );
                 // child_storage_changes check if block different.
@@ -917,7 +918,7 @@ where
                     if let Some(child_storage_changes) = child_changes.remove(parent_key) {
                         let (oth_child_less, oth_child_diff, oth_child_extra) = change_diff(&child_storage_changes, child_storage_changes_res);
                         error!(
-                            target: LOG_TARGET,
+                            target: "OTC",
                             "[OTC Block {number}({block_time} ({init_time} {execute_time} {build_time}) ms)] [one thread/multi threads] child change differences parent key: {parent_key:?}, less: {oth_child_less:?}, diff: {oth_child_diff:?}, extra: {oth_child_extra:?}",
                         );
                     } else {
@@ -926,20 +927,20 @@ where
                     }
                 }
                 if !oth_extra_childs.is_empty() {
-                    error!(target: LOG_TARGET, "[OTC Block {number}({block_time} ({init_time} {execute_time} {build_time}) ms)] oth extra child changes {oth_extra_childs:?}");
+                    error!(target: "OTC", "[OTC Block {number}({block_time} ({init_time} {execute_time} {build_time}) ms)] oth extra child changes {oth_extra_childs:?}");
                 }
                 let mth_extra_childs: Vec<(StorageKey, Vec<StorageKey>)> = child_changes
                     .into_iter()
                     .map(|(parent, childs)| (parent, childs.into_iter().map(|(key, _)| key).collect()))
                     .collect();
                 if !mth_extra_childs.is_empty() {
-                    error!(target: LOG_TARGET, "[OTC Block {number}({block_time} ({init_time} {execute_time} {build_time}) ms)] mth extra child changes {mth_extra_childs:?}");
+                    error!(target: "OTC", "[OTC Block {number}({block_time} ({init_time} {execute_time} {build_time}) ms)] mth extra child changes {mth_extra_childs:?}");
                 }
             },
             Err(e) => {
                 let block_time = block_timer.elapsed().as_millis();
                 let build_time = build_timer.elapsed().as_millis();
-                error!(target: LOG_TARGET, "[OTC Block {number}({block_time} ({init_time} {execute_time} {build_time}) ms)] Build block error: {e:?}");
+                error!(target: "OTC", "[OTC Block {number}({block_time} ({init_time} {execute_time} {build_time}) ms)] Build block error: {e:?}");
             }
         }
     }
