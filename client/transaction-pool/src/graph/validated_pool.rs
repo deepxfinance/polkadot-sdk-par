@@ -102,7 +102,7 @@ pub struct ValidatedPool<B: ChainApi> {
 	options: Options,
 	listener: RwLock<Listener<ExtrinsicHash<B>, B>>,
 	pool: RwLock<base::BasePool<ExtrinsicHash<B>, ExtrinsicFor<B>>>,
-	consensus_pool: RwLock<HashSet<ExtrinsicHash<B>>>, 
+	consensus_pool: RwLock<HashMap<NumberFor<B>, (ExtrinsicHash<B>, HashSet<ExtrinsicHash<B>>)>>,
 	import_notification_sinks: Mutex<Vec<Sender<Vec<ExtrinsicHash<B>>>>>,
 	rotator: PoolRotator<ExtrinsicHash<B>>,
 }
@@ -118,7 +118,7 @@ impl<B: ChainApi> ValidatedPool<B> {
 			listener: Default::default(),
 			api,
 			pool: RwLock::new(base_pool),
-			consensus_pool: RwLock::new(HashSet::new()),
+			consensus_pool: RwLock::new(HashMap::new()),
 			import_notification_sinks: Default::default(),
 			rotator: PoolRotator::new(ban_time),
 		}
@@ -522,7 +522,7 @@ impl<B: ChainApi> ValidatedPool<B> {
 		known_imported_hashes: impl IntoIterator<Item = ExtrinsicHash<B>> + Clone,
 		pruned_hashes: Vec<ExtrinsicHash<B>>,
 		pruned_xts: Vec<ValidatedTransactionFor<B>>,
-	) -> Result<(), B::Error> {
+	) -> Result<(usize, usize), B::Error> {
 		debug_assert_eq!(pruned_hashes.len(), pruned_xts.len());
 
 		// Resubmit pruned transactions
@@ -530,21 +530,25 @@ impl<B: ChainApi> ValidatedPool<B> {
 
 		// Collect the hashes of transactions that now became invalid (meaning that they are
 		// successfully pruned).
+		let mut hashes_len = 0usize;
 		let hashes = results.into_iter().enumerate().filter_map(|(idx, r)| {
 			match r.map_err(error::IntoPoolError::into_pool_error) {
-				Err(Ok(error::Error::InvalidTransaction(_))) => Some(pruned_hashes[idx]),
+				Err(Ok(error::Error::InvalidTransaction(_))) => {
+					hashes_len += 1;
+					Some(pruned_hashes[idx])
+				},
 				_ => None,
 			}
 		});
 		// Fire `pruned` notifications for collected hashes and make sure to include
 		// `known_imported_hashes` since they were just imported as part of the block.
 		let hashes = hashes.chain(known_imported_hashes.into_iter());
-		self.fire_pruned(at, hashes)?;
+		let fired = self.fire_pruned(at, hashes)?;
 
 		// perform regular cleanup of old transactions in the pool
 		// and update temporary bans.
 		self.clear_stale(at)?;
-		Ok(())
+		Ok((hashes_len, fired))
 	}
 
 	/// Fire notifications for pruned transactions.
@@ -552,7 +556,8 @@ impl<B: ChainApi> ValidatedPool<B> {
 		&self,
 		at: &BlockId<B::Block>,
 		hashes: impl Iterator<Item = ExtrinsicHash<B>>,
-	) -> Result<(), B::Error> {
+	) -> Result<usize, B::Error> {
+		let mut fired = 0usize;
 		let header_hash = self
 			.api
 			.block_id_to_hash(at)?
@@ -565,9 +570,10 @@ impl<B: ChainApi> ValidatedPool<B> {
 			if !set.contains(&h) {
 				listener.pruned(header_hash, &h);
 				set.insert(h);
+				fired += 1;
 			}
 		}
-		Ok(())
+		Ok(fired)
 	}
 
 	/// Removes stale transactions from the pool.
@@ -575,33 +581,40 @@ impl<B: ChainApi> ValidatedPool<B> {
 	/// Stale transactions are transaction beyond their longevity period.
 	/// Note this function does not remove transactions that are already included in the chain.
 	/// See `prune_tags` if you want this.
-	pub fn clear_stale(&self, at: &BlockId<B::Block>) -> Result<(), B::Error> {
-		let block_number = self
-			.api
-			.block_id_to_number(at)?
-			.ok_or_else(|| error::Error::InvalidBlockId(format!("{:?}", at)))?
-			.saturated_into::<u64>();
-		let now = Instant::now();
-		let to_remove = {
-			self.ready()
-				.filter(|tx| self.rotator.ban_if_stale(&now, block_number, tx))
-				.map(|tx| tx.hash)
-				.collect::<Vec<_>>()
-		};
-		let futures_to_remove: Vec<ExtrinsicHash<B>> = {
-			let p = self.pool.read();
-			let mut hashes = Vec::new();
-			for tx in p.futures() {
-				if self.rotator.ban_if_stale(&now, block_number, tx) {
-					hashes.push(tx.hash);
-				}
-			}
-			hashes
-		};
-		// removing old transactions
-		self.remove_invalid(&to_remove);
-		self.remove_invalid(&futures_to_remove);
+	pub fn clear_stale(&self, _at: &BlockId<B::Block>) -> Result<(), B::Error> {
+		// Notice!!! We do not clear ready pool and future pool since all transactions' live time are forever.
+		// let block_number = self
+		// 	.api
+		// 	.block_id_to_number(at)?
+		// 	.ok_or_else(|| error::Error::InvalidBlockId(format!("{:?}", at)))?
+		// 	.saturated_into::<u64>();
+		// let now = Instant::now();
+		// let to_remove = {
+		// 	self.ready()
+		// 		.filter(|tx| self.rotator.ban_if_stale(&now, block_number, tx))
+		// 		.map(|tx| tx.hash)
+		// 		.collect::<Vec<_>>()
+		// };
+		// let ready_remove_time = now.elapsed();
+		// let futures_to_remove: Vec<ExtrinsicHash<B>> = {
+		// 	let p = self.pool.read();
+		// 	let mut hashes = Vec::new();
+		// 	for tx in p.futures() {
+		// 		if self.rotator.ban_if_stale(&now, block_number, tx) {
+		// 			hashes.push(tx.hash);
+		// 		}
+		// 	}
+		// 	hashes
+		// };
+		// let future_remove_time = now.elapsed() - ready_remove_time;
+		// let now = Instant::now();
+		// // removing old transactions
+		// self.remove_invalid(&to_remove);
+		// let ready_remove_time1 = now.elapsed();
+		// self.remove_invalid(&futures_to_remove);
+		// let future_remove_time1 = now.elapsed() - ready_remove_time1;
 		// clear banned transactions timeouts
+		let now = Instant::now();
 		self.rotator.clear_timeouts(&now);
 
 		Ok(())
@@ -692,25 +705,31 @@ impl<B: ChainApi> ValidatedPool<B> {
 		self.listener.write().retracted(block_hash)
 	}
 	
-	pub fn on_consensus(&self, _block: NumberFor<B>, hashes: Vec<ExtrinsicHash<B>>) {
+	pub fn on_consensus(&self, block: NumberFor<B>, root: ExtrinsicHash<B>, hashes: Vec<ExtrinsicHash<B>>) {
 		if hashes.len() > 0 {
-			log::trace!(target: "txpool_consensus", "consensus_pool on consensus block {_block}, {} hashes registered", hashes.len());
+			log::trace!(target: "txpool_consensus", "consensus_pool on consensus block {block}, {} hashes registered, tx_root {root:?}", hashes.len());
+			let mut consensus_pool = self.consensus_pool.write();
+			consensus_pool.insert(block, (root, hashes.into_iter().collect()));
 		}
-		let mut consensus_pool = self.consensus_pool.write();
-		hashes.into_iter().for_each(|tx| { consensus_pool.insert(tx); });
 	}
 	
 	pub fn consensus_confirmed(&self, _block: &NumberFor<B>, hash: &ExtrinsicHash<B>) -> bool {
-		self.consensus_pool.read().contains(hash)
+		self.consensus_pool.read().iter().any(|(_, hashes)| hashes.1.contains(hash))
 	}
 
-	pub fn clear_consensus_hashes(&self, _at: &BlockId<B::Block>, hashes: impl IntoIterator<Item = ExtrinsicHash<B>>) {
+	pub fn clear_consensus_hashes(&self, at: &BlockId<B::Block>) -> Option<(ExtrinsicHash<B>, HashSet<ExtrinsicHash<B>>)> {
 		let mut consensus_pool= self.consensus_pool.write();
-		let mut count = 0usize;
-		hashes.into_iter().for_each(|hash| { count += 1; consensus_pool.remove(&hash); });
-		if count > 1 {
-			log::trace!(target: "txpool_consensus", "consensus_pool on block {_at}, {} hashes cleared", count - 1);
+		let block = match at {
+			BlockId::Hash(_) => self.api.block_id_to_number(at).unwrap().unwrap(),
+			BlockId::Number(n) => *n,
+		};
+		let res = consensus_pool.remove(&block);
+		if let Some((root, hash_set)) = &res {
+			if hash_set.len() > 1 {
+				log::trace!(target: "txpool_consensus", "consensus_pool on block {at}, {} hashes cleared, tx_root {root:?}", hash_set.len());
+			}
 		}
+		res
 	}
 }
 

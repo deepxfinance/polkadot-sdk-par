@@ -557,6 +557,7 @@ async fn prune_known_txs_for_block<Block: BlockT, Api: graph::ChainApi<Block = B
 	api: &Api,
 	pool: &graph::Pool<Api>,
 ) -> Vec<ExtrinsicHash<Api>> {
+	let start = std::time::Instant::now();
 	let extrinsics = api
 		.block_body(block_hash)
 		.await
@@ -565,30 +566,59 @@ async fn prune_known_txs_for_block<Block: BlockT, Api: graph::ChainApi<Block = B
 			None
 		})
 		.unwrap_or_default();
+	let body_time = start.elapsed();
 
-	let hashes = extrinsics.iter().map(|tx| pool.hash_of(tx)).collect::<Vec<_>>();
-
-	log::trace!(target: LOG_TARGET, "Pruning transactions: {:?}", hashes);
-
+	let header_start = std::time::Instant::now();
 	let header = match api.block_header(block_hash) {
 		Ok(Some(h)) => h,
 		Ok(None) => {
 			log::debug!(target: LOG_TARGET, "Could not find header for {:?}.", block_hash);
-			return hashes
+			return extrinsics.iter().map(|tx| pool.hash_of(tx)).collect::<Vec<_>>();
 		},
 		Err(e) => {
 			log::debug!(target: LOG_TARGET, "Error retrieving header for {:?}: {}", block_hash, e);
-			return hashes
+			return extrinsics.iter().map(|tx| pool.hash_of(tx)).collect::<Vec<_>>();
 		},
 	};
+	let header_time = header_start.elapsed();
+	let (tx_root, hash_set) = pool.validated_pool().clear_consensus_hashes(&BlockId::Number(*header.number())).unwrap_or_default();
+	let hash_start = std::time::Instant::now();
+	let (hashes, hash_time) = if header.extrinsics_root() == &tx_root {
+		(
+			if extrinsics.len() > 0 {
+				[vec![pool.hash_of(&extrinsics[0])], hash_set.into_iter().collect()].concat()
+			} else {
+				hash_set.into_iter().collect()
+			},
+			hash_start.elapsed()
+		)
+	} else {
+		(extrinsics.iter().map(|tx| pool.hash_of(tx)).collect::<Vec<_>>(), hash_start.elapsed())
+	};
 
-	if let Err(e) = pool
-		.prune(&BlockId::Hash(block_hash), &BlockId::hash(*header.parent_hash()), &extrinsics)
-		.await
-	{
+	log::trace!(target: LOG_TARGET, "Pruning transactions: {:?}", hashes);
+	let prune_start = std::time::Instant::now();
+	let prune_times = pool.prune(&BlockId::Hash(block_hash), &BlockId::hash(*header.parent_hash()), &extrinsics, hashes.clone())
+		.await.unwrap_or_else(|e| {
 		log::error!("Cannot prune known in the pool: {}", e);
+		Default::default()
+	});
+	// if let Err(e) = pool
+	// 	.prune(&BlockId::Hash(block_hash), &BlockId::hash(*header.parent_hash()), &extrinsics)
+	// 	.await
+	// {
+	// 	log::error!("Cannot prune known in the pool: {}", e);
+	// }
+	let prune_time = prune_start.elapsed();
+	if hashes.len() > 1 {
+		log::info!(
+			target: LOG_TARGET,
+			"prune_known_txs_for_block {}: {} txs in {:?}(body {body_time:?} header {header_time:?} hash {hash_time:?} prune {prune_time:?}({prune_times}))",
+			header.number(),
+			hashes.len(),
+			start.elapsed(),
+		);
 	}
-
 	hashes
 }
 
@@ -728,10 +758,10 @@ where
 		}
 	}
 
-	async fn handle_consensus(&self, block: NumberFor<Block>, hashes: Vec<Block::Hash>) {
+	async fn handle_consensus(&self, block: NumberFor<Block>, root: Block::Hash, hashes: Vec<Block::Hash>) {
 		log::trace!(target: LOG_TARGET, "handle_consensus block: {block:?}");
 		let pool = self.pool.clone();
-		pool.validated_pool().on_consensus(block, hashes);
+		pool.validated_pool().on_consensus(block, root, hashes);
 	}
 }
 
@@ -770,8 +800,8 @@ where
 			Ok(EnactmentAction::HandleEnactment(tree_route)) => {
 				self.handle_enactment(tree_route).await;
 			},
-			Ok(EnactmentAction::HandleConsensus(block, hashes)) => {
-				self.handle_consensus(block, hashes).await;
+			Ok(EnactmentAction::HandleConsensus(block, root, hashes)) => {
+				self.handle_consensus(block, root, hashes).await;
 			}
 		};
 

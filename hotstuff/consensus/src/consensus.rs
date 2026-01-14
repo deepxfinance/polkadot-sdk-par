@@ -22,7 +22,7 @@ use sc_network::types::ProtocolName;
 use sc_network_gossip::TopicNotification;
 use sp_core::traits::CallContext;
 use sp_keystore::KeystorePtr;
-use sp_runtime::{generic::BlockId, traits, traits::{Block as BlockT, Hash as HashT, Header as HeaderT}, Saturating};
+use sp_runtime::{generic::BlockId, traits, traits::{Block as BlockT, Header as HeaderT}, Saturating};
 use sc_consensus::BlockImport;
 use sc_consensus_slots::InherentDataProviderExt;
 use sp_consensus::SelectChain;
@@ -38,7 +38,7 @@ use sp_api::TransactionFor;
 use sp_consensus::{Environment, Error as ConsensusError, Proposer};
 use sp_consensus_slots::SlotDuration;
 use sp_inherents::CreateInherentDataProviders;
-use sp_runtime::traits::{NumberFor, Zero};
+use sp_runtime::traits::Zero;
 use sp_runtime::transaction_validity::TransactionSource;
 use sp_timestamp::Timestamp;
 use crate::executor::NewBlockMission;
@@ -1181,7 +1181,7 @@ where
                     .collect::<Vec<_>>()
             );
         let block = commit.block_number();
-        if let Err(e) = self.client.notify_consensus((block, hashes.clone()).into()) {
+        if let Err(e) = self.client.notify_consensus((block, commit.extrinsics_root(), hashes.clone()).into()) {
             warn!(target: CLIENT_LOG_TARGET, "notify_consensus_block {block} failed for err: {e:?}");
         }
         Some(hashes)

@@ -98,8 +98,11 @@ impl<Client, Block> FullChainApi<Client, Block> {
 		let (sender, receiver) = mpsc::channel(0);
 
 		let receiver = Arc::new(Mutex::new(receiver));
-		spawn_validation_pool_task("transaction-pool-task-0", receiver.clone(), spawner);
-		spawn_validation_pool_task("transaction-pool-task-1", receiver, spawner);
+		let validation_pool_tasks: usize = std::env::var("VALIDATION_POOL_TASK").unwrap_or("2".into()).parse().unwrap_or(2);
+		for i in 0..validation_pool_tasks {
+			let name = Box::leak(format!("transaction-pool-task-{i}").into_boxed_str());
+			spawn_validation_pool_task(name, receiver.clone(), spawner);
+		}
 
 		FullChainApi {
 			client,

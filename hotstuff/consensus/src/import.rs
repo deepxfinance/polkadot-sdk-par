@@ -154,11 +154,12 @@ where
 					.map_err(|e| <Self as BlockImport<Block>>::Error::ClientImport(format!("Execute block error {e:?}")))
 			})
 		};
+		let start = std::time::Instant::now();
 		let hash = block.post_hash();
 		let _ = block.justifications.take();
 		let block_commit = find_block_commit::<Block>(&block.post_header());
 		let mut block_execute_info = None;
-		let import_reslt = match self.inner.status(hash) {
+		let import_result = match self.inner.status(hash) {
 			Ok(BlockStatus::InChain) => Ok(ImportResult::AlreadyInChain),
 			Ok(BlockStatus::Unknown) => {
 				let (import, reorg) = self.should_import(&block.header, &block_commit)
@@ -236,6 +237,7 @@ where
 							warn!(target: LOG_TARGET, "FinalizeBlock #{} ({}) failed for {e:?}", header.number(), header.hash());
 						}
 					}
+					log::debug!(target: LOG_TARGET, "ImportBlock #{} in {:?}", header.number(), start.elapsed());
 					result
 				} else {
 					Ok(ImportResult::UnknownParent)
@@ -243,7 +245,7 @@ where
 			},
 			Err(e) => Err(ConsensusError::ClientImport(e.to_string())),
 		};
-		import_reslt.map(|r| (r, block_execute_info))
+		import_result.map(|r| (r, block_execute_info))
 	}
 }
 
