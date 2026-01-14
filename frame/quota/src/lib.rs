@@ -61,6 +61,8 @@ pub mod pallet {
 		AccountNotActivated,
 		/// If quota reach MAX value, it is frozen.
 		MaxQuotaFrozen,
+		/// Account quota insufficient.
+		InsufficientQuota,
 	}
 
 	/// Managers that can activate other accounts.
@@ -255,6 +257,32 @@ pub mod pallet {
 				Self::deposit_event(Event::AddQuota { address: address.clone(), quota });
 			}
 			frame_system::Account::<T>::insert(address, account);
+			Ok(())
+		}
+
+		/// Notice!!! This call will activate account if needed. Please ensure rights before call this!!!.
+		pub fn transfer_quota(from: T::AccountId, to: T::AccountId, quota: u32) -> DispatchResult {
+			let mut from_account = frame_system::Account::<T>::get(from.clone());
+			if from_account.quota == u32::MAX {
+				return Err(Error::<T>::AccountFrozen.into());
+			}
+			if from_account.quota <= quota {
+				return Err(Error::<T>::InsufficientQuota.into());
+			}
+			let mut to_account = frame_system::Account::<T>::get(to.clone());
+			if to_account.quota == u32::MAX {
+				return Err(Error::<T>::AccountFrozen.into());
+			}
+
+			from_account.quota -= quota;
+			if to_account.quota == 0 {
+				to_account.quota += quota + 1;
+				Self::deposit_event(Event::Activate { address: to.clone(), quota: to_account.quota });
+			} else {
+				to_account.quota += quota;
+			}
+			frame_system::Account::<T>::insert(from, from_account);
+			frame_system::Account::<T>::insert(to, to_account);
 			Ok(())
 		}
 	}
