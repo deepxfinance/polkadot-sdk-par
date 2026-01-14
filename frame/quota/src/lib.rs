@@ -18,6 +18,7 @@ pub use pallet::*;
 pub mod pallet {
 	use super::*;
 	use frame_support::pallet_prelude::*;
+	use frame_system::AccountInfo;
 	use frame_system::pallet_prelude::*;
 
 	#[pallet::config]
@@ -45,6 +46,8 @@ pub mod pallet {
 		Freeze { address: T::AccountId },
 		/// Unfreeze account with quota.
 		Unfreeze { address: T::AccountId, quota: u32 },
+		/// Account is removed.
+		RemoveAccount { address: T::AccountId, quota: u32 },
 	}
 
 	#[pallet::error]
@@ -61,6 +64,8 @@ pub mod pallet {
 		AccountNotActivated,
 		/// If quota reach MAX value, it is frozen.
 		MaxQuotaFrozen,
+		/// Account quota insufficient.
+		InsufficientQuota,
 	}
 
 	/// Managers that can activate other accounts.
@@ -256,6 +261,55 @@ pub mod pallet {
 			}
 			frame_system::Account::<T>::insert(address, account);
 			Ok(())
+		}
+
+		/// Notice!!! This call will activate account if needed. Please ensure rights before call this!!!.
+		///
+		/// After transfer:
+		/// 	If from_account's quota less than `quota_limit_to_remove`, this account will be removed.
+		/// 	If you don't want to remove from_account, please set quota_limit_to_remove as `None`.
+		pub fn transfer_quota(from: T::AccountId, to: T::AccountId, quota: u32, quota_limit_to_remove: Option<u32>) -> DispatchResult {
+			let mut from_account = frame_system::Account::<T>::get(from.clone());
+			if from_account.quota == u32::MAX {
+				return Err(Error::<T>::AccountFrozen.into());
+			}
+			if from_account.quota <= quota {
+				return Err(Error::<T>::InsufficientQuota.into());
+			}
+			let mut to_account = frame_system::Account::<T>::get(to.clone());
+			if to_account.quota == u32::MAX {
+				return Err(Error::<T>::AccountFrozen.into());
+			}
+
+			from_account.quota -= quota;
+			if to_account.quota == 0 {
+				to_account.quota += quota + 1;
+				Self::deposit_event(Event::Activate { address: to.clone(), quota: to_account.quota });
+			} else {
+				to_account.quota += quota;
+			}
+			let quota_limit_to_remove = quota_limit_to_remove.unwrap_or_default();
+			if !Self::try_remove_account(Some(&from_account), from.clone(), quota_limit_to_remove) {
+				frame_system::Account::<T>::insert(from, from_account);
+			}
+			frame_system::Account::<T>::insert(to, to_account);
+			Ok(())
+		}
+
+		/// Try remove account if account's quota less than `quota_limit`
+		/// Return `true` if removed, else `false`.
+		pub fn try_remove_account(account: Option<&AccountInfo<T::Index, T::AccountData>>, address: T::AccountId, quota_limit: u32) -> bool {
+			let quota = match account {
+				Some(account) => account.quota,
+				None => frame_system::Account::<T>::get(address.clone()).quota,
+			};
+			if quota < quota_limit {
+				frame_system::Account::<T>::remove(address.clone());
+				Self::deposit_event(Event::RemoveAccount { address, quota });
+				true
+			} else {
+				false
+			}
 		}
 	}
 }
