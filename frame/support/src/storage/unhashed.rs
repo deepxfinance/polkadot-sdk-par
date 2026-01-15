@@ -31,37 +31,7 @@ lazy_static::lazy_static! {
 pub fn get<T: Decode + Sized>(key: &[u8]) -> Option<T> {
 	#[cfg(all(feature = "std", feature = "dev-time"))]
 	let start = std::time::Instant::now();
-	sp_io::storage::get(key).and_then(|val| {
-		#[cfg(all(feature = "std", feature = "dev-time"))]
-		let decode_start = std::time::Instant::now();
-		let res = Decode::decode(&mut &val[..]).map(Some).unwrap_or_else(|e| {
-			// TODO #3700: error should be handleable.
-			log::error!(
-				target: "runtime::storage",
-				"Corrupted state at `{:?}: {:?}`",
-				key,
-				e,
-			);
-			None
-		});
-		#[cfg(all(feature = "std", feature = "dev-time"))]
-		let decode_time = decode_start.elapsed();
-		#[cfg(all(feature = "std", feature = "dev-time"))]
-		if res.is_some() {
-			let time = start.elapsed();
-			let mut lock = GLOBAL_DECODE.lock().unwrap();
-			let mut key = key.to_vec();
-			if key.len() > 32 {
-				key.resize(32, 0);
-			}
-			if let Some(v) = lock.get_mut(&key) {
-				v.push((decode_time, time, val.len()));
-			} else {
-				lock.insert(key, vec![(decode_time, time, val.len())]);
-			}
-		}
-		res
-	})
+	sp_io::storage::get(key).and_then(|val| parse_type(key, val.to_vec()))
 }
 
 /// Return the value of the item in storage under `key`, or the type's default if there is no
@@ -84,6 +54,38 @@ pub fn get_or_else<T: Decode + Sized, F: FnOnce() -> T>(key: &[u8], default_valu
 
 fn key_prefix(key: &[u8]) -> &[u8] {
 	&key[..key.len().min(32)]
+}
+
+fn parse_type<T: Decode>(key: &[u8], val: Vec<u8>) -> Option<T> {
+	#[cfg(all(feature = "std", feature = "dev-time"))]
+	let decode_start = std::time::Instant::now();
+	let res = Decode::decode(&mut val.as_slice()).map(Some).unwrap_or_else(|e| {
+		// TODO #3700: error should be handleable.
+		log::error!(
+			target: "runtime::storage",
+			"Corrupted state at `{:?}: {:?}`",
+			key,
+			e,
+		);
+		None
+	});
+	#[cfg(all(feature = "std", feature = "dev-time"))]
+	let decode_time = decode_start.elapsed();
+	#[cfg(all(feature = "std", feature = "dev-time"))]
+	if res.is_some() {
+		let time = start.elapsed();
+		let mut lock = GLOBAL_DECODE.lock().unwrap();
+		let mut key = key.to_vec();
+		if key.len() > 32 {
+			key.resize(32, 0);
+		}
+		if let Some(v) = lock.get_mut(&key) {
+			v.push((decode_time, time, val.len()));
+		} else {
+			lock.insert(key, vec![(decode_time, time, val.len())]);
+		}
+	}
+	res
 }
 
 #[cfg(feature = "std")]
@@ -143,25 +145,31 @@ pub fn append_cache<T: FullCodec + TStorage, Item: Encode + Clone>(key: &[u8], i
 where
 	T: TypedAppend<Item> + TStorage
 {
-	if sp_io::mut_typed_cache(|_| ()).is_none() {
-		append(key, item);
-	} else {
-		let mut none_f = Some(|_k: &[u8]| { None });
-		none_f.take();
-		let updated = sp_io::mut_typed_cache(|o| o.mutate::<T, _, _>(
-			key_prefix(key),
-			&key,
-			none_f,
-			|t| {
-				t.map(|t| t.append(item.clone()));
+	sp_io::mut_externalities(|ext|  {
+		let mut raw_value = None;
+		if let Some(overlay) = ext.overlay_cache() {
+			if !overlay.contains_key::<T>(key_prefix(key), key) {
+				raw_value = ext.storage(&key);
+			};
+		};
+		if let Some(overlay) = ext.overlay_cache() {
+			let updated = overlay.mutate::<T, _, _>(
+				key_prefix(key),
+				&key,
+				|| { raw_value.clone().and_then(|val| parse_type(key, val)).unwrap_or_default() },
+				|t| {
+					t.map(|t| t.append(item.clone()));
+				}
+			);
+			if !updated {
+				let mut new_value: T = get_cache(key, |_| { Option::<T>::None }).unwrap_or_default();
+				new_value.append(item);
+				sp_io::mut_typed_cache(|o| o.put(key_prefix(key), &key, new_value));
 			}
-		)).unwrap();
-		if !updated {
-			let mut new_value: T = get_cache(key, |_| { Option::<T>::None }).unwrap_or_default();
-			new_value.append(item);
-			sp_io::mut_typed_cache(|o| o.put(key_prefix(key), &key, new_value));
+		} else {
+			append(key, item);
 		}
-	}
+	})
 }
 
 /// Direct encode `item` to `value`.

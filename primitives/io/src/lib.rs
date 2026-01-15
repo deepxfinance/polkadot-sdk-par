@@ -133,6 +133,16 @@ where
 	)
 }
 
+#[cfg(feature = "std")]
+/// Returns the typed cache for only `std` feature.
+pub fn mut_externalities<F, O>(f: F) -> O
+where
+	F: FnOnce(&mut dyn Externalities) -> O,
+{
+	sp_runtime_interface::with_externalities(f)
+		.expect("`mut_overlay_cache` called outside of an Externalities-provided environment.")
+}
+
 /// Interface for accessing the storage from within the runtime.
 #[runtime_interface]
 pub trait Storage {

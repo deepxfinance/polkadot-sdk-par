@@ -116,6 +116,15 @@ impl OverlayCache {
         self.handle_mut(space, f);
     }
 
+    pub fn contains_key<V: Clone + FullCodec + 'static>(&self, space: &[u8], key: &[u8]) -> bool {
+        let f = |storage: &AnyStorage| {
+            storage.downcast_ref::<StorageOverlay<Vec<u8>, V>>()
+                .map(|overlay| overlay.contains(space, key))
+        }
+            .unwrap_or(false);
+        self.handle_ref::<_, _>(space, f).unwrap_or(false)
+    }
+
     pub fn get<V: Clone + FullCodec + 'static, F>(&mut self, space: &[u8], key: &[u8], init: Option<F>) -> Option<Option<V>>
     where
         F: Fn(&[u8]) -> Option<V>
@@ -208,9 +217,9 @@ impl OverlayCache {
         self.handle_mut_or_default::<V, _, _>(space, f);
     }
 
-    pub fn mutate<V: Clone + FullCodec + 'static, F, M>(&mut self, space: &[u8], key: &[u8], init: Option<F>, mutate: M) -> bool
+    pub fn mutate<V: Clone + FullCodec + 'static, F, M>(&mut self, space: &[u8], key: &[u8], init: F, mutate: M) -> bool
     where
-        F: Fn(&[u8]) -> Option<V>,
+        F: Fn() -> V,
         M: FnOnce(Option<&mut V>)
     {
         #[cfg(all(feature = "std", feature = "dev-time"))]

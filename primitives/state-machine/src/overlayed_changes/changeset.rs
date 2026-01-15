@@ -581,8 +581,13 @@ impl OverlayedChangeSet {
 		at_extrinsic: Option<u32>,
 	) -> &mut Option<StorageValue> {
 		let overlayed = self.changes.entry(key.clone()).or_default();
-		let first_write_in_tx = insert_dirty(&mut self.dirty_keys, key);
-		let clone_into_new_tx = if let Some(tx) = overlayed.transactions.last() {
+		let first_write_in_tx = insert_dirty(&mut self.dirty_keys, key.clone());
+		#[cfg(feature = "kvdb")]
+		let last = overlayed.transactions.last()
+			.or(self.read_only.entry(key.clone()).or_default().transactions.last());
+		#[cfg(not(feature = "kvdb"))]
+		let last = overlayed.transactions.last();
+		let clone_into_new_tx = if let Some(tx) = last {
 			if first_write_in_tx {
 				Some(tx.value.clone())
 			} else {

@@ -133,6 +133,11 @@ impl<V: Clone + FullCodec + 'static> StorageApi for StorageOverlay<StorageKey, V
 }
 
 impl<V: Clone> StorageIO<V> for StorageOverlay<StorageKey, V> {
+    fn contains(&self, space: &[u8], key: &[u8]) -> bool {
+        if space != self.space { return false; }
+        self.changes.changes.contains_key(key)
+    }
+    
     fn put(&mut self, space: &[u8], key: &[u8], value: V) {
         if space != &self.space { return; }
         self.changes.set(key.to_vec(), Some(value), None);
@@ -182,24 +187,15 @@ impl<V: Clone> StorageIO<V> for StorageOverlay<StorageKey, V> {
         self.changes.set(key.to_vec(), None, None);
     }
 
-    fn mutate<F, M>(&mut self, space: &[u8], key: &[u8], init: Option<F>, mutate: M) -> bool
+    fn mutate<F, M>(&mut self, space: &[u8], key: &[u8], init: F, mutate: M) -> bool
     where
-        F: Fn(&[u8]) -> Option<V>,
+        F: Fn() -> V,
         M: FnOnce(Option<&mut V>)
     {
         if space != &self.space { return false; }
-        if let Some(entry) = self.changes.changes.get_mut(key) {
-            if let Some(v) = entry.value_mut() {
-                mutate(Some(v));
-                return true;
-            }
-        }
-        if let Some(Some(mut v)) = self.get(space, key, init) {
-            mutate(Some(&mut v));
-            self.changes.set(key.to_vec(), Some(v), None);
-            return true;
-        }
-        false
+        // modify must have mutable reference of value returned
+        mutate(self.changes.modify(key.to_vec(), init, None).as_mut());
+        true
     }
 
     fn cache(&mut self, space: &[u8], key: &[u8], value: Option<V>) {
