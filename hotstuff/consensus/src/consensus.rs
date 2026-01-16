@@ -160,8 +160,12 @@ where
     pub fn should_propose_empty(&self) -> bool {
         // if time passed since last commit time greater than `(max_empty - 1) * slot_duration`
         // we should propose block even empty.
-        Timestamp::current().as_millis().saturating_sub(self.state.commit_qc.timestamp.as_millis())
-        > self.max_empty.saturating_sub(1) as u64 * self.slot_duration.as_millis()
+        if self.max_empty > 1 {
+            Timestamp::current().as_millis().saturating_sub(self.state.commit_qc.timestamp.as_millis())
+                > self.max_empty.saturating_sub(1) as u64 * self.slot_duration.as_millis()
+        } else {
+            true
+        }
     }
 
     // Try recover all unapplied commit.
