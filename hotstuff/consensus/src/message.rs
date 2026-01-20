@@ -423,7 +423,7 @@ impl<Block: BlockT> Proposal<Block> {
     }
 }
 
-/// Quorum certificate for a block.
+/// Quorum certificate for a stage.
 #[derive(Debug, Clone, Encode, Decode)]
 pub struct QC<Block: BlockT> {
     pub view: ViewNumber,

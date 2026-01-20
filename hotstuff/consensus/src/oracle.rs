@@ -16,8 +16,10 @@ pub trait HotsOracle<B: BlockT> {
     fn verify_time_limit(&self) -> Duration;
     /// estimate transaction verify number(which is used for transaction propose).
     fn thread_verify_limit(&self) -> Option<usize>;
-    /// transactions hash should be filtered when propose.
+    /// transactions hash should be filtered when proposed.
     fn filter_transactions(&self) -> HashSet<B::Hash>;
+    /// estimate import time to import earlier.
+    fn import_time(&self) -> Duration;
 }
 
 #[derive(Default)]
@@ -147,6 +149,11 @@ impl<B: BlockT, O: BlockOracle<B>> HotsOracle<B> for HotstuffOracle<B, O> {
 
     fn filter_transactions(&self) -> HashSet<B::Hash> {
         self.transaction_filter.lock().unwrap().values().cloned().flatten().collect()
+    }
+
+    fn import_time(&self) -> Duration {
+        // default we set 15% of block_duration to import
+        self.block_duration() * 15 / 100
     }
 }
 

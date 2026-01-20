@@ -1,3 +1,4 @@
+use std::cell::UnsafeCell;
 use std::collections::HashMap;
 use std::marker::PhantomData;
 use std::sync::Arc;
@@ -66,6 +67,7 @@ pub struct BlockExecutor<C: ClientForHotstuff<B, BE>, B: BlockT, I, PF, L: sc_co
     pub executor_rx: UnboundedReceiver<ExecutorMission<B>>,
     pub pending: NewBlockMission<B>,
     pub missions: HashMap<<B::Header as HeaderT>::Number, NewBlockMission<B>>,
+    pub import_missions: HashMap<<B::Header as HeaderT>::Number, (NewBlockMission<B>, Slot, SafeWrap<BlockImportParams<B, TransactionFor<C, B>>>)>,
     pub block_size_limit: Option<usize>,
     phantom_data: PhantomData<BE>,
 }
@@ -109,6 +111,7 @@ where
             executor_rx,
             pending: NewBlockMission::empty(),
             missions: HashMap::new(),
+            import_missions: HashMap::new(),
             block_size_limit: None,
             phantom_data: PhantomData,
         }
@@ -140,8 +143,90 @@ where
         Ok(import_block)
     }
 
-    // execute one block, return if remove this mission and execute info.
-    async fn execute_mission(&mut self, mission: NewBlockMission<B>) -> Result<BlockExecuteInfo<B>, String> {
+    async fn import_block(
+        &mut self,
+        mission: NewBlockMission<B>,
+        slot: Slot,
+        import_params: BlockImportParams<B, TransactionFor<C, B>>,
+    ) -> Result<(), String> {
+        let header = import_params.post_header();
+
+        // We estimate import time to import block ahead of `commit_time` if possible
+        let commit_time = mission.commit.commit_time().as_millis();
+        let import_time = self.oracle.import_time().as_millis() as u64;
+        let import_start = commit_time.saturating_sub(import_time);
+        let current = Timestamp::current().as_millis();
+        if current < import_start {
+            tokio::time::sleep(Duration::from_millis(import_start - current)).await;
+        }
+        match self.import.import_block(import_params).await {
+            Ok(res) => {
+                res.handle_justification(
+                    &header.hash(),
+                    *header.number(),
+                    &self.justification_sync_link,
+                );
+                // Since we allow ahead consensus, we do not skip following block event authorities changes.
+                self.last_slot = slot;
+                if self.client.info().finalized_number < *header.number() {
+                    if let Err(e) = self.client.finalize_block(header.hash(), None, true) {
+                        warn!(target: LOG_TARGET, "FinalizeBlock #{} ({}) failed for {e:?}", header.number(), header.hash());
+                    }
+                }
+                Ok(())
+            },
+            Err(err) => {
+                Err(format!("Import block {}:{} {err}", header.number(), header.hash()))
+            },
+        }
+    }
+
+    async fn try_import_all(&mut self) {
+        let mut blocks: Vec<_> = self.import_missions.keys().into_iter().cloned().collect();
+        blocks.sort();
+        for mission_block in blocks {
+            let expected_block = self.client.info().best_number.saturating_add(1u32.into());
+            if mission_block > expected_block {
+                break;
+            } else if mission_block < expected_block {
+                self.import_missions.remove(&mission_block);
+                continue;
+            }
+
+            // get next block's parent_commit_hash
+            let next_block = mission_block.saturating_add(1u32.into());
+            let next_parent_commit_hash = if let Some(next_import_mission) = self.import_missions.get(&next_block) {
+                next_import_mission.0.commit.parent_commit_hash()
+            } else if let Some(nex_mission) = self.missions.get(&next_block) {
+                nex_mission.commit.parent_commit_hash()
+            } else {
+                // not finalized, do not import.
+                break;
+            };
+            // remove is necessary.
+            let mission = match self.import_missions.remove(&mission_block) {
+                Some(mission) => mission,
+                None => break,
+            };
+            if next_parent_commit_hash != mission.0.commit.commit_hash() {
+                // not import for invalid commit_hash.
+                error!(
+                    target: LOG_TARGET,
+                    "Block {mission_block} can't import for commit_hash check error {} {next_parent_commit_hash}",
+                    mission.0.commit.commit_hash(),
+                );
+                return;
+            }
+            if let Err(e) = self.import_block(mission.0, mission.1, mission.2.into_inner()).await {
+                error!(target: LOG_TARGET, "Block {mission_block} import failed for {e}");
+                return;
+            }
+        }
+    }
+
+    // Execute one block, return execute info.
+    // Import block directly if `import`, else store execution result to `import_mission`.
+    async fn execute_mission(&mut self, mission: NewBlockMission<B>, import: bool) -> Result<BlockExecuteInfo<B>, String> {
         let best_block = self.client.info().best_number;
         let best_hash = self.client.info().best_hash;
         let mission_block = mission.block_number();
@@ -261,67 +346,52 @@ where
                 return Err(format!("Propose block {mission_block} get block_import_params failed for {e:?}"));
             }
         };
-        // import block
-        let header = block_import_params.post_header();
-        let current = Timestamp::current().as_millis();
-        if current < mission.commit.commit_time().as_millis() {
-            tokio::time::sleep(std::time::Duration::from_millis(mission.commit.commit_time().as_millis() - current)).await;
+        if import {
+            // import block
+            self.import_block(mission, slot, block_import_params).await?;
+        } else {
+            // store result to import_missions
+            self.import_missions.insert(mission.block_number(), (mission, slot, SafeWrap::new(block_import_params)));
         }
-        match self.import.import_block(block_import_params).await {
-            Ok(res) => {
-                res.handle_justification(
-                    &header.hash(),
-                    *header.number(),
-                    &self.justification_sync_link,
-                );
-                // Since we allow ahead consensus, we do not skip following block event authorities changes.
-                self.last_slot = slot;
-                if self.client.info().finalized_number < *header.number() {
-                    if let Err(e) = self.client.finalize_block(header.hash(), None, true) {
-                        warn!(target: LOG_TARGET, "FinalizeBlock #{} ({}) failed for {e:?}", header.number(), header.hash());
-                    }
-                }
-                Ok(info)
-            },
-            Err(err) => {
-                Err(format!("Import block {}:{} built on {parent_hash:?}: {err}", header.number(), header.hash()))
-            },
-        }
+        Ok(info)
     }
 
     async fn try_execute_all(&mut self) {
         let mut blocks = self.missions.keys().cloned().collect::<Vec<_>>();
         blocks = blocks.into_iter().filter(|b| *b > self.client.info().best_number).collect();
-        if blocks.len() <= 1 { return; }
         blocks.sort();
         let mut removes = vec![];
-        for pending_block in &blocks[1..]  {
-            let mission_block = pending_block.saturating_sub(1u32.into());
-            let mission = match self.missions.get(pending_block) {
-                Some(pending_mission) => match self.missions.get(&mission_block) {
-                    Some(mission) => if pending_mission.commit.parent_commit_hash() == mission.commit.commit_hash() {
-                        mission.clone()
-                    } else {
-                        debug!(target: LOG_TARGET, "break for invalid parent hash {} {}", pending_mission.commit.parent_commit_hash(), mission.commit.commit_hash());
-                        break;
-                    },
-                    None => {
-                        debug!(target: LOG_TARGET, "break for no parent mission for {}", pending_block);
-                        break
-                    },
-                },
+        for mission_block in &blocks  {
+            if mission_block > &self.client.info().best_number.saturating_add(1u32.into()) {
+                break;
+            }
+            let mission = match self.missions.get(mission_block) {
+                Some(mission) => mission.clone(),
                 None => {
-                    error!(target: LOG_TARGET, "break for no pending block mission {pending_block}");
+                    debug!(target: LOG_TARGET, "break for no parent mission for {}", mission_block);
                     break
-                },
+                }
             };
-            self.import.lock(BlockOrigin::ConsensusBroadcast, mission_block).await;
-            let result = self.execute_mission(mission).await;
-            self.import.unlock(BlockOrigin::ConsensusBroadcast, mission_block).await;
+
+            // if there is correct next block_mission, this block can be imported directly.
+            let mut import = false;
+            let next_block = mission_block.saturating_add(1u32.into());
+            if let Some(next) = self.missions.get(&next_block) {
+                // if next block commit confirmed, this block is finalized, we can just import it.
+                import = next.commit.parent_commit_hash() == mission.commit.commit_hash();
+                if !import {
+                    debug!(target: LOG_TARGET, "commit hash check consistence failed {} {}", next.commit.parent_commit_hash(), mission.commit.commit_hash());
+                }
+            }
+
+            // execute block and try import
+            self.import.lock(BlockOrigin::ConsensusBroadcast, *mission_block).await;
+            let result = self.execute_mission(mission, import).await;
+            self.import.unlock(BlockOrigin::ConsensusBroadcast, *mission_block).await;
             match result {
                 Ok(info) => {
                     self.oracle.update_execute_info(&info);
-                    removes.push(mission_block);
+                    removes.push(*mission_block);
                 },
                 Err(e) => {
                     debug!(target: LOG_TARGET, "ExecuteFailed: {e}");
@@ -365,6 +435,11 @@ where
                             }
                         }
                         ExecutorMission::Imported(header) => {
+                            // remove all block import missions l.e. than imported.
+                            let import_removes = self.import_missions.keys().cloned().filter(|b| b <= header.number()).collect::<Vec<_>>();
+                            for block in import_removes {
+                                self.import_missions.remove(&block);
+                            }
                             // remove all block missions l.e. than imported.
                             let removes = self.missions.keys().cloned().filter(|b| b <= header.number()).collect::<Vec<_>>();
                             for block in removes {
@@ -382,8 +457,27 @@ where
                         }
                     }
                 }
+                self.try_import_all().await;
                 self.try_execute_all().await;
             }
         }
+    }
+}
+
+/// We use this to wrap BlockImportParams since we ensure it is thread safe.
+pub struct SafeWrap<T> {
+    pub inner: UnsafeCell<T>,
+}
+
+unsafe impl<T> Sync for SafeWrap<T> {}
+unsafe impl<T> Send for SafeWrap<T> {}
+
+impl<T> SafeWrap<T> {
+    pub fn new(value: T) -> SafeWrap<T> {
+        Self { inner: UnsafeCell::new(value) }
+    }
+
+    pub fn into_inner(self) -> T {
+        self.inner.into_inner()
     }
 }

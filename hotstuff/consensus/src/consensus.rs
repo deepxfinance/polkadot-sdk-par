@@ -80,7 +80,7 @@ pub struct ConsensusWorker<
     processed: Proposal<B>,
     /// consensus success block waiting to execute.
     commit: BlockCommit<B>,
-    commit_extrinsic: HashMap<<B::Header as HeaderT>::Number, (ViewNumber, Vec<B::Hash>)>,
+    commit_extrinsic: HashMap<<B::Header as HeaderT>::Number, (ViewNumber, Vec<B::Hash>, std::time::Instant)>,
     /// Tmp proposal extrinsic hashes for faster consensus notify.
     proposal_extrinsic_hashes: HashMap<ViewNumber, Vec<B::Hash>>,
 
@@ -770,11 +770,16 @@ where
                         None => return Ok(()),
                     };
                     // send execute block mission to a block execute queue and execute/import it.
+                    let parent_block = new_block_number.saturating_sub(1u32.into());
                     info!(
                         target: CLIENT_LOG_TARGET,
-                        "^^_^^. block {new_block_number} can be execute with QC {} parent {}",
+                        "^^_^^. block {new_block_number} can be execute with QC {} parent {}{}",
                         commit.round(),
                         grandpa.qc.round(),
+                        self.commit_extrinsic
+                            .get(&parent_block)
+                            .map(|pre| format!("({:?})", pre.2.elapsed()))
+                            .unwrap_or("".into()),
                     );
                     self.state.authority.on_block_commit(commit.view(), commit.block_number());
                     let extrinsics = grandpa.payload.extrinsics.clone().unwrap();
@@ -786,14 +791,14 @@ where
                     if self.executor_tx.send(mission).is_err() {
                         warn!(target: CLIENT_LOG_TARGET, "~~ trigger_qc_mission({from}). block {new_block_number} execute mission send failed");
                     }
-                    if let Some(hashes) = self.notify_consensus_block(&commit, &extrinsics) {
-                        if let Some((pre_view, pre_hashes)) = self.commit_extrinsic.get_mut(&commit.block_number()) {
-                            if commit.view() > *pre_view {
-                                *pre_hashes = hashes;
-                            }
-                        } else {
-                            self.commit_extrinsic.insert(commit.block_number(), (commit.view(), hashes));
+                    let hashes = self.notify_consensus_block(&commit, &extrinsics);
+                    if let Some((pre_view, pre_hashes, prev_time)) = self.commit_extrinsic.get_mut(&commit.block_number()) {
+                        if commit.view() > *pre_view {
+                            *pre_hashes = hashes;
+                            *prev_time = std::time::Instant::now();
                         }
+                    } else {
+                        self.commit_extrinsic.insert(commit.block_number(), (commit.view(), hashes, std::time::Instant::now()));
                     }
                     self.state.update_commit_qc(&qc);
                     self.commit = commit;
@@ -1021,7 +1026,7 @@ where
         let mut block = self.client.info().best_number.saturating_add(1u32.into());
         loop {
             if block > block_number { break; }
-            if let Some((_, hashes)) = self.commit_extrinsic.get(&block) {
+            if let Some((_, hashes, _)) = self.commit_extrinsic.get(&block) {
                 // this processed block extrinsic are not executed, should exclude it for
                 filter.extend(hashes.clone());
             }
@@ -1171,9 +1176,9 @@ where
         Ok(false)
     }
 
-    fn notify_consensus_block(&mut self, commit: &BlockCommit<B>, extrinsics: &Vec<Vec<Vec<B::Extrinsic>>>) -> Option<Vec<B::Hash>> {
+    fn notify_consensus_block(&mut self, commit: &BlockCommit<B>, extrinsics: &Vec<Vec<Vec<B::Extrinsic>>>) -> Vec<B::Hash> {
         // empty block
-        if extrinsics == &vec![vec![], vec![vec![]]] { return None; }
+        if extrinsics == &vec![vec![], vec![vec![]]] { return Vec::new(); }
         let hashes = self.proposal_extrinsic_hashes.remove(&commit.view())
             .unwrap_or(
                 // TODO faster parallel calculation.
@@ -1188,7 +1193,7 @@ where
         if let Err(e) = self.client.notify_consensus((block, commit.extrinsics_root(), hashes.clone()).into()) {
             warn!(target: CLIENT_LOG_TARGET, "notify_consensus_block {block} failed for err: {e:?}");
         }
-        Some(hashes)
+        hashes
     }
 }
 
