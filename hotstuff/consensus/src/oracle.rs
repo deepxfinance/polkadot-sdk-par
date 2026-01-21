@@ -152,8 +152,8 @@ impl<B: BlockT, O: BlockOracle<B>> HotsOracle<B> for HotstuffOracle<B, O> {
     }
 
     fn import_time(&self) -> Duration {
-        // default we set 15% of block_duration to import
-        self.block_duration() * 15 / 100
+        // default we set 50% of block_duration to import
+        self.block_duration() * 1 / 2
     }
 }
 

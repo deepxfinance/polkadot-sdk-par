@@ -27,10 +27,20 @@ use sc_consensus::BlockImport;
 use sc_consensus_slots::InherentDataProviderExt;
 use sp_consensus::SelectChain;
 
-use crate::{AuthorityList, client::{ClientForHotstuff, LinkHalf}, find_consensus_logs, find_block_commit, executor::{BlockExecutor, ExecutorMission}, import::{PendingFinalizeBlockQueue, ImportLock}, message::{
-    ConsensusMessage, Proposal, Timeout, Vote, QC, TC, BlockCommit, ConsensusStage, Payload,
-    PeerAuthority, ProposalKey, ProposalReq, ProposalRequest,
-}, network::{HotstuffNetworkBridge, Network as NetworkT, Syncing as SyncingT}, error::{HotstuffError, PayloadError, ViewNumber}, aux_data::{AuxDataStore, Timer}, CLIENT_LOG_TARGET, AuthorityId};
+use crate::{
+    client::{ClientForHotstuff, LinkHalf},
+    executor::{BlockExecutor, types::{BlockMission, ExecutorMission, ExecuteStage}},
+    import::{PendingFinalizeBlockQueue, ImportLock}, oracle::HotsOracle, 
+    message::{
+        ConsensusMessage, Proposal, Timeout, Vote, QC, TC, BlockCommit, ConsensusStage, Payload,
+        PeerAuthority, ProposalKey, ProposalReq, ProposalRequest, CommitQC, Round, 
+    }, 
+    network::{HotstuffNetworkBridge, Network as NetworkT, Syncing as SyncingT}, 
+    error::{HotstuffError, PayloadError, ViewNumber}, state::ConsensusState,
+    aux_data::{AuxDataStore, Timer}, revert::get_block_commit, 
+    CLIENT_LOG_TARGET, AuthorityId, AuthorityList,
+    find_consensus_logs, find_block_commit,
+};
 use hotstuff_primitives::{ConsensusLog, HotstuffApi, RuntimeAuthorityId};
 use sc_network::PeerId;
 use sc_network_common::sync::SyncState;
@@ -41,11 +51,6 @@ use sp_inherents::CreateInherentDataProviders;
 use sp_runtime::traits::Zero;
 use sp_runtime::transaction_validity::TransactionSource;
 use sp_timestamp::Timestamp;
-use crate::executor::NewBlockMission;
-use crate::message::{CommitQC, Round};
-use crate::oracle::HotsOracle;
-use crate::revert::get_block_commit;
-use crate::state::ConsensusState;
 
 #[cfg(test)]
 #[path = "tests/consensus_tests.rs"]
@@ -749,7 +754,22 @@ where
                 return Ok(());
             }
         };
-        if !qc_proposal.payload.stage.finish() { return Ok(()); }
+        match qc_proposal.payload.stage {
+            ConsensusStage::Prepare => {
+                // Prepare finished, we can confirm that commited parent block can be imported and finalized.
+                let confirm_block = self.commit.block_number();
+                if confirm_block > 0u32.into() && confirm_block.saturating_add(1u32.into()) == qc_proposal.payload.block_number() {
+                    info!(target: CLIENT_LOG_TARGET, "^^_^^. block {confirm_block} confirmed with QC {}", qc.round());
+                    let mission = ExecutorMission::Confirm(qc_proposal.view, self.commit.clone());
+                    if self.executor_tx.send(mission).is_err() {
+                        warn!(target: CLIENT_LOG_TARGET, "~~ trigger_qc_mission({from}). block {confirm_block} confirm mission send failed");
+                    }
+                }
+            }
+            ConsensusStage::PreCommit => return Ok(()),
+            _ => (),
+        }
+        // For Commit stage, we can execute block.
         // grandpa -> parent(grandpa_qc) -> qc_proposal(parent_qc) -> qc
         match self.aux_data.get_proposal_ancestors(&qc_proposal) {
             Ok(Some((parent, grandpa))) => {
@@ -783,8 +803,8 @@ where
                     );
                     self.state.authority.on_block_commit(commit.view(), commit.block_number());
                     let extrinsics = grandpa.payload.extrinsics.clone().unwrap();
-                    let mission = ExecutorMission::Consensus(NewBlockMission {
-                        commit: commit.clone(),
+                    let mission = ExecutorMission::Execute(BlockMission {
+                        stage: ExecuteStage::Commit(commit.clone()),
                         block: grandpa.payload.block.clone(),
                         extrinsics: extrinsics.clone(),
                     });
