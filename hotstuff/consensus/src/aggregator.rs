@@ -7,7 +7,6 @@ use w3f_bls::{
 };
 use w3f_bls::SerializableToBytes;
 use sp_runtime::traits::Block;
-use sp_timestamp::Timestamp;
 use crate::{
 	AuthorityList, AuthoritySignature,
 	message::{Timeout, Vote, QC, TC},
@@ -145,7 +144,6 @@ impl<Engine: EngineBLS> QCMaker<Engine> {
 				mask: self.mask.clone(),
 				signature: signature.to_bytes(),
 			},
-			timestamp: Timestamp::current(),
 		}))
 	}
 }

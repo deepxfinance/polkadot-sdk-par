@@ -246,6 +246,7 @@ impl<Block: BlockT> Timeout<Block> {
 pub struct ExtrinsicBlock<B: BlockT> {
     pub number: <B::Header as HeaderT>::Number,
     pub extrinsics_root: B::Hash,
+    pub timestamp: Timestamp,
 }
 
 impl<B: BlockT> ExtrinsicBlock<B> {
@@ -253,6 +254,7 @@ impl<B: BlockT> ExtrinsicBlock<B> {
         Self {
             number: 0u32.into(),
             extrinsics_root: Default::default(),
+            timestamp: Default::default(),
         }
     }
 }
@@ -269,9 +271,9 @@ impl<Block: BlockT> Debug for ExtrinsicBlock<Block> {
     }
 }
 
-impl<B: BlockT> From<(<B::Header as HeaderT>::Number, B::Hash)> for ExtrinsicBlock<B> {
-    fn from((number, extrinsics_root): (<B::Header as HeaderT>::Number, B::Hash)) -> Self {
-        Self { number, extrinsics_root }
+impl<B: BlockT> From<(<B::Header as HeaderT>::Number, B::Hash, Timestamp)> for ExtrinsicBlock<B> {
+    fn from((number, extrinsics_root, timestamp): (<B::Header as HeaderT>::Number, B::Hash, Timestamp)) -> Self {
+        Self { number, extrinsics_root, timestamp }
     }
 }
 
@@ -289,6 +291,10 @@ impl<Block: BlockT> Payload<Block> {
             block: ExtrinsicBlock::empty(),
             extrinsics: None,
         }
+    }
+
+    pub fn timestamp(&self) -> Timestamp {
+        self.block.timestamp
     }
 
     pub fn block_number(&self) -> <Block::Header as HeaderT>::Number {
@@ -432,7 +438,6 @@ pub struct QC<Block: BlockT> {
     /// Aggregated BLS signature the digest of QC.
     pub signature: AggregateSignature,
     pub stage: ConsensusStage,
-    pub timestamp: Timestamp,
 }
 
 impl<Block: BlockT> QC<Block> {
@@ -465,7 +470,6 @@ impl<Block: BlockT> Default for QC<Block> {
             proposal_hash: BlockCommit::<Block>::empty().commit_hash(),
             signature: AggregateSignature::default(),
             stage: ConsensusStage::Commit,
-            timestamp: Default::default(),
         }
     }
 }
@@ -717,7 +721,7 @@ impl<B: BlockT> BlockCommit<B> {
             view: commit.1.view,
             extrinsic_block: commit.0.payload.block.clone(),
             signature: commit.1.signature,
-            timestamp: commit.1.timestamp,
+            timestamp: commit.0.payload.timestamp(),
         };
         Some(block_commit)
     }
@@ -739,7 +743,6 @@ impl<B: BlockT> BlockCommit<B> {
             proposal_hash: self.commit_hash(),
             signature: self.signature.clone(),
             stage: ConsensusStage::Commit,
-            timestamp: Timestamp::default(),
         };
         commit_qc.verify(authorities)
     }

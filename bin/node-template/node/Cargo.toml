@@ -44,7 +44,7 @@ frame-support = { version = "4.0.0-dev", path = "../../../frame/support" }
 pallet-transaction-payment = { version = "4.0.0-dev", default-features = false, path = "../../../frame/transaction-payment" }
 pallet-quota = { default-features = false, path	= "../../../frame/quota" }
 
-# Hotstuff Consensus
+# HotStuff Consensus
 hotstuff-consensus = { path = "../../../hotstuff/consensus" }
 pallet-hotstuff = { default-features = false, path = "../../../hotstuff/pallets/hotstuff" }
 hotstuff-primitives = { default-features = false, path = "../../../hotstuff/primitives", features = ["bls-experimental"] }

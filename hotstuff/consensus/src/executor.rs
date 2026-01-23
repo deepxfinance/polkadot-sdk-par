@@ -17,7 +17,6 @@ use sp_consensus::{BlockOrigin, Environment, Error as ConsensusError, Proposer, 
 use sp_consensus_slots::{Slot, SlotDuration};
 use sp_inherents::{CreateInherentDataProviders, InherentDataProvider};
 use sp_runtime::{Digest, DigestItem, Saturating};
-use sp_runtime::generic::BlockId;
 use sp_runtime::traits::NumberFor;
 use sp_timestamp::Timestamp;
 use types::{BlockMission, ExecutorMission, ImportMission, SafeImportMission};
@@ -205,41 +204,33 @@ where
         let best_hash = self.client.info().best_hash;
         let mission_block = mission.block_number();
         if best_block >= mission_block {
-            return Err(format!("skip old block mission: {mission_block} for best_block {best_block}"));
+            return Err(format!("skip old block #{mission_block} for best_block #{best_block}"));
         } else if mission_block != best_block.saturating_add(1u32.into()) {
-            return Err(format!("skip next block number: {mission_block} for too far than best {best_block}"));
+            return Err(format!("skip next block #{mission_block} for too far than best #{best_block}"));
         }
-        let parent_hash = match self.client.block_hash_from_id(&BlockId::Number(best_block)) {
-            Ok(Some(parent_hash)) => parent_hash,
-            Ok(None) => {
-                return Err(format!("skip execute block: {mission_block} for no parent hash"));
-            },
-            Err(e) => {
-                return Err(format!("skip execute block: {mission_block} for get parent hash error: {e:?}"));
-            }
-        };
         // check parent block's commit qc hash. ensure correct chain fork.
         if mission_block > 1u32.into() {
-            match self.client.header(parent_hash) {
+            match self.client.header(best_hash) {
                 Ok(Some(parent_header)) => match find_block_commit::<B>(&parent_header) {
                     Some(parent_commit) => if parent_commit.commit_hash() != mission.parent_commit_hash()
                         || mission_block != parent_commit.block_number().saturating_add(1u32.into()) {
                         return Err(format!(
-                            "skip next block number: {mission_block} for no expected parent {} commit_qc_hash {} expect: {}",
+                            "skip next block: #{mission_block} for no expected parent #{} commit_qc_hash {}:{} expect: {}",
                             parent_commit.block_number(),
+                            parent_commit.round(),
                             parent_commit.commit_hash(),
                             mission.parent_commit_hash(),
                         ));
                     },
                     None => {
-                        return Err(format!("skip next block number: {mission_block} for no parent header have no commit!!!"));
+                        return Err(format!("skip next block #{mission_block} for parent #{best_block} header have no commit!!!"));
                     }
                 },
                 Ok(None) => {
-                    return Err(format!("skip next block number: {mission_block} for no parent header"));
+                    return Err(format!("skip next block #{mission_block} for no parent header"));
                 },
                 Err(e) => {
-                    return Err(format!("skip next block number: {mission_block} for get parent header error: {e:?}"));
+                    return Err(format!("skip next block #{mission_block} for get parent header error: {e:?}"));
                 }
             }
         }
@@ -247,7 +238,7 @@ where
         // creat inherent data to check
         let inherent_data_providers = match self
             .create_inherent_data_providers
-            .create_inherent_data_providers(parent_hash, *mission.commit_time())
+            .create_inherent_data_providers(best_hash, *mission.commit_time())
             .await
         {
             Ok(x) => x,
@@ -265,7 +256,7 @@ where
         let logs = vec![<DigestItem as CompatibleDigestItem<Slot>>::hotstuff_pre_digest(slot)];
         let parent_header = self
             .client
-            .header(parent_hash)
+            .header(best_hash)
             .expect("get best header")
             .expect("no expected best header");
         let proposer = self.proposer_factory.write().await.init(&parent_header).await.expect("proposer init");
@@ -281,7 +272,7 @@ where
         let (proposal, info) = match BlockPropose::<B>::propose_block(
             proposer,
             "Consensus",
-            parent_hash,
+            best_hash,
             *parent_header.number(),
             // actually we must execute all transactions, but we still limit time.
             Duration::from_millis(self.slot_duration.as_millis() * 6),
@@ -343,6 +334,7 @@ where
                 },
                 Err(e) => {
                     warn!(target: LOG_TARGET, "ExecuteFailed: {e}");
+                    break;
                 }
             }
         }
@@ -378,11 +370,11 @@ where
                             }
                             if let Some(pre_mission) = self.missions.get_mut(&block) {
                                 if mission.view() >= pre_mission.view() {
-                                    trace!(target: LOG_TARGET, "Receive #{block} with view {} -> {}", pre_mission.view(), mission.view());
+                                    trace!(target: LOG_TARGET, "Receive {:?} #{block} with view {} -> {}", mission.mode(), pre_mission.view(), mission.view());
                                     *pre_mission = mission;
                                 }
                             } else {
-                                trace!(target: LOG_TARGET, "Receive #{block} with view {}", mission.view());
+                                trace!(target: LOG_TARGET, "Receive {:?} #{block} with view {}", mission.mode(), mission.view());
                                 self.missions.insert(block, mission);
                             }
                         }

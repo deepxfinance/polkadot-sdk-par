@@ -1,3 +1,4 @@
+use std::str::FromStr;
 use sp_api::{BlockT, HeaderT, ProvideRuntimeApi, TransactionFor};
 use codec::{Encode, Decode};
 use hotstuff_primitives::digests::CompatibleDigestItem;
@@ -10,8 +11,28 @@ use crate::message::{BlockCommit, ExtrinsicBlock};
 
 pub type SafeImportMission<B, C> = SafeWrap<ImportMission<B, C>>;
 
+#[derive(Debug, Clone, Copy, Encode, Decode, Eq, PartialEq)]
+pub enum ExecuteMode {
+    Unchecked,
+    Checked,
+    Commit,
+}
+
+impl FromStr for ExecuteMode {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "unchecked" => Ok(ExecuteMode::Unchecked),
+            "checked" => Ok(ExecuteMode::Checked),
+            "commit" => Ok(ExecuteMode::Commit),
+            _ => Err(format!("unknown execute mode: {}", s)),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Encode, Decode)]
-pub struct BlockPropose<B: BlockT> {
+pub struct PendingBlock<B: BlockT> {
     /// QC of parent block's commit.
     pub parent_commit: BlockCommit<B>,
     /// Current view number
@@ -23,9 +44,9 @@ pub struct BlockPropose<B: BlockT> {
 #[derive(Clone, Debug, Encode, Decode)]
 pub enum ExecuteStage<B: BlockT> {
     /// Consensus stage at Prepare and transactions are not verified.
-    Unchecked(BlockPropose<B>),
+    Unchecked(PendingBlock<B>),
     /// Consensus stage at Prepare succeeded(transactions are verified).
-    Checked(BlockPropose<B>),
+    Checked(PendingBlock<B>),
     /// Block Commit QC generated so that we can just execute(not confirmed to import).
     Commit(BlockCommit<B>),
 }
@@ -38,6 +59,14 @@ pub struct BlockMission<B: BlockT> {
 }
 
 impl<B: BlockT> BlockMission<B> {
+    pub fn mode(&self) -> ExecuteMode {
+        match &self.stage {
+            ExecuteStage::Unchecked(_) => ExecuteMode::Unchecked,
+            ExecuteStage::Checked(_) => ExecuteMode::Checked,
+            ExecuteStage::Commit(_) => ExecuteMode::Commit,
+        }
+    }
+
     pub fn view(&self) -> ViewNumber {
         match &self.stage {
             ExecuteStage::Unchecked(b) => b.view,
@@ -100,7 +129,7 @@ impl<B: BlockT, C: ProvideRuntimeApi<B>> ImportMission<B, C> {
     }
 
     pub fn confirm(&mut self, commit: &BlockCommit<B>) -> Result<(), String> {
-        let block = self.mission.block.clone();
+        let block = self.mission.block.number.clone();
         if commit.view() != self.mission.view() {
             return Err(format!(
                 "Confirm block {block} view doesn't match {}/{}",
@@ -132,7 +161,7 @@ impl<B: BlockT, C: ProvideRuntimeApi<B>> ImportMission<B, C> {
         }
         // ensure block commit is in block header
         if !self.import.post_digests.iter().rev()
-            .any(|log| <DigestItem as CompatibleDigestItem<Slot>>::as_hotstuff_seal(log).is_some())
+            .any(|log| <DigestItem as CompatibleDigestItem<BlockCommit<B>>>::as_hotstuff_seal(log).is_some())
         {
             let commit_digest_item = <DigestItem as CompatibleDigestItem<BlockCommit<B>>>::hotstuff_seal(commit.clone());
             self.import.post_digests.push(commit_digest_item);
