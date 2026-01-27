@@ -573,13 +573,18 @@ where
         }
         if check_payload {
             match self.check_payload(proposal).await {
-                Ok(true) => {
+                Ok((true, hashes)) => {
                     self.pending_proposal = Some(proposal.clone());
                     self.try_wait_sync().await;
                     trace!(target: CLIENT_LOG_TARGET, "check_payload no state to check, skip vote for proposal to pending!!!");
+                    if let Some(hashes) = hashes {
+                        self.proposal_extrinsic_hashes.insert(proposal.view, hashes);
+                    }
                     return Ok(())
                 },
-                Ok(false) => (),
+                Ok((false, hashes)) => if let Some(hashes) = hashes {
+                    self.proposal_extrinsic_hashes.insert(proposal.view, hashes);
+                },
                 Err(e) => {
                     debug!(target: CLIENT_LOG_TARGET, "#^# Check proposal {} digest {} parent {} payload {} error: {e:?}", proposal.round(), proposal.digest(), proposal.parent_hash(), proposal.payload);
                     return Ok(())
@@ -1106,18 +1111,18 @@ where
     }
 
     // return if we should keep pending_proposal.
-    async fn check_payload(&self, proposal: &Proposal<B>) -> Result<bool, HotstuffError> {
+    async fn check_payload(&self, proposal: &Proposal<B>) -> Result<(bool, Option<Vec<B::Hash>>), HotstuffError> {
         let info = self.client.info();
         let payload = &proposal.payload;
         if payload.block_number() > info.best_number.saturating_add(2u32.into()) && self.state.find_authority(proposal.view).is_some() {
             // if propose new block is much more than local best block, do not vote for it.
             debug!(target: CLIENT_LOG_TARGET, "Meet proposal new_block #{} > local_best_block #{}(+2). skip vote and pending it!", payload.block_number(), info.best_number);
-            return Ok(true);
+            return Ok((true, None));
         }
         if payload.block_number() < self.commit.block_number() {
             return Err(PayloadError::BlockRollBack(format!("Next/Processed: #{}/#{}", payload.block_number(), self.commit.block_number())).into());
         }
-        if payload.stage != ConsensusStage::Prepare { return Ok(false); }
+        if payload.stage != ConsensusStage::Prepare { return Ok((false, None)); }
         let parent_commit_hash = self.commit.commit_hash();
         if self.commit.block_number().saturating_add(1u32.into()) == payload.block_number() {
             if parent_commit_hash != proposal.parent_hash() {
@@ -1136,7 +1141,7 @@ where
             return Err(PayloadError::BaseBlock(format!("proposal {} no local parent commit to check, commit: {}, commit_qc: {}", proposal.round(), self.commit.round(), self.state.commit_qc.round())).into());
         }
         if payload.extrinsics.is_none() {
-            return Ok(false);
+            return Ok((false, None));
         }
         // verify extrinsic
         let start = std::time::Instant::now();
@@ -1220,7 +1225,7 @@ where
             threads_verify.sort_by(|a, b| b.1.cmp(&a.1));
             warn!(target: CLIENT_LOG_TARGET, "check_payload extrinsic exceed slot_duration({}ms): {check_extrinsic_time}μs(each length & ms: {threads_verify:?})", self.slot_duration.as_millis());
         }
-        Ok(false)
+        Ok((false, Some(all_hashes)))
     }
 
     fn notify_consensus_block(&mut self, commit: &BlockCommit<B>, extrinsics: &Vec<Vec<Vec<B::Extrinsic>>>) -> Vec<B::Hash> {
