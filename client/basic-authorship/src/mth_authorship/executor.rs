@@ -9,6 +9,7 @@ use futures::channel::mpsc::{Receiver, Sender, channel};
 use log::{debug, error, info, trace, warn};
 use sc_block_builder::{BlockBuilder, BlockBuilderApi, BlockBuilderProvider};
 use sc_client_api::{backend, ChildInfo, StorageProof};
+use sc_client_api::execution_extensions::ExecutionStrategies;
 use sc_proposer_metrics::{EndProposingReason, MetricsLink as PrometheusMetrics};
 use sc_telemetry::{telemetry, TelemetryHandle, CONSENSUS_INFO};
 use sc_transaction_pool_api::TransactionPool;
@@ -24,7 +25,7 @@ use sp_perp_api::PerpRuntimeApi;
 use sp_runtime::{traits, Digest, Percent, SaturatedConversion, Saturating};
 use sp_runtime::traits::{Hash, Header, NumberFor, One};
 use sp_spot_api::SpotRuntimeApi;
-use sp_state_machine::{Changes, MergeErr, OverlayedChanges, OverlayedEntry, StorageKey, StorageValue};
+use sp_state_machine::{Changes, ExecutionStrategy, MergeErr, OverlayedChanges, OverlayedEntry, StorageKey, StorageValue};
 use sp_state_machine::backend::Consolidate;
 use crate::{BlockPropose, ExtraExecute, MultiThreadBlockBuilder};
 use crate::mth_authorship::execute_info::{BlockExecuteInfo, InfoRecorder, MergeInfo, ThreadExecutionInfo};
@@ -46,6 +47,7 @@ pub struct BlockExecutor<B, C, A, PR, MBH, E> {
     client: Arc<C>,
     transaction_pool: Arc<A>,
     native_version: sp_version::NativeVersion,
+    execution_strategies: ExecutionStrategies,
     metrics: PrometheusMetrics,
     telemetry: Option<TelemetryHandle>,
     phantom: PhantomData<(B, PR, MBH, E)>,
@@ -75,6 +77,7 @@ where
         client: Arc<C>,
         transaction_pool: Arc<A>,
         native_version: sp_version::NativeVersion,
+        execution_strategies: ExecutionStrategies,
         metrics: PrometheusMetrics,
         telemetry: Option<TelemetryHandle>,
     ) -> Self {
@@ -83,14 +86,25 @@ where
             client,
             transaction_pool,
             native_version,
+            execution_strategies,
             metrics,
             telemetry,
             phantom: PhantomData,
         }
     }
 
+    pub fn strategy(&self, context: &ExecutionContext) -> ExecutionStrategy {
+        match context {
+            ExecutionContext::Importing => self.execution_strategies.importing,
+            ExecutionContext::Syncing => self.execution_strategies.syncing,
+            ExecutionContext::BlockConstruction => self.execution_strategies.block_construction,
+            ExecutionContext::OffchainCall(_) => self.execution_strategies.offchain_worker,
+        }
+    }
+
     pub async fn execute_block<'a>(
         &self,
+        context: ExecutionContext,
         parent_hash: Block::Hash,
         parent_number: <<Block as BlockT>::Header as HeaderT>::Number,
         propose_with_start: time::Instant,
@@ -113,13 +127,12 @@ where
             .parent_hash(parent_hash)
             .number(parent_number + One::one())
             .max_time(max_duration)
+            .strategy(self.strategy(&context))
             .start();
         // if native version not latest, we can only execute in single thread.
         let onchain_version = CallApiAt::runtime_version_at(&*self.client, parent_hash)
             .map_err(|e| sp_blockchain::Error::RuntimeApiError(e))?;
-        if !onchain_version.can_call_with(&self.native_version.runtime_version) {
-            recorder.native = false;
-        }
+        recorder.version_match(onchain_version.can_call_with(&self.native_version.runtime_version));
         if extrinsic_group.len() == 1 {
             single_group = [extrinsic_group.pop().unwrap(), single_group].concat();
         }
@@ -1097,7 +1110,6 @@ where
         info!(target: LOG_TARGET, "🙌 Starting consensus session on top of parent {parent_number}({parent_hash:?})");
         let mut block_builder =
             self.client.new_block_at(parent_hash.clone(), inherent_digests.clone(), PR::ENABLED, None)?;
-        let thread_number = extrinsic.0.len();
 
         let create_inherents_start = time::Instant::now();
         let inherents = block_builder.create_inherents(inherent_data)?;
@@ -1110,6 +1122,7 @@ where
             );
         });
         let (proposal, info) = self.execute_block(
+            ExecutionContext::BlockConstruction,
             parent_hash,
             parent_number,
             time::Instant::now(),
@@ -1184,7 +1197,6 @@ where
                 offset += thread_extrinsic_num;
             }
         }
-        let thread_number = multi_groups.len();
         let single_thread_extrinsic_num = groups.last().cloned().unwrap_or_default() as usize;
         let single: Vec<Block::Extrinsic> = extrinsic[offset..offset + single_thread_extrinsic_num].to_vec();
         let max_duration = time::Duration::from_secs(10);
@@ -1204,6 +1216,7 @@ where
             })
         );
         let (mut proposal, info) = self.execute_block(
+            ExecutionContext::Importing,
             parent_hash,
             parent_number,
             time::Instant::now(),

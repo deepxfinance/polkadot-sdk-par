@@ -1,5 +1,5 @@
 //! Basic requests and implements for multi thread block builder.
-
+#![allow(unused)]
 use std::collections::BTreeMap;
 use std::fmt::Debug;
 use std::marker::PhantomData;

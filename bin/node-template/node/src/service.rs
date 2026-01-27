@@ -113,11 +113,13 @@ pub fn new_partial(
 		task_manager.spawn_essential_handle(),
 		client.clone(),
 	);
+	let execution_strategies = config.execution_strategies.clone();
 	let executor = BlockExecutor::new(
 		Box::new(task_manager.spawn_handle()),
 		client.clone(),
 		transaction_pool.clone(),
 		<ExecutorDispatch as sc_executor::NativeExecutionDispatch>::native_version(),
+		execution_strategies.clone(),
 		Default::default(),
 		None,
 	);
@@ -242,6 +244,7 @@ pub fn new_full(config: Configuration) -> Result<TaskManager, ServiceError> {
 		prometheus_registry.as_ref(),
 		telemetry.as_ref().map(|x| x.handle()),
 		<ExecutorDispatch as sc_executor::NativeExecutionDispatch>::native_version(),
+		execution_strategies,
 	);
 	let slot_duration = hotstuff_consensus::slot_duration(&*client)?;
 	let max_empty = hotstuff_consensus::max_empty(&*client)?;

@@ -86,20 +86,20 @@ impl<Block: BlockT, C, SC> LinkHalf<Block, C, SC> {
 }
 
 /// Provider for the Hotstuff authority set configured on the genesis block.
-pub trait GenesisAuthoritySetProvider<Block: BlockT> {
+pub trait AuthoritySetProvider<Block: BlockT> {
     /// Get the authority set at the genesis block.
-    fn get(&self) -> Result<Vec<AuthorityId>, ClientError>;
+    fn get(&self, block_id: BlockId<Block>) -> Result<Vec<AuthorityId>, ClientError>;
 }
 
-impl<Block: BlockT, E, Client> GenesisAuthoritySetProvider<Block> for Arc<Client>
+impl<Block: BlockT, E, Client> AuthoritySetProvider<Block> for Arc<Client>
 where
     E: CallExecutor<Block>,
     Client: ExecutorProvider<Block, Executor = E> + HeaderBackend<Block>,
 {
-    fn get(&self) -> Result<Vec<AuthorityId>, ClientError> {
+    fn get(&self, block_id: BlockId<Block>) -> Result<Vec<AuthorityId>, ClientError> {
         let runtime_authorities: Vec<RuntimeAuthorityId> = self.executor()
             .call(
-                self.expect_block_hash_from_id(&BlockId::Number(Zero::zero()))?,
+                self.expect_block_hash_from_id(&block_id)?,
                 "HotstuffApi_authorities",
                 &[],
                 ExecutionStrategy::NativeElseWasm,
@@ -124,7 +124,7 @@ pub fn block_import<BE, Block: BlockT, Client, SC, E, O, Error>(
     client: Arc<Client>,
     executor: E,
     oracle: Arc<O>,
-    genesis_authorities_provider: &dyn GenesisAuthoritySetProvider<Block>,
+    authorities_provider: &dyn AuthoritySetProvider<Block>,
 ) -> Result<
     (
         HotstuffBlockImport<BE, Block, Client, E, O>,
@@ -140,15 +140,10 @@ where
     Error: std::error::Error + Send + From<ConsensusError> + 'static,
 {
     let chain_info = client.info();
-    let genesis_hash = chain_info.genesis_hash;
-
     let persistent_data = aux_schema::load_persistent(
         &*client,
-        genesis_hash,
-        <NumberFor<Block>>::zero(),
         move || {
-            let authorities = genesis_authorities_provider.get()?;
-
+            let authorities = authorities_provider.get(BlockId::Hash(chain_info.best_hash))?;
             let authorities = authorities
                 .iter()
                 .map(|p| (p.clone(), 1))

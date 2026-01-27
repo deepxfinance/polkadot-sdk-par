@@ -17,9 +17,7 @@ pub struct PersistentData<Block: BlockT> {
 #[allow(unused)]
 pub(crate) fn load_persistent<Block: BlockT, B, G>(
 	backend: &B,
-	genesis_hash: Block::Hash,
-	genesis_number: NumberFor<Block>,
-	genesis_authorities: G,
+	authorities: G,
 ) -> ClientResult<PersistentData<Block>>
 where
 	B: AuxStore + HeaderBackend<Block>,
@@ -30,7 +28,7 @@ where
 			Ok(authority_set) => authority_set,
 			Err(e) => return Err(sp_blockchain::Error::Backend("invalid aux_data for hots_authorities".into())),
 		}
-		None => AuthoritySet::genesis(genesis_authorities()?)
+		None => AuthoritySet::genesis(authorities()?)
 			.ok_or(sp_blockchain::Error::Backend("genesis hots_authorities failed".into()))?,
 	};
 	Ok(PersistentData { authority_set: authority_set.into() })

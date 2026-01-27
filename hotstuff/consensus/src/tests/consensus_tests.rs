@@ -15,7 +15,7 @@ use sp_keyring::Sr25519Keyring;
 use sp_keystore::{testing::MemoryKeystore, Keystore, KeystorePtr};
 use sp_runtime::traits::Header as HeaderT;
 
-use crate::client::GenesisAuthoritySetProvider;
+use crate::client::AuthoritySetProvider;
 use hotstuff_primitives::HotstuffApi;
 use sc_network_common::role::Role;
 
@@ -52,7 +52,7 @@ impl ProvideRuntimeApi<Block> for TestApi {
 	}
 }
 
-impl GenesisAuthoritySetProvider<Block> for TestApi {
+impl AuthoritySetProvider<Block> for TestApi {
 	fn get(&self) -> sp_blockchain::Result<Vec<AuthorityId>> {
 		Ok(self.genesis_authorities.iter().map(|a| a.0.clone()).collect())
 	}

@@ -39,6 +39,7 @@ use std::{marker::PhantomData, pin::Pin, sync::Arc, time};
 use std::collections::HashSet;
 use std::time::Duration;
 use prometheus_endpoint::Registry as PrometheusRegistry;
+use sc_client_api::execution_extensions::ExecutionStrategies;
 use sc_proposer_metrics::MetricsLink as PrometheusMetrics;
 use sp_core::ExecutionContext;
 use sp_runtime::traits::One;
@@ -61,6 +62,8 @@ pub struct ProposerFactory<A, B, C, PR, O, MBH, E> {
     oracle: Arc<O>,
     /// Native version,
     native_version: sp_version::NativeVersion,
+    /// Execution strategies.
+    execution_strategies: ExecutionStrategies,
     /// Prometheus Link,
     metrics: PrometheusMetrics,
     telemetry: Option<TelemetryHandle>,
@@ -83,6 +86,7 @@ impl<A, B, O, C, MBH, E> ProposerFactory<A, B, C, DisableProofRecording, O, MBH,
         prometheus: Option<&PrometheusRegistry>,
         telemetry: Option<TelemetryHandle>,
         native_version: sp_version::NativeVersion,
+        execution_strategies: ExecutionStrategies,
     ) -> Self {
         let spawn_handle = Box::new(spawn_handle);
         ProposerFactory {
@@ -90,6 +94,7 @@ impl<A, B, O, C, MBH, E> ProposerFactory<A, B, C, DisableProofRecording, O, MBH,
             transaction_pool,
             oracle,
             native_version,
+            execution_strategies,
             metrics: PrometheusMetrics::new(prometheus),
             telemetry,
             client,
@@ -168,6 +173,7 @@ where
                 runtime_version: self.native_version.runtime_version.clone(),
                 can_author_with: self.native_version.can_author_with.clone(),
             },
+            self.execution_strategies.clone(),
             self.metrics.clone(),
             self.telemetry.clone(),
         );
@@ -346,13 +352,13 @@ where
             Default::default(),
         ).await.map_err(|e| sp_blockchain::Error::Backend(e))?;
         debug!(target: LOG_TARGET, "[Execute Block {}] {}", self.parent_number + One::one(), group_output.info.info());
-        let thread_number = group_output.groups.len();
 
         // 4. create inehrent
         let inherents = block_builder.create_inherents(inherent_data)?;
         // 5. execute block
         // TODO dynamic block time for oracle.linear_execute_time() and oracle.block_size_limit().
         let (proposal, mut info) = self.block_executor.execute_block(
+            ExecutionContext::BlockConstruction,
             self.parent_hash,
             self.parent_number,
             propose_with_start,
