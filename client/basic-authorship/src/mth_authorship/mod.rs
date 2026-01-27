@@ -11,8 +11,6 @@ use std::time::Duration;
 use codec::Decode;
 use sp_api::{ApiExt, HeaderT};
 use sp_consensus::Proposal;
-use sp_spot_api::SpotRuntimeApi;
-use sp_perp_api::PerpRuntimeApi;
 use sp_runtime::traits::Block as BlockT;
 use sp_state_machine::{MergeChange, OverlayCache, OverlayedChanges, OverlayedEntry, StorageKey, StorageValue};
 pub use merge_system::*;

@@ -3,6 +3,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use sc_transaction_pool_api::TransactionPool;
 use sp_runtime::traits::{Block as BlockT, Header as HeaderT};
+use sp_state_machine::ExecutionStrategy;
 
 pub struct InfoRecorder<B: BlockT> {
     pub parent_hash: Option<B::Hash>,
@@ -18,7 +19,8 @@ pub struct InfoRecorder<B: BlockT> {
     /// Record all thread execute info(single thread number should be 0).
     pub threads: HashMap<usize, ThreadExecutionInfo<B>>,
     pub merge: Option<MergeInfo>,
-    pub native: bool,
+    pub strategy: Option<ExecutionStrategy>,
+    pub version_match: bool,
 }
 
 impl<B: BlockT> InfoRecorder<B> {
@@ -36,7 +38,8 @@ impl<B: BlockT> InfoRecorder<B> {
             thread_order_count: 0,
             threads: HashMap::new(),
             merge: None,
-            native: true,
+            strategy: None,
+            version_match: true,
         }
     }
 
@@ -58,9 +61,18 @@ impl<B: BlockT> InfoRecorder<B> {
         self.hash = Some(hash);
     }
 
+    pub fn version_match(&mut self, version_match: bool) {
+        self.version_match = version_match;
+    }
+    
     pub fn set_thread(&mut self, thread: ThreadExecutionInfo<B>) {
         self.threads.insert(self.thread_order_count, thread);
         self.thread_order_count += 1;
+    }
+    
+    pub fn strategy(mut self, strategy: ExecutionStrategy) -> Self {
+        self.strategy = Some(strategy);
+        self
     }
 
     pub fn max_time(mut self, time: Duration) -> Self {
@@ -94,7 +106,8 @@ impl<B: BlockT> InfoRecorder<B> {
             inherent: self.inherent.unwrap_or_default(),
             threads: self.threads,
             merge: self.merge.unwrap_or_default(),
-            native: self.native,
+            strategy: self.strategy.expect("ExecutionStrategy not initialized"),
+            version_match: self.version_match,
         }
     }
 
@@ -129,7 +142,8 @@ pub struct BlockExecuteInfo<B: BlockT> {
     /// Key is insert order, not thread number.
     pub threads: HashMap<usize, ThreadExecutionInfo<B>>,
     pub merge: MergeInfo,
-    pub native: bool,
+    pub strategy: ExecutionStrategy,
+    pub version_match: bool,
 }
 
 impl<B: BlockT> BlockExecuteInfo<B> {
@@ -330,7 +344,13 @@ impl<B: BlockT> BlockExecuteInfo<B> {
         let total_extrinsic = total_applied + total_invalid + self.inherent.total;
         let mth_applied = total_applied.saturating_sub(single_applied);
         let mth_invalid = total_invalid.saturating_sub(single_invalid);
-        format!("extrinsics [({mth_applied}/{mth_invalid})/({single_applied}/{single_invalid})/{total_extrinsic} native: {}]", self.native)
+        let native = self.version_match && !matches!(self.strategy, ExecutionStrategy::AlwaysWasm);
+        let native_info = if native {
+            format!("{native}")
+        } else {
+            format!("{native}(version: {} strategy {:?})", self.version_match, self.strategy)
+        };
+        format!("extrinsics [({mth_applied}/{mth_invalid})/({single_applied}/{single_invalid})/{total_extrinsic} native: {native_info}]")
     }
 
     pub fn info(&self, limit_time: bool) -> String {
