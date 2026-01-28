@@ -2,6 +2,7 @@
 use downcast_rs::{impl_downcast, DowncastSync};
 use sp_std::collections::btree_map::BTreeMap;
 use sp_std::vec::Vec;
+use crate::changeset::ExecutionMode;
 use crate::StorageKey;
 
 #[cfg(not(feature = "std"))]
@@ -23,13 +24,13 @@ pub trait StorageApi: DowncastSync {
     /// Enter runtime.
     fn enter_runtime(&mut self);
     /// Exit runtime
-    fn exit_runtime(&mut self);
+    fn exit_runtime(&mut self) -> usize;
     /// Start transaction changes.
     fn start_transaction(&mut self);
     /// Commit tmp changes when some transaction changes.
-    fn commit_transaction(&mut self);
+    fn commit_transaction(&mut self, mode: &ExecutionMode);
     /// Drop tmp changes.
-    fn rollback_transaction(&mut self);
+    fn rollback_transaction(&mut self, mode: &ExecutionMode);
     /// Get expected change if exists.
     fn get_change_encode(&self, key: &[u8]) -> Option<Option<Vec<u8>>>;
     /// Get all changed keys if exists.

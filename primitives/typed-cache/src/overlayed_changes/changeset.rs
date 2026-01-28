@@ -23,7 +23,9 @@ use super::{Extrinsics, StorageKey};
 use sp_std::collections::btree_set::BTreeSet as Set;
 #[cfg(feature = "std")]
 use std::collections::HashSet as Set;
-
+use sp_std::sync::Arc;
+use codec::Encode;
+use once_cell::sync::OnceCell;
 use crate::warn;
 use smallvec::SmallVec;
 use sp_std::{
@@ -91,11 +93,17 @@ impl<V> Default for OverlayedEntry<V> {
 pub type OverlayedValue<V> = OverlayedEntry<Option<V>>;
 
 /// Change set for basic key value with extrinsics index recording and removal support.
-pub type OverlayedChangeSet<V> = OverlayedMap<StorageKey, Option<V>>;
+pub type OverlayedChangeSet<V> = StorageOverlay<StorageKey, Option<V>>;
+
+pub type Cache<T> = Arc<OnceCell<T>>;
 
 /// Holds a set of changes with the ability modify them using nested transactions.
-#[derive(Debug, Clone)]
-pub struct OverlayedMap<K, V> {
+#[derive(Clone)]
+pub struct StorageOverlay<K: Ord + Hash + Clone, V: Clone> {
+	pub space: Vec<u8>,
+	/// Cached best value.
+	/// For cache, any value will only insert once(data should not change).
+	pub cache: BTreeMap<K, Cache<V>>,
 	/// Stores the changes that this overlay constitutes.
 	pub changes: BTreeMap<K, OverlayedEntry<V>>,
 	/// Stores which keys are dirty per transaction. Needed in order to determine which
@@ -106,69 +114,6 @@ pub struct OverlayedMap<K, V> {
 	/// by the client. Those transactions are protected against close (commit, rollback)
 	/// when in runtime mode.
 	num_client_transactions: usize,
-	/// Determines whether the node is using the overlay from the client or the runtime.
-	execution_mode: ExecutionMode,
-}
-
-impl<K, V> Default for OverlayedMap<K, V> {
-	fn default() -> Self {
-		Self {
-			changes: BTreeMap::new(),
-			dirty_keys: SmallVec::new(),
-			num_client_transactions: Default::default(),
-			execution_mode: Default::default(),
-		}
-	}
-}
-
-#[cfg(feature = "std")]
-impl<V> From<BTreeMap<Vec<u8>, V>> for OverlayedMap<StorageKey, Option<V>> {
-	fn from(storage: BTreeMap<Vec<u8>, V>) -> Self {
-		Self {
-			changes: storage
-				.into_iter()
-				.map(|(k, v)| {
-					(
-						k,
-						OverlayedEntry {
-							transactions: SmallVec::from_iter([InnerValue {
-								value: Some(v),
-								extrinsics: Default::default(),
-							}]),
-						},
-					)
-				})
-				.collect(),
-			dirty_keys: Default::default(),
-			num_client_transactions: 0,
-			execution_mode: ExecutionMode::Client,
-		}
-	}
-}
-
-#[cfg(feature = "std")]
-impl<V> From<Vec<(Vec<u8>, Option<V>)>> for OverlayedMap<StorageKey, Option<V>> {
-	fn from(storage: Vec<(Vec<u8>, Option<V>)>) -> Self {
-		Self {
-			changes: storage
-				.into_iter()
-				.map(|(k, v)| {
-					(
-						k,
-						OverlayedEntry {
-							transactions: SmallVec::from_iter([InnerValue {
-								value: v,
-								extrinsics: Default::default(),
-							}]),
-						},
-					)
-				})
-				.collect(),
-			dirty_keys: Default::default(),
-			num_client_transactions: 0,
-			execution_mode: ExecutionMode::Client,
-		}
-	}
 }
 
 impl Default for ExecutionMode {
@@ -248,20 +193,42 @@ fn insert_dirty<K: Ord + Hash>(set: &mut DirtyKeysSets<K>, key: K) -> bool {
 	set.last_mut().map(|dk| dk.insert(key)).unwrap_or_default()
 }
 
-impl<K: Ord + Hash + Clone, V> OverlayedMap<K, V> {
-	/// Create a new changeset at the same transaction state but without any contents.
-	///
-	/// This changeset might be created when there are already open transactions.
-	/// We need to catch up here so that the child is at the same transaction depth.
-	pub fn spawn_child(&self) -> Self {
-		use sp_std::iter::repeat;
+impl<K: Ord + Hash + Clone, V: Clone> StorageOverlay<K, V> {
+	pub fn new(space: &[u8], client_transactions: usize, runtime_transactions: usize) -> Self {
 		Self {
+			space: space.to_vec(),
+			cache: Default::default(),
 			changes: Default::default(),
-			dirty_keys: repeat(Set::new()).take(self.transaction_depth()).collect(),
-			num_client_transactions: self.num_client_transactions,
-			execution_mode: self.execution_mode,
+			dirty_keys: (0..client_transactions + runtime_transactions).map(|_| Default::default()).collect(),
+			num_client_transactions: client_transactions,
 		}
 	}
+
+	pub fn clone_with_changes(&self) -> Self {
+		Self {
+			space: self.space.clone(),
+			cache: self.cache.clone(),
+			// changes are different(if changed) between copies
+			changes: self.changes.clone(),
+			dirty_keys: self.dirty_keys.clone(),
+			num_client_transactions: self.num_client_transactions,
+		}
+	}
+
+	// /// Create a new changeset at the same transaction state but without any contents.
+	// ///
+	// /// This changeset might be created when there are already open transactions.
+	// /// We need to catch up here so that the child is at the same transaction depth.
+	// pub fn spawn_child(&self) -> Self {
+	// 	use sp_std::iter::repeat;
+	// 	Self {
+	// 		space: self.space.clone(),
+	// 		cache: Default::default(),
+	// 		changes: Default::default(),
+	// 		dirty_keys: repeat(Set::new()).take(self.transaction_depth()).collect(),
+	// 		num_client_transactions: self.num_client_transactions,
+	// 	}
+	// }
 
 	/// True if no changes at all are contained in the change set.
 	pub fn is_empty(&self) -> bool {
@@ -269,7 +236,7 @@ impl<K: Ord + Hash + Clone, V> OverlayedMap<K, V> {
 	}
 
 	/// Get an optional reference to the value stored for the specified key.
-	pub fn get<Q>(&self, key: &Q) -> Option<&OverlayedEntry<V>>
+	pub fn get_ref<Q>(&self, key: &Q) -> Option<&OverlayedEntry<V>>
 	where
 		K: sp_std::borrow::Borrow<Q>,
 		Q: Ord + ?Sized,
@@ -321,7 +288,6 @@ impl<K: Ord + Hash + Clone, V> OverlayedMap<K, V> {
 	/// This protects all existing transactions from being removed by the runtime.
 	/// Calling this while already inside the runtime will return an error.
 	pub fn enter_runtime(&mut self) {
-		self.execution_mode = ExecutionMode::Runtime;
 		self.num_client_transactions = self.transaction_depth();
 	}
 
@@ -329,8 +295,7 @@ impl<K: Ord + Hash + Clone, V> OverlayedMap<K, V> {
 	///
 	/// This commits all dangling transaction left open by the runtime.
 	/// Calling this while already outside the runtime will return an error.
-	pub fn exit_runtime(&mut self) {
-		self.execution_mode = ExecutionMode::Client;
+	pub fn exit_runtime(&mut self) -> usize {
 		if self.has_open_runtime_transactions() {
 			warn!(
 				"{} storage transactions are left open by the runtime. Those will be rolled back.",
@@ -338,9 +303,11 @@ impl<K: Ord + Hash + Clone, V> OverlayedMap<K, V> {
 			);
 		}
 		while self.has_open_runtime_transactions() {
-			self.rollback_transaction()
+			self.rollback_transaction(&ExecutionMode::Client)
 				.expect("The loop condition checks that the transaction depth is > 0; qed");
 		}
+		// depth should be equal than `num_client_transactions`
+		self.transaction_depth()
 	}
 
 	/// Start a new nested transaction.
@@ -358,21 +325,21 @@ impl<K: Ord + Hash + Clone, V> OverlayedMap<K, V> {
 	///
 	/// Any changes made during that transaction are discarded. Returns an error if
 	/// there is no open transaction that can be rolled back.
-	pub fn rollback_transaction(&mut self) -> Result<(), NoOpenTransaction> {
-		self.close_transaction(true)
+	pub fn rollback_transaction(&mut self, mode: &ExecutionMode) -> Result<(), NoOpenTransaction> {
+		self.close_transaction(true, mode)
 	}
 
 	/// Commit the last transaction started by `start_transaction`.
 	///
 	/// Any changes made during that transaction are committed. Returns an error if
 	/// there is no open transaction that can be committed.
-	pub fn commit_transaction(&mut self) -> Result<(), NoOpenTransaction> {
-		self.close_transaction(false)
+	pub fn commit_transaction(&mut self, mode: &ExecutionMode) -> Result<(), NoOpenTransaction> {
+		self.close_transaction(false, mode)
 	}
 
-	fn close_transaction(&mut self, rollback: bool) -> Result<(), NoOpenTransaction> {
+	fn close_transaction(&mut self, rollback: bool, mode: &ExecutionMode) -> Result<(), NoOpenTransaction> {
 		// runtime is not allowed to close transactions started by the client
-		if let ExecutionMode::Runtime = self.execution_mode {
+		if let ExecutionMode::Runtime = mode {
 			if !self.has_open_runtime_transactions() {
 				return Err(NoOpenTransaction)
 			}
