@@ -289,38 +289,37 @@ impl<B: ChainApi> Pool<B> {
 
 		let mut future_tags = Vec::new();
 		let all_start = std::time::Instant::now();
-		let mut none_verify_count = 0usize;
-		for (index, (extrinsic, in_pool_tags)) in all.into_iter().enumerate() {
+		for (_index, (_extrinsic, in_pool_tags)) in all.into_iter().enumerate() {
 			match in_pool_tags {
 				// reuse the tags for extrinsics that were found in the pool
 				Some(tags) => future_tags.extend(tags),
 				// if it's not found in the pool query the runtime at parent block
 				// to get validity info and tags that the extrinsic provides.
 				None => {
-					// skip first extrinsic verify for Timestamp inherent.
-					if index == 0 { continue; }
-					// Avoid validating block txs if the pool is empty
-					if !self.validated_pool.status().is_empty() {
-						none_verify_count += 1;
-						let validity = self
-							.validated_pool
-							.api()
-							.validate_transaction(
-								parent,
-								TransactionSource::InBlock,
-								extrinsic.clone(),
-							)
-							.await;
-
-						if let Ok(Ok(validity)) = validity {
-							future_tags.extend(validity.provides);
-						}
-					} else {
-						log::trace!(
-							target: LOG_TARGET,
-							"txpool is empty, skipping validation for block {at:?}",
-						);
-					}
+					// // skip first extrinsic verify for Timestamp inherent.
+					// if index == 0 { continue; }
+					// // Avoid validating block txs if the pool is empty
+					// if !self.validated_pool.status().is_empty() {
+					// 	none_verify_count += 1;
+					// 	let validity = self
+					// 		.validated_pool
+					// 		.api()
+					// 		.validate_transaction(
+					// 			parent,
+					// 			TransactionSource::InBlock,
+					// 			extrinsic.clone(),
+					// 		)
+					// 		.await;
+					//
+					// 	if let Ok(Ok(validity)) = validity {
+					// 		future_tags.extend(validity.provides);
+					// 	}
+					// } else {
+					// 	log::trace!(
+					// 		target: LOG_TARGET,
+					// 		"txpool is empty, skipping validation for block {at:?}",
+					// 	);
+					// }
 				},
 			}
 		}
@@ -329,7 +328,7 @@ impl<B: ChainApi> Pool<B> {
 		let prune_tags_start = std::time::Instant::now();
 		let prune_times = self.prune_tags(at, future_tags, in_pool_hashes).await?;
 		let prune_tags_time = prune_tags_start.elapsed();
-		Ok(format!("tag_time {tag_time:?} all_time {all_time:?}({none_verify_count}) prune_tags {prune_tags_time:?}({prune_times})"))
+		Ok(format!("tag_time {tag_time:?} all_time {all_time:?} prune_tags {prune_tags_time:?}({prune_times})"))
 	}
 
 	/// Prunes ready transactions that provide given list of tags.
