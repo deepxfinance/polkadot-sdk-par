@@ -22,7 +22,7 @@ use sc_network::types::ProtocolName;
 use sc_network_gossip::TopicNotification;
 use sp_core::traits::CallContext;
 use sp_keystore::KeystorePtr;
-use sp_runtime::{generic::BlockId, traits, traits::{Block as BlockT, Header as HeaderT}, Saturating};
+use sp_runtime::{generic::BlockId, traits, traits::{Block as BlockT, Header as HeaderT}, SaturatedConversion, Saturating};
 use sc_consensus::BlockImport;
 use sc_consensus_slots::InherentDataProviderExt;
 use sp_consensus::SelectChain;
@@ -90,6 +90,8 @@ pub struct ConsensusWorker<
     commit_extrinsic: HashMap<<B::Header as HeaderT>::Number, (ViewNumber, Vec<B::Hash>, std::time::Instant)>,
     /// Tmp proposal extrinsic hashes for faster consensus notify.
     proposal_extrinsic_hashes: HashMap<ViewNumber, Vec<B::Hash>>,
+    /// Imported block for stage log.
+    imported_trace: Option<(NumberFor<B>, std::time::Instant)>,
 
     network_notification_limit: usize,
     phantom: PhantomData<BE>,
@@ -161,6 +163,7 @@ where
             commit,
             commit_extrinsic: HashMap::new(),
             proposal_extrinsic_hashes: HashMap::new(),
+            imported_trace: None,
             network_notification_limit,
             phantom: PhantomData,
         }
@@ -174,6 +177,22 @@ where
                 > self.max_empty.saturating_sub(1) as u64 * self.slot_duration.as_millis()
         } else {
             true
+        }
+    }
+
+    pub fn trace_block_rate(&mut self, block: NumberFor<B>) {
+        if self.imported_trace.is_none() {
+            self.imported_trace = Some((block, std::time::Instant::now()));
+            return;
+        }
+        if let Some((prev_block, prev_time)) = &mut self.imported_trace {
+            let elapsed = prev_time.elapsed();
+            if elapsed >= Duration::from_secs(30) {
+                let blocks: u128 = block.saturating_sub(*prev_block).saturated_into();
+                info!(target: CLIENT_LOG_TARGET, "Average block time {}ms(#{prev_block}->#{block})", elapsed.as_micros() / blocks / 1000);
+                *prev_block = block;
+                *prev_time = std::time::Instant::now();
+            }
         }
     }
 
@@ -454,6 +473,7 @@ where
     }
 
     pub async fn handle_block_import(&mut self, header: &B::Header) -> Result<(), HotstuffError> {
+        self.trace_block_rate(*header.number());
         if let Some(commit) = find_block_commit::<B>(header) {
             for consensus_log in find_consensus_logs::<B, RuntimeAuthorityId>(header) {
                 match consensus_log {
@@ -813,7 +833,7 @@ where
                     let parent_block = new_block_number.saturating_sub(1u32.into());
                     info!(
                         target: CLIENT_LOG_TARGET,
-                        "[Commit] block {new_block_number} by  QC {}:{} parent {}:{}{}",
+                        "[Commit] block {new_block_number} by QC {}:{} parent {}:{}{}",
                         commit.round(),
                         commit.commit_hash(),
                         grandpa.qc.round(),

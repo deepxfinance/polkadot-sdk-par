@@ -10,7 +10,7 @@ use sp_blockchain::{Error as ClientError, HeaderBackend, HeaderMetadata};
 use sp_core::traits::CallContext;
 use sp_runtime::{
     generic::BlockId,
-    traits::{Block as BlockT, NumberFor, Zero},
+    traits::{Block as BlockT, NumberFor},
 };
 
 use sc_basic_authorship::{BlockOracle, BlockPropose};
