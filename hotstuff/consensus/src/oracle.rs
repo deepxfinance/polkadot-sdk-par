@@ -142,7 +142,7 @@ impl<B: BlockT, O: BlockOracle<B>> HotsOracle<B> for HotstuffOracle<B, O> {
             return None;
         }
         // During full consensus process, verify extrinsic takes most time.
-        Some(self.verify_time_limit().as_micros() as usize / verify_time_per_tx.as_micros() as usize)
+        Some((self.verify_time_limit().as_micros() as usize / verify_time_per_tx.as_micros() as usize).max(1))
     }
 
     fn filter_transactions(&self) -> HashSet<B::Hash> {

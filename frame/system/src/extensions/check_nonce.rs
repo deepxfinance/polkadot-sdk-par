@@ -116,6 +116,7 @@ where
 		Ok(ValidTransaction {
 			groups: None,
 			priority: 0,
+			priority2: Default::default(),
 			requires,
 			provides,
 			longevity: TransactionLongevity::max_value(),

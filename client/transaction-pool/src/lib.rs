@@ -395,13 +395,18 @@ where
 		spawner: impl SpawnEssentialNamed,
 		client: Arc<Client>,
 	) -> Arc<Self> {
+		let revalidation_type = match std::env::var("REVALIDATION_TYPE").unwrap_or("Full".to_string()).as_str() {
+			"Full" => RevalidationType::Full,
+			"Light" => RevalidationType::Light,
+			_ => unimplemented!("Unsupported revalidation type(`Full`, `Light`)"),
+		};
 		let pool_api = Arc::new(FullChainApi::new(client.clone(), prometheus, &spawner));
 		let pool = Arc::new(Self::with_revalidation_type(
 			options,
 			is_validator,
 			pool_api,
 			prometheus,
-			RevalidationType::Full,
+			revalidation_type,
 			spawner,
 			client.usage_info().chain.best_number,
 			client.usage_info().chain.best_hash,

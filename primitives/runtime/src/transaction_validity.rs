@@ -17,6 +17,7 @@
 
 //! Transaction validity interface.
 
+use sp_std::cmp;
 use sp_std::collections::btree_set::BTreeSet;
 use crate::{
 	codec::{Decode, Encode},
@@ -301,6 +302,30 @@ pub enum TransactionSource {
 	External,
 }
 
+#[derive(Copy, Clone, PartialEq, Eq, Default, Encode, Decode, RuntimeDebug, TypeInfo)]
+pub struct AscendingPriority(pub Option<TransactionPriority>);
+
+impl From<Option<TransactionPriority>> for AscendingPriority {
+	fn from(priority: Option<TransactionPriority>) -> Self {
+		AscendingPriority(priority)
+	}
+}
+
+impl PartialOrd for AscendingPriority {
+	fn partial_cmp(&self, other: &Self) -> Option<cmp::Ordering> {
+		Some(self.cmp(other))
+	}
+}
+
+impl Ord for AscendingPriority {
+	fn cmp(&self, other: &Self) -> cmp::Ordering {
+		match (self.0, other.0) {
+			(Some(a), Some(b)) => a.cmp(&b),
+			_ => cmp::Ordering::Equal,
+		}
+	}
+}
+
 /// Information concerning a valid transaction.
 #[derive(Clone, PartialEq, Eq, Encode, Decode, RuntimeDebug, TypeInfo)]
 pub struct ValidTransaction {
@@ -314,6 +339,11 @@ pub struct ValidTransaction {
 	/// Priority determines the ordering of two transactions that have all
 	/// their dependencies (required tags) satisfied.
 	pub priority: TransactionPriority,
+	/// Second priority of the transaction.
+	///
+	/// Priority determines the ordering of two transactions that have all
+	/// their dependencies (required tags) satisfied.
+	pub priority2: AscendingPriority,
 	/// Transaction dependencies
 	///
 	/// A non-empty list signifies that some other transactions which provide
@@ -344,6 +374,7 @@ impl Default for ValidTransaction {
 		Self {
 			groups: None,
 			priority: 0,
+			priority2: AscendingPriority(None),
 			requires: vec![],
 			provides: vec![],
 			longevity: TransactionLongevity::max_value(),
@@ -379,6 +410,12 @@ impl ValidTransaction {
 				})
 				.or(other.groups.take()),
 			priority: self.priority.saturating_add(other.priority),
+			priority2: match (self.priority2.0, other.priority2.0) {
+				(Some(p1), Some(p2)) => Some(p1.min(p2)).into(),
+				(Some(p1), None) => Some(p1).into(),
+				(None, Some(p2)) => Some(p2).into(),
+				(None, None) => None.into(),
+			},
 			requires: {
 				self.requires.append(&mut other.requires);
 				self.requires
@@ -513,6 +550,7 @@ mod tests {
 		let v: TransactionValidity = Ok(ValidTransaction {
 			groups: None,
 			priority: 5,
+			priority2: Default::default(),
 			requires: vec![vec![1, 2, 3, 4]],
 			provides: vec![vec![4, 5, 6]],
 			longevity: 42,
@@ -552,6 +590,7 @@ mod tests {
 				propagate: false,
 				longevity: 5,
 				priority: 6,
+				priority2: Default::default(),
 				requires: vec![(PREFIX, 1).encode(), (PREFIX, 2).encode()],
 				provides: vec![(PREFIX, 3).encode(), (PREFIX, 4).encode()],
 			}

@@ -10,7 +10,8 @@ use crate::{StorageIO, StorageKey};
 #[cfg(feature = "std")]
 use crate::StorageApi;
 #[cfg(feature = "std")]
-use crate::{Cache, StorageOverlay};
+use crate::changeset::{Cache, StorageOverlay};
+use crate::changeset::ExecutionMode;
 
 #[cfg(all(feature = "std", feature = "dev-time"))]
 lazy_static::lazy_static!{
@@ -33,6 +34,12 @@ pub struct OverlayCache;
 pub struct OverlayCache {
     // pub cache: SharedCache,
     pub inner: Overlay,
+    /// transactions layer when in ExecutionMode::Runtime.
+    pub runtime_transactions: usize,
+    /// transactions layer when in ExecutionMode::Client.
+    pub client_transactions: usize,
+    /// Determines whether the node is using the overlay from the client or the runtime.
+    execution_mode: ExecutionMode,
     pub closed: bool,
 }
 
@@ -46,7 +53,7 @@ impl OverlayCache {
         match self.inner.entry(space.to_vec()) {
             std::collections::hash_map::Entry::Occupied(entry) => { return f(&mut entry.into_mut()) },
             std::collections::hash_map::Entry::Vacant(e) => {
-                e.insert(Box::new(StorageOverlay::<Vec<u8>, V>::new(space)));
+                e.insert(Box::new(StorageOverlay::<Vec<u8>, Option<V>>::new(space, self.client_transactions, self.runtime_transactions)));
             }
         }
         f(&mut self.inner.get_mut(space).unwrap())
@@ -75,7 +82,7 @@ impl OverlayCache {
         #[cfg(all(feature = "std", feature = "dev-time"))]
         let start = std::time::Instant::now();
         let f = |storage: &mut AnyStorage| {
-            let step1 = storage.downcast_mut::<StorageOverlay<Vec<u8>, V>>();
+            let step1 = storage.downcast_mut::<StorageOverlay<Vec<u8>, Option<V>>>();
             #[cfg(all(feature = "std", feature = "dev-time"))]
             let time1 = start.elapsed();
             step1.map(|overlay| overlay.put(space, key, value));
@@ -118,7 +125,7 @@ impl OverlayCache {
 
     pub fn contains_key<V: Clone + FullCodec + 'static>(&self, space: &[u8], key: &[u8]) -> bool {
         let f = |storage: &AnyStorage| {
-            storage.downcast_ref::<StorageOverlay<Vec<u8>, V>>()
+            storage.downcast_ref::<StorageOverlay<Vec<u8>, Option<V>>>()
                 .map(|overlay| overlay.contains(space, key))
         }
             .unwrap_or(false);
@@ -132,7 +139,7 @@ impl OverlayCache {
         #[cfg(all(feature = "std", feature = "dev-time"))]
         let start = std::time::Instant::now();
         let f = |storage: &mut AnyStorage| {
-            let step1 = storage.downcast_mut::<StorageOverlay<Vec<u8>, V>>();
+            let step1 = storage.downcast_mut::<StorageOverlay<Vec<u8>, Option<V>>>();
             #[cfg(all(feature = "std", feature = "dev-time"))]
             let time1 = start.elapsed();
             let res = step1.map(|overlay| overlay.get(space, key, init));
@@ -165,7 +172,7 @@ impl OverlayCache {
         #[cfg(all(feature = "std", feature = "dev-time"))]
         let start = std::time::Instant::now();
         let f = |storage: &AnyStorage| {
-            let step1 = storage.downcast_ref::<StorageOverlay<Vec<u8>, V>>();
+            let step1 = storage.downcast_ref::<StorageOverlay<Vec<u8>, Option<V>>>();
             #[cfg(all(feature = "std", feature = "dev-time"))]
             let time1 = start.elapsed();
             let res = step1.map(|overlay| overlay.get_change(space, key));
@@ -186,7 +193,7 @@ impl OverlayCache {
         #[cfg(all(feature = "std", feature = "dev-time"))]
         let start = std::time::Instant::now();
         let f = |storage: &mut AnyStorage| {
-            let step1 = storage.downcast_mut::<StorageOverlay<Vec<u8>, V>>();
+            let step1 = storage.downcast_mut::<StorageOverlay<Vec<u8>, Option<V>>>();
             #[cfg(all(feature = "std", feature = "dev-time"))]
             let time1 = start.elapsed();
             let res = step1.map(|overlay| overlay.take(space, key, init));
@@ -204,7 +211,7 @@ impl OverlayCache {
         #[cfg(all(feature = "std", feature = "dev-time"))]
         let start = std::time::Instant::now();
         let f = |storage: &mut AnyStorage| {
-            let step1 = storage.downcast_mut::<StorageOverlay<Vec<u8>, V>>();
+            let step1 = storage.downcast_mut::<StorageOverlay<Vec<u8>, Option<V>>>();
             #[cfg(all(feature = "std", feature = "dev-time"))]
             let time1 = start.elapsed();
             step1.map(|overlay| overlay.kill(space, key));
@@ -225,7 +232,7 @@ impl OverlayCache {
         #[cfg(all(feature = "std", feature = "dev-time"))]
         let start = std::time::Instant::now();
         let f = |storage: &mut AnyStorage| {
-            let step1 = storage.downcast_mut::<StorageOverlay<Vec<u8>, V>>();
+            let step1 = storage.downcast_mut::<StorageOverlay<Vec<u8>, Option<V>>>();
             #[cfg(all(feature = "std", feature = "dev-time"))]
             let time1 = start.elapsed();
             let res = step1.map(|overlay| overlay.mutate(space, key, init, mutate));
@@ -243,7 +250,7 @@ impl OverlayCache {
         #[cfg(all(feature = "std", feature = "dev-time"))]
         let start = std::time::Instant::now();
         let f = |storage: &mut AnyStorage| {
-            let step1 = storage.downcast_mut::<StorageOverlay<Vec<u8>, V>>();
+            let step1 = storage.downcast_mut::<StorageOverlay<Vec<u8>, Option<V>>>();
             #[cfg(all(feature = "std", feature = "dev-time"))]
             let time1 = start.elapsed();
             step1.map(|overlay| overlay.cache(space, key, value));
@@ -270,28 +277,47 @@ impl OverlayCache {
             inner: self.inner.iter()
                 .map(|(space, overlay)| (space.clone(), overlay.copy_data()))
                 .collect(),
+            runtime_transactions: self.runtime_transactions,
+            client_transactions: self.client_transactions,
+            execution_mode: self.execution_mode.clone(),
             closed: self.closed,
         }
     }
 
     pub fn enter_runtime(&mut self) {
+        self.execution_mode = ExecutionMode::Runtime;
         self.inner.iter_mut().for_each(|(_, overlay)| overlay.enter_runtime());
     }
 
     pub fn exit_runtime(&mut self) {
-        self.inner.iter_mut().for_each(|(_, overlay)| overlay.exit_runtime());
+        self.execution_mode = ExecutionMode::Client;
+        let max_depth = self.inner.iter_mut().map(|(_, overlay)| overlay.exit_runtime()).max().unwrap_or(self.client_transactions);
+        self.client_transactions = self.client_transactions.max(max_depth);
+        self.runtime_transactions = 0;
     }
 
     pub fn start_transaction(&mut self) {
         self.inner.iter_mut().for_each(|(_, overlay)| overlay.start_transaction());
+        match self.execution_mode {
+            ExecutionMode::Runtime => self.runtime_transactions = self.runtime_transactions.saturating_add(1),
+            ExecutionMode::Client => self.client_transactions = self.client_transactions.saturating_add(1),
+        }
     }
 
     pub fn commit_transaction(&mut self) {
-        self.inner.iter_mut().for_each(|(_, overlay)| overlay.commit_transaction());
+        self.inner.iter_mut().for_each(|(_, overlay)| overlay.commit_transaction(&self.execution_mode));
+        match self.execution_mode {
+            ExecutionMode::Runtime => self.runtime_transactions = self.runtime_transactions.saturating_sub(1),
+            ExecutionMode::Client => self.client_transactions = self.client_transactions.saturating_sub(1),
+        }
     }
 
     pub fn rollback_transaction(&mut self) {
-        self.inner.iter_mut().for_each(|(_, overlay)| overlay.rollback_transaction());
+        self.inner.iter_mut().for_each(|(_, overlay)| overlay.rollback_transaction(&self.execution_mode));
+        match self.execution_mode {
+            ExecutionMode::Runtime => self.runtime_transactions = self.runtime_transactions.saturating_sub(1),
+            ExecutionMode::Client => self.client_transactions = self.client_transactions.saturating_sub(1),
+        }
     }
 
     pub fn get_changed_keys_by_prefix(&self, space: &[u8]) -> Option<Vec<StorageKey>> {
@@ -438,5 +464,20 @@ pub mod test {
             assert_eq!(cache.get_change(b"u32", b"11"), Some(Some(A { v: 1 })));
         }
         assert_eq!(cache.get_change(b"u32", b"11"), Some(Some(A { v: 1 })));
+    }
+
+    #[test]
+    fn test_rollback_transaction() {
+        env_logger::init();
+        let mut cache = OverlayCache::default();
+        cache.enter_runtime();
+        cache.put(b"u32", b"3211", 1u32);
+        cache.start_transaction();
+        cache.put(b"u32", b"3211", 2u32);
+        cache.put(b"u64", b"6411", 2u64);
+        cache.rollback_transaction();
+        cache.exit_runtime();
+        assert_eq!(cache.get_change(b"u32", b"3211"), Some(Some(1u32)));
+        assert_eq!(cache.get_change(b"u64", b"6411"), Option::<Option<u64>>::None);
     }
 }

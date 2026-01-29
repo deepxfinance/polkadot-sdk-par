@@ -35,6 +35,7 @@ const LOG_TARGET: &str = "txpool::api";
 pub use sp_runtime::transaction_validity::{
 	TransactionLongevity, TransactionPriority, TransactionSource, TransactionTag,
 };
+use sp_runtime::transaction_validity::AscendingPriority;
 
 /// Transaction pool status.
 #[derive(Debug)]
@@ -171,6 +172,8 @@ pub trait InPoolTransaction {
 	fn hash(&self) -> &Self::Hash;
 	/// Get priority of the transaction.
 	fn priority(&self) -> &TransactionPriority;
+	/// Get second priority of the transaction if `priority` is equal.
+	fn priority2(&self) -> &AscendingPriority;
 	/// Get longevity of the transaction.
 	fn longevity(&self) -> &TransactionLongevity;
 	/// Get transaction dependencies.
