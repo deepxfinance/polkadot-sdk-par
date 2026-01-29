@@ -21,13 +21,10 @@ use crate::CallLimits;
 use codec::{Decode, Encode};
 use frame_support::dispatch::{CallType, DispatchInfo};
 use scale_info::TypeInfo;
-use sp_runtime::{
-	traits::{DispatchInfoOf, Dispatchable, One, SignedExtension},
-	transaction_validity::{
-		InvalidTransaction, TransactionLongevity, TransactionValidity, TransactionValidityError,
-		ValidTransaction,
-	},
-};
+use sp_runtime::{traits::{DispatchInfoOf, Dispatchable, One, SignedExtension}, transaction_validity::{
+	InvalidTransaction, TransactionLongevity, TransactionValidity, TransactionValidityError,
+	ValidTransaction,
+}, SaturatedConversion};
 use sp_std::{vec::Vec, vec};
 
 /// Nonce check and increment to give replay protection for transactions.
@@ -103,6 +100,7 @@ where
 		// check index and quote
 		let account = crate::Account::<T>::get(who);
 
+		let mut priority2: Option<u64> = None;
 		#[cfg(feature = "std")]
 		let timestamp_now = sp_timestamp::Timestamp::current().as_millis();
 		#[cfg(not(feature = "std"))]
@@ -120,6 +118,7 @@ where
 			CallType::Timestamp => {
 				account.check_extrinsic_time_nonce::<T::CallLimits>(timestamp_now, self.0)
 					.map_err(|e| TransactionValidityError::Invalid(e))?;
+				priority2 = Some(self.0.saturated_into());
 			},
 			CallType::NonceQuotaFree => {
 				if self.0 < account.nonce {
@@ -132,12 +131,14 @@ where
 			CallType::TimestampQuotaFree => {
 				account.check_time_nonce::<T::CallLimits>(timestamp_now, &self.0)
 					.map_err(|e| TransactionValidityError::Invalid(e))?;
+				priority2 = Some(self.0.saturated_into());
 			}
 		}
 
 		Ok(ValidTransaction {
 			groups: None,
 			priority: 0,
+			priority2: priority2.into(),
 			requires,
 			provides: vec![Encode::encode(&(who, self.0))],
 			longevity: TransactionLongevity::MAX,

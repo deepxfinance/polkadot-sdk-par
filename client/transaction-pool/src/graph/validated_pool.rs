@@ -68,6 +68,7 @@ impl<Hash, Ex, Error> ValidatedTransaction<Hash, Ex, Error> {
 			hash,
 			source,
 			priority: validity.priority,
+			priority2: validity.priority2,
 			requires: validity.requires,
 			provides: validity.provides,
 			propagate: validity.propagate,

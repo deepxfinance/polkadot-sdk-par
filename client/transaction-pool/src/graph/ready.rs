@@ -25,7 +25,7 @@ use std::{
 
 use crate::LOG_TARGET;
 use log::{debug, trace};
-use sc_transaction_pool_api::error;
+use sc_transaction_pool_api::{error, InPoolTransaction};
 use serde::Serialize;
 use sp_runtime::{traits::Member, transaction_validity::TransactionTag as Tag};
 
@@ -54,9 +54,8 @@ impl<Hash, Ex> Clone for TransactionRef<Hash, Ex> {
 
 impl<Hash, Ex> Ord for TransactionRef<Hash, Ex> {
 	fn cmp(&self, other: &Self) -> cmp::Ordering {
-		self.transaction
-			.priority
-			.cmp(&other.transaction.priority)
+		(self.transaction.priority, other.transaction.priority2)
+			.cmp(&(other.transaction.priority, self.transaction.priority2))
 			.then_with(|| other.transaction.valid_till.cmp(&self.transaction.valid_till))
 			.then_with(|| other.insertion_id.cmp(&self.insertion_id))
 	}
@@ -153,6 +152,7 @@ impl<Hash: hash::Hash + Member + Serialize, Ex> ReadyTransactions<Hash, Ex> {
 	/// 2. Then by priority:
 	/// - If there are two transactions with all requirements satisfied the one with higher priority
 	///   goes first.
+	/// - By priority2 for same priority. Lower priority2 goes first.
 	/// 3. Then by the ttl that's left
 	/// - transactions that are valid for a shorter time go first
 	/// 4. Lastly we sort by the time in the queue
@@ -597,11 +597,13 @@ mod tests {
 			bytes: 1,
 			hash: id as u64,
 			priority: 1,
+			priority2: Default::default(),
 			valid_till: 2,
 			requires: vec![vec![1], vec![2]],
 			provides: vec![vec![3], vec![4]],
 			propagate: true,
 			source: Source::External,
+			group_info: vec![],
 		}
 	}
 
@@ -707,11 +709,13 @@ mod tests {
 			bytes: 1,
 			hash: 7,
 			priority: 1,
+			priority2: Default::default(),
 			valid_till: u64::MAX, // use the max here for testing.
 			requires: vec![tx1.provides[0].clone()],
 			provides: vec![],
 			propagate: true,
 			source: Source::External,
+			group_info: vec![],
 		};
 
 		// when

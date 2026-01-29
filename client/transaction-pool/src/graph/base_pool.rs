@@ -34,7 +34,7 @@ use sp_runtime::{
 		TransactionSource as Source, TransactionTag as Tag,
 	},
 };
-
+use sp_runtime::transaction_validity::AscendingPriority;
 use super::{
 	future::{FutureTransactions, WaitingTransaction},
 	ready::{BestIterator, ReadyTransactions, TransactionRef},
@@ -95,6 +95,8 @@ pub struct Transaction<Hash, Extrinsic> {
 	pub hash: Hash,
 	/// Transaction priority (higher = better)
 	pub priority: Priority,
+	/// Second priority (actually timestamp, lower = better)
+	pub priority2: AscendingPriority,
 	/// At which block the transaction becomes invalid?
 	pub valid_till: Longevity,
 	/// Tags required by the transaction.
@@ -131,6 +133,10 @@ impl<Hash, Extrinsic> InPoolTransaction for Transaction<Hash, Extrinsic> {
 		&self.priority
 	}
 
+	fn priority2(&self) -> &AscendingPriority {
+		&self.priority2
+	}
+
 	fn longevity(&self) -> &Longevity {
 		&self.valid_till
 	}
@@ -162,6 +168,7 @@ impl<Hash: Clone, Extrinsic: Clone> Transaction<Hash, Extrinsic> {
 			bytes: self.bytes,
 			hash: self.hash.clone(),
 			priority: self.priority,
+			priority2: self.priority2,
 			source: self.source,
 			valid_till: self.valid_till,
 			requires: self.requires.clone(),
@@ -550,6 +557,7 @@ mod tests {
 		bytes: 1,
 		hash: 1u64,
 		priority: 5u64,
+		priority2: Default::default(),
 		valid_till: 64u64,
 		requires: vec![],
 		provides: vec![],
