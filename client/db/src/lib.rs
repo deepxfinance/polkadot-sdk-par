@@ -42,13 +42,14 @@ mod upgrade;
 mod utils;
 
 use linked_hash_map::LinkedHashMap;
-use log::{debug, trace, warn};
+use log::{debug, info, trace, warn};
 use parking_lot::{Mutex, RwLock};
 use std::{
 	collections::{HashMap, HashSet},
 	io,
 	path::{Path, PathBuf},
 	sync::Arc,
+	time::Instant,
 };
 
 use crate::{
@@ -99,6 +100,14 @@ pub use sc_state_db::PruningMode;
 pub use sp_database::Database;
 
 pub use bench::BenchmarkingState;
+
+use std::sync::mpsc::{self, Sender};
+use std::sync::OnceLock;
+use std::thread;
+use std::time::Duration;
+
+static GLOBAL_SENDER: OnceLock<Sender<(Transaction<sp_core::H256>, Vec<sc_state_db::CommitSet<Vec<u8>>>)>> = OnceLock::new();
+static DB_HANDLE: OnceLock<Arc<dyn Database<DbHash>>> = OnceLock::new();
 
 const CACHE_HEADERS: usize = 8;
 
@@ -1451,6 +1460,8 @@ impl<Block: BlockT> Backend<Block> {
 			last_finalized_num = *block_header.number();
 		}
 
+		let mut commit_set = Vec::new();
+
 		#[cfg(feature = "kvdb")]
 		let kv_cache = self.shared_trie_cache.as_ref().map(|cache| cache.local_cache());
 		let imported = if let Some(pending_block) = operation.pending_block {
@@ -1580,7 +1591,9 @@ impl<Block: BlockT> Backend<Block> {
 					.map_err(|e: sc_state_db::Error<sp_database::error::DatabaseError>| {
 						sp_blockchain::Error::from_state_db(e)
 					})?;
-				apply_state_commit(&mut transaction, commit);
+				//apply_state_commit(&mut transaction, commit);
+				apply_state_commit_well_known_keys(&mut transaction, commit.clone());
+				commit_set.push(commit);
 				if number <= last_finalized_num {
 					// Canonicalize in the db when re-importing existing blocks with state.
 					let commit = self.storage.state_db.canonicalize_block(&hash).map_err(
@@ -1588,7 +1601,9 @@ impl<Block: BlockT> Backend<Block> {
 							sc_state_db::Error<sp_database::error::DatabaseError>,
 						>,
 					)?;
-					apply_state_commit(&mut transaction, commit);
+					//apply_state_commit(&mut transaction, commit);
+					apply_state_commit_well_known_keys(&mut transaction, commit.clone());
+					commit_set.push(commit);
 					meta_updates.push(MetaUpdate {
 						hash,
 						number,
@@ -1739,7 +1754,10 @@ impl<Block: BlockT> Backend<Block> {
 			}
 		}
 
-		self.storage.db.commit(transaction)?;
+		self.storage.db.commit(transaction.clone())?;
+
+		self.commit_db_state_background().send((transaction, commit_set));
+
 		#[cfg(feature = "kvdb")]
 		drop(kv_cache);
 
@@ -1759,6 +1777,33 @@ impl<Block: BlockT> Backend<Block> {
 		self.blockchain.update_block_gap(block_gap);
 
 		Ok(())
+	}
+
+	pub fn commit_db_state_background(&self) -> Sender<(Transaction<sp_core::H256>, Vec<sc_state_db::CommitSet<Vec<u8>>>)> {
+
+    	let db = DB_HANDLE.get_or_init(|| {
+        	self.storage.db.clone()
+   		});
+
+		GLOBAL_SENDER.get_or_init(|| {
+        	let db_clone = Arc::clone(db);
+
+			let (sender, receiver) = mpsc::channel();
+
+			thread::spawn(move || {				
+				while let Ok((mut msg, commit_set)) = receiver.recv() {
+					for commit in commit_set {
+						apply_state_commit(&mut msg, commit);
+					}
+                    let res = db_clone.commit(msg);
+					log::info!("🎾 import_block Commit State to DB success = {:?}", res);
+					//thread::sleep(Duration::from_millis(50)); 
+				}
+			});
+
+			sender
+		})
+		.clone()
 	}
 
 	// write stuff to a transaction after a new block is finalized.
@@ -1944,6 +1989,42 @@ fn apply_state_commit(
 	}
 	for key in commit.meta.deleted.into_iter() {
 		transaction.remove(columns::STATE_META, &key[..]);
+	}
+}
+
+const LUT: [bool; 256] = {
+    let mut lut = [false; 256];
+    lut[44] = true;
+    lut[58] = true;
+    lut
+};
+
+fn apply_state_commit_well_known_keys(
+	transaction: &mut Transaction<DbHash>,
+	commit: sc_state_db::CommitSet<Vec<u8>>,
+) {
+	// let target = 58;
+	// let target4 = 44;
+	
+	for (key, val) in commit.data.inserted.into_iter() {
+		if LUT[key[0] as usize] {
+			transaction.set_from_vec(columns::STATE, &key[..], val);
+		}
+	}
+	for key in commit.data.deleted.into_iter() {
+		if LUT[key[0] as usize] {
+			transaction.remove(columns::STATE, &key[..]);
+		}
+	}
+	for (key, val) in commit.meta.inserted.into_iter() {
+		if LUT[key[0] as usize] {
+			transaction.set_from_vec(columns::STATE_META, &key[..], val);
+		}
+	}
+	for key in commit.meta.deleted.into_iter() {
+		if LUT[key[0] as usize] {
+			transaction.remove(columns::STATE_META, &key[..]);
+		}
 	}
 }
 
@@ -2453,6 +2534,7 @@ impl<Block: BlockT> sc_client_api::backend::Backend<Block> for Backend<Block> {
 	}
 
 	fn have_state_at(&self, hash: Block::Hash, number: NumberFor<Block>) -> bool {
+		return true;
 		if self.is_archive {
 			match self.blockchain.header_metadata(hash) {
 				Ok(header) => sp_state_machine::Storage::get(
