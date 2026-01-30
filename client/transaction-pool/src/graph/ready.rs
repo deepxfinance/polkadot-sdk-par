@@ -163,54 +163,53 @@ impl<Hash: hash::Hash + Member + Serialize, Ex> ReadyTransactions<Hash, Ex> {
 	/// skipped.
 	pub fn get(&self, limit: Option<usize>) -> (BestIterator<Hash, Ex>, String) {
 		let best_start = std::time::Instant::now();
-		let get_all = || {
+		let (all, best, get_info) = if limit.is_none() 
+			|| limit.as_ref().unwrap() >= &self.ready.read().len() 
+		{
 			let (all, all_info) = self.ready.clone_map();
 			let best = self.best.clone();
 			let get_info = format!("all {all_info} best {:?}({})", best_start.elapsed(), self.best.len());
 			(all, best, get_info)
-		};
-		let (all, best, get_info) = if let Some(limit) = limit {
-			if self.ready.read().len() <= limit {
-				get_all()
-			} else {
-				let mut unlocks = Vec::new();
-				let mut all = HashMap::new();
-				let ready = self.ready.read();
-				let best: BTreeSet<_> = self.best.iter()
-					.map(|r| {
-						if let Some(tx) = ready.get(r.transaction.hash()) {
-							if tx.unlocks.len() > 0 {
-								unlocks.push(tx.unlocks.clone());
-							}
-							all.insert(tx.transaction.transaction.hash.clone(), tx.clone());
+		} else {
+			let limit = limit.unwrap();
+			let mut unlocks = Vec::new();
+			let mut all = HashMap::new();
+			let ready = self.ready.read();
+			let best: BTreeSet<_> = self.best.iter()
+				.map(|r| {
+					if let Some(tx) = ready.get(r.transaction.hash()) {
+						if tx.unlocks.len() > 0 {
+							unlocks.push(tx.unlocks.clone());
 						}
-						r.clone()
-					})
-					.take(limit)
-					.collect();
-				loop {
-					if all.len() >= limit || unlocks.is_empty() { break; }
-					for unlock in core::mem::take(&mut unlocks).into_iter().flatten() {
-						if let Some(tx) = ready.get(&unlock) {
-							if tx.unlocks.len() > 0 {
-								unlocks.push(tx.unlocks.clone());
-							}
-							all.insert(tx.transaction.transaction.hash.clone(), tx.clone());
+						all.insert(tx.transaction.transaction.hash.clone(), tx.clone());
+					}
+					r.clone()
+				})
+				.take(limit)
+				.collect();
+			loop {
+				if all.len() >= limit || unlocks.is_empty() { break; }
+				for unlock in core::mem::take(&mut unlocks).into_iter().flatten() {
+					if let Some(tx) = ready.get(&unlock) {
+						if tx.unlocks.len() > 0 {
+							unlocks.push(tx.unlocks.clone());
 						}
+						all.insert(tx.transaction.transaction.hash.clone(), tx.clone());
 					}
 				}
-				let get_info = format!("limited all {}/{} best {}/{} {:?}", all.len(), ready.len(), best.len(), self.best.len(), best_start.elapsed());
-				(all, best, get_info)
 			}
-		} else {
-			get_all()
+			let get_info = format!("limited all {}/{} best {}/{} {:?}", all.len(), ready.len(), best.len(), self.best.len(), best_start.elapsed());
+			(all, best, get_info)
 		};
-		(BestIterator {
-			all,
-			best,
-			awaiting: Default::default(),
-			invalid: Default::default(),
-		}, get_info)
+		(
+			BestIterator {
+				all,
+				best,
+				awaiting: Default::default(),
+				invalid: Default::default(),
+			}, 
+			get_info
+		)
 	}
 
 	/// Imports transactions to the pool of ready transactions.
@@ -553,6 +552,10 @@ impl<Hash: hash::Hash + Member, Ex> sc_transaction_pool_api::ReadyTransactions
 {
 	fn report_invalid(&mut self, tx: &Self::Item) {
 		BestIterator::report_invalid(self, tx)
+	}
+
+	fn total(&self) -> usize {
+		self.all.len()
 	}
 }
 

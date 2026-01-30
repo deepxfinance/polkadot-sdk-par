@@ -292,6 +292,9 @@ pub trait ReadyTransactions: Iterator {
 	/// This might affect subsequent elements returned by the iterator, so dependent transactions
 	/// are skipped for performance reasons.
 	fn report_invalid(&mut self, _tx: &Self::Item);
+	
+	/// Return total get transaction reference count.
+	fn total(&self) -> usize { 0 }
 }
 
 /// A no-op implementation for an empty iterator.

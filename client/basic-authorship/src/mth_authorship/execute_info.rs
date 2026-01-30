@@ -408,6 +408,7 @@ impl GroupTxInput {
     }
 }
 
+#[derive(Default)]
 pub struct GroupTxOutput<A: TransactionPool> {
     /// Parallel execute transactions.
     pub groups: Vec<Vec<(usize, Arc<<A as TransactionPool>::InPoolTransaction>)>>,
@@ -435,6 +436,8 @@ pub struct GroupInfo {
     pub wait: Duration,
     /// time for groups sort.
     pub sort: Duration,
+    /// pool ready info(`ready_at`/`ready` number, time)
+    pub ready_info: Option<(usize, Duration)>,
 }
 
 impl GroupInfo {
@@ -447,8 +450,13 @@ impl GroupInfo {
         } else {
             "".to_string()
         };
+        let ready_info = if let Some((number, time)) = self.ready_info {
+            format!("(ready {number}({time:?}))")
+        } else {
+            "".to_string()
+        };
         format!(
-            "Group {}({}) tx in {}ms(W{}μs S{}μs){}(groups {}->{})(Input: {})",
+            "Group {}({}) tx in {}ms(W{}μs S{}μs){}(groups {}->{}){ready_info}(Input: {})",
             self.tx_count,
             self.raw_tx_count,
             self.time.as_millis(),
