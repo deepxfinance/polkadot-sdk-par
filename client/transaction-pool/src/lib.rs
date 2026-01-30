@@ -94,7 +94,7 @@ where
 
 struct ReadyPoll<T, Block: BlockT> {
 	updated_at: NumberFor<Block>,
-	pollers: Vec<(NumberFor<Block>, oneshot::Sender<T>)>,
+	pollers: Vec<(NumberFor<Block>, oneshot::Sender<T>, Option<usize>)>,
 }
 
 impl<T, Block: BlockT> Default for ReadyPoll<T, Block> {
@@ -108,7 +108,7 @@ impl<T, Block: BlockT> ReadyPoll<T, Block> {
 		Self { updated_at: best_block_number, pollers: Default::default() }
 	}
 
-	fn trigger(&mut self, number: NumberFor<Block>, iterator_factory: impl Fn() -> T) {
+	fn trigger(&mut self, number: NumberFor<Block>, iterator_factory: impl Fn(Option<usize>) -> T) {
 		self.updated_at = number;
 
 		let mut idx = 0;
@@ -116,16 +116,16 @@ impl<T, Block: BlockT> ReadyPoll<T, Block> {
 			if self.pollers[idx].0 <= number {
 				let poller_sender = self.pollers.swap_remove(idx);
 				log::debug!(target: LOG_TARGET, "Sending ready signal at block {}", number);
-				let _ = poller_sender.1.send(iterator_factory());
+				let _ = poller_sender.1.send(iterator_factory(poller_sender.2));
 			} else {
 				idx += 1;
 			}
 		}
 	}
 
-	fn add(&mut self, number: NumberFor<Block>) -> oneshot::Receiver<T> {
+	fn add(&mut self, number: NumberFor<Block>, limit: Option<usize>) -> oneshot::Receiver<T> {
 		let (sender, receiver) = oneshot::channel();
-		self.pollers.push((number, sender));
+		self.pollers.push((number, sender, limit));
 		receiver
 	}
 
@@ -149,6 +149,11 @@ pub enum RevalidationType {
 	/// During maintenance, transaction pool revalidates some fixed amount of
 	/// transactions from the pool of valid transactions.
 	Full,
+
+	/// Never revalidate type.
+	///
+	/// This is used which ensure all transaction are validate.
+	Never,
 }
 
 impl<PoolApi, Block> BasicPool<PoolApi, Block>
@@ -204,6 +209,8 @@ where
 					revalidation::RevalidationQueue::new_background(pool_api.clone(), pool.clone());
 				(queue, Some(background))
 			},
+			RevalidationType::Never =>
+				(revalidation::RevalidationQueue::new(pool_api.clone(), pool.clone()), None),
 		};
 
 		if let Some(background_task) = background_task {
@@ -218,6 +225,7 @@ where
 				RevalidationType::Light =>
 					RevalidationStrategy::Light(RevalidationStatus::NotScheduled),
 				RevalidationType::Full => RevalidationStrategy::Always,
+				RevalidationType::Never => RevalidationStrategy::Never,
 			})),
 			ready_poll: Arc::new(Mutex::new(ReadyPoll::new(best_block_number))),
 			metrics: PrometheusMetrics::new(prometheus),
@@ -339,7 +347,7 @@ where
 		self.pool.validated_pool().ready_by_hash(hash)
 	}
 
-	fn ready_at(&self, at: NumberFor<Self::Block>) -> PolledIterator<PoolApi> {
+	fn ready_at(&self, at: NumberFor<Self::Block>, limit: Option<usize>) -> PolledIterator<PoolApi> {
 		let status = self.status();
 		// If there are no transactions in the pool, it is fine to return early.
 		//
@@ -351,24 +359,22 @@ where
 
 		if self.ready_poll.lock().updated_at() >= at {
 			log::trace!(target: LOG_TARGET, "Transaction pool already processed block  #{}", at);
-			let iterator: ReadyIteratorFor<PoolApi> = Box::new(self.pool.validated_pool().ready());
+			let iterator: ReadyIteratorFor<PoolApi> = Box::new(self.pool.validated_pool().ready(limit));
 			return async move { iterator }.boxed()
 		}
 
-		self.ready_poll
-			.lock()
-			.add(at)
-			.map(|received| {
-				received.unwrap_or_else(|e| {
-					log::warn!("Error receiving pending set: {:?}", e);
-					Box::new(std::iter::empty())
-				})
+		let pending = self.ready_poll.lock().add(at, limit);
+		pending.map(|received| {
+			received.unwrap_or_else(|e| {
+				log::warn!("Error receiving pending set: {:?}", e);
+				Box::new(std::iter::empty())
 			})
+		})
 			.boxed()
 	}
 
-	fn ready(&self) -> ReadyIteratorFor<PoolApi> {
-		Box::new(self.pool.validated_pool().ready())
+	fn ready(&self, limit: Option<usize>) -> ReadyIteratorFor<PoolApi> {
+		Box::new(self.pool.validated_pool().ready(limit))
 	}
 }
 
@@ -398,7 +404,8 @@ where
 		let revalidation_type = match std::env::var("REVALIDATION_TYPE").unwrap_or("Full".to_string()).as_str() {
 			"Full" => RevalidationType::Full,
 			"Light" => RevalidationType::Light,
-			_ => unimplemented!("Unsupported revalidation type(`Full`, `Light`)"),
+			"Never" => RevalidationType::Never,
+			_ => unimplemented!("Unsupported revalidation type(`Full`, `Light`, `Never`)"),
 		};
 		let pool_api = Arc::new(FullChainApi::new(client.clone(), prometheus, &spawner));
 		let pool = Arc::new(Self::with_revalidation_type(
@@ -487,6 +494,7 @@ enum RevalidationStatus<N> {
 enum RevalidationStrategy<N> {
 	Always,
 	Light(RevalidationStatus<N>),
+	Never,
 }
 
 struct RevalidationAction {
@@ -517,6 +525,7 @@ impl<N: Clone + Copy + AtLeast32Bit> RevalidationStrategy<N> {
 				resubmit: false,
 			},
 			Self::Always => RevalidationAction { revalidate: true, resubmit: true },
+			Self::Never => RevalidationAction { revalidate: false, resubmit: false },
 		}
 	}
 }
@@ -753,10 +762,10 @@ where
 		// handler of "all blocks notification".
 		self.ready_poll
 			.lock()
-			.trigger(*block_number, move || Box::new(extra_pool.validated_pool().ready()));
+			.trigger(*block_number, move |limit| Box::new(extra_pool.validated_pool().ready(limit)));
 
 		if next_action.revalidate {
-			let hashes = pool.validated_pool().ready().map(|tx| tx.hash).collect();
+			let hashes = pool.validated_pool().ready(Some(10000)).map(|tx| tx.hash).collect();
 			self.revalidation_queue.revalidate_later(*block_number, hashes).await;
 
 			self.revalidation_strategy.lock().clear();
@@ -765,8 +774,7 @@ where
 
 	async fn handle_consensus(&self, block: NumberFor<Block>, root: Block::Hash, hashes: Vec<Block::Hash>) {
 		log::trace!(target: LOG_TARGET, "handle_consensus block: {block:?}");
-		let pool = self.pool.clone();
-		pool.validated_pool().on_consensus(block, root, hashes);
+		self.pool.validated_pool().on_consensus(block, root, hashes);
 	}
 }
 

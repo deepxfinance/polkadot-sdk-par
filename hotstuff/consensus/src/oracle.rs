@@ -29,6 +29,8 @@ pub struct HotstuffOracle<B: BlockT, O: BlockOracle<B>> {
     pub verify_percent: Arc<Mutex<Percent>>,
     /// state recording last verify extrinsic speed.
     pub verify_time_per_tx: Arc<Mutex<Duration>>,
+    /// rate for get `total_tx_limit`
+    pub pool_limit_rate: f32,
     /// config filter blocks.
     pub filter_blocks: u32,
     /// filter all applied transaction.
@@ -65,6 +67,13 @@ impl<B: BlockT, O: BlockOracle<B>> HotstuffOracle<B, O> {
             }
         }
 
+        let mut pool_limit_rate = 1.5f32;
+        if let Ok(rate) = env::var("HOTSTUFF_POOL_TX_RATE") {
+            if let Ok(rate) = rate.parse::<f32>() {
+                pool_limit_rate = rate;
+            }
+        }
+
         let mut filter_blocks = 50u32;
         if let Ok(value) = env::var("HOTSTUFF_FILTER_BLOCKS") {
             if let Ok(blocks) = value.parse::<u32>() {
@@ -76,6 +85,7 @@ impl<B: BlockT, O: BlockOracle<B>> HotstuffOracle<B, O> {
             hotstuff_duration,
             verify_percent: Arc::new(Mutex::new(verify_percent)),
             verify_time_per_tx: Arc::new(Mutex::new(Duration::from_micros(verify_per_tx))),
+            pool_limit_rate,
             filter_blocks,
             transaction_filter: Arc::new(Mutex::new(BTreeMap::new())),
             network_notification_limit: network_notification_limit.unwrap_or(1024 * 1024 * 5),
@@ -193,18 +203,24 @@ impl<B: BlockT, O: BlockOracle<B>> BlockOracle<B> for  HotstuffOracle<B, O> {
     }
 
     fn linear_tx_limit(&self) -> usize {
-        match (self.thread_verify_limit(), self.thread_execution_limit()) {
-            (None, execution_limit) => execution_limit,
-            (verify_limit, None) => verify_limit,
-            (Some(verify_limit), Some(execution_limit)) => {
-                Some(verify_limit.min(execution_limit))
-            }
-        }
-            .unwrap_or(200)
+        // match (self.thread_verify_limit(), self.thread_execution_limit()) {
+        //     (None, execution_limit) => execution_limit,
+        //     (verify_limit, None) => verify_limit,
+        //     (Some(verify_limit), Some(execution_limit)) => {
+        //         Some(verify_limit.min(execution_limit))
+        //     }
+        // }
+        //     .unwrap_or(2000)
+        self.thread_execution_limit().unwrap_or(2000)
     }
 
     fn block_size_limit(&self) -> usize {
         // both decide by execute block size limit and `network_notification_limit`
         self.inner.block_size_limit().min(self.network_notification_limit - 1000)
+    }
+
+    fn total_tx_limit(&self) -> usize {
+        let linear_tx_limit = self.linear_tx_limit();
+        linear_tx_limit * self.thread_limit() * ((self.pool_limit_rate * 100f32) as usize) / 100
     }
 }

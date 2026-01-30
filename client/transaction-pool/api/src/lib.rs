@@ -243,6 +243,7 @@ pub trait TransactionPool: Send + Sync {
 	fn ready_at(
 		&self,
 		at: NumberFor<Self::Block>,
+		limit: Option<usize>,
 	) -> Pin<
 		Box<
 			dyn Future<
@@ -252,7 +253,7 @@ pub trait TransactionPool: Send + Sync {
 	>;
 
 	/// Get an iterator for ready transactions ordered by priority.
-	fn ready(&self) -> Box<dyn ReadyTransactions<Item = Arc<Self::InPoolTransaction>> + Send>;
+	fn ready(&self, limit: Option<usize>) -> Box<dyn ReadyTransactions<Item = Arc<Self::InPoolTransaction>> + Send>;
 
 	// *** Block production
 	/// Remove transactions identified by given hashes (and dependent transactions) from the pool.

@@ -51,15 +51,35 @@ where
         let start = Instant::now();
         let deadline = start + max_time;
         let block = parent_number + One::one();
-        let mut t1 = self.transaction_pool.ready_at(parent_number).fuse();
+        let mut t1 = self.transaction_pool.ready_at(parent_number, Some(total_tx_limit)).fuse();
         let mut t2 = futures_timer::Delay::new(wait_pool).fuse();
+        let mut t3 = futures_timer::Delay::new(max_time).fuse();
         let mut pending_iterator = select! {
-			res = t1 => res,
-			_ = t2 => {
-				trace!(target: LOG_TARGET, "[GroupTx B {block}] Timeout fired waiting for transaction pool. Proceeding with production.");
-				self.transaction_pool.ready()
-			},
-		};
+            res = t1 => res,
+            _ = t2 => {
+                trace!(target: LOG_TARGET, "[GroupTx B {block}] Timeout fired waiting for transaction pool. Proceeding with production.");
+                self.transaction_pool.ready(Some(total_tx_limit))
+            },
+            _ = t3 => {
+                debug!(target: LOG_TARGET, "[GroupTx B {block}] Reach deadline {}/{} ms (txpool no response)", start.elapsed().as_millis(), max_time.as_millis());
+                let elapsed = start.elapsed();
+                return Ok(GroupTxOutput {
+                    info: GroupInfo {
+                        input,
+                        tx_count: 0,
+                        filtered: 0,
+                        raw_tx_count: 0,
+                        raw_groups: 0,
+                        groups: 0,
+                        time: elapsed,
+                        wait: elapsed,
+                        sort: Default::default(),
+                    },
+                    groups: Vec::new(),
+                    single: Vec::new(),
+                })
+            }
+        };
         let wait = start.elapsed();
 
         let mut skipped = 0;

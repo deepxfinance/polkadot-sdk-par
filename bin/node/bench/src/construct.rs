@@ -284,6 +284,7 @@ impl sc_transaction_pool_api::TransactionPool for Transactions {
 	fn ready_at(
 		&self,
 		_at: NumberFor<Self::Block>,
+		_limit: Option<usize>,
 	) -> Pin<
 		Box<
 			dyn Future<
@@ -296,7 +297,7 @@ impl sc_transaction_pool_api::TransactionPool for Transactions {
 		Box::pin(futures::future::ready(iter))
 	}
 
-	fn ready(&self) -> Box<dyn ReadyTransactions<Item = Arc<Self::InPoolTransaction>> + Send> {
+	fn ready(&self, _limit: Option<usize>) -> Box<dyn ReadyTransactions<Item = Arc<Self::InPoolTransaction>> + Send> {
 		unimplemented!()
 	}
 

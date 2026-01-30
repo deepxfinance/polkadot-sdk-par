@@ -974,8 +974,8 @@ where
         let (mut multi, single, group_info) = match GroupTransaction::<B>::extrinsic(
             &proposer,
             *parent_header.number(),
-            // time wait for pool response. (slot_duration / 10)
-            std::time::Duration::from_millis(self.slot_duration.as_millis()).checked_div(10).unwrap_or_default(),
+            // time wait for pool response. (slot_duration / 20)
+            std::time::Duration::from_millis(self.slot_duration.as_millis()).checked_div(20).unwrap_or_default(),
             // time for pool get transactions. (HotstuffDuration / 10)
             self.local_timer.period() / 10,
             None,
