@@ -9,6 +9,8 @@ use crate::BlockExecuteInfo;
 
 pub const DEFAULT_BLOCK_SIZE_LIMIT: usize = 4 * 1024 * 1024 + 512;
 
+pub const EXECUTE_WINDOW_SIZE: usize = 30000;
+
 pub trait BlockOracle<B: BlockT> {
     /// update block_duration.
     fn update_block_duration(&self, time: Duration);
@@ -57,7 +59,11 @@ pub struct ExecutionOracle<B: BlockT> {
     /// `linear_execution_time * merge_permill` estimates execution results `merge_time`(default 15%).
     pub merge_permill: Arc<Mutex<Permill>>,
     /// average transaction execute time with weight.
-    pub execute_time_per_tx: Arc<Mutex<(Duration, usize)>>,
+    ///
+    /// window `[(tx_number, Duration)]`, sum of `tx_number` should not grater than total window number sum limit
+    pub execute_time_per_tx: Arc<Mutex<(Duration, Vec<(usize, Duration)>)>>,
+    /// Limit of window number, total window number sum limit.
+    pub execute_avg_window: (usize, usize),
     pub block_size_limit: usize,
     phantom: PhantomData<B>,
 }
@@ -100,6 +106,18 @@ impl<B: BlockT> ExecutionOracle<B> {
                 merge_permill = Permill::from_percent(percent);
             }
         }
+        let mut execute_avg_window_num = 5;
+        if let Ok(num) = env::var("ORACLE_EXECUTE_WINDOW_NUM") {
+            if let Ok(num) = num.parse::<usize>() {
+                execute_avg_window_num = num;
+            }
+        }
+        let mut execute_avg_window_size = 30000;
+        if let Ok(size) = env::var("ORACLE_EXECUTE_WINDOW_SIZE") {
+            if let Ok(size) = size.parse::<usize>() {
+                execute_avg_window_size = size;
+            }
+        }
         Self {
             thread_limit,
             min_single_tx,
@@ -108,8 +126,9 @@ impl<B: BlockT> ExecutionOracle<B> {
             pool_permill: Arc::new(Mutex::new(pool_permill)),
             execution_permill: Arc::new(Mutex::new(execution_permill)),
             merge_permill: Arc::new(Mutex::new(merge_permill)),
-            execute_time_per_tx: Arc::new(Mutex::new((Duration::from_micros(400), 0))),
+            execute_time_per_tx: Arc::new(Mutex::new((Duration::from_micros(400), vec![]))),
             block_size_limit: block_size_limit.unwrap_or(DEFAULT_BLOCK_SIZE_LIMIT),
+            execute_avg_window: (execute_avg_window_num, execute_avg_window_size),
             phantom: PhantomData,
         }
     }
@@ -124,21 +143,35 @@ impl<B: BlockT> ExecutionOracle<B> {
 
     fn update_execute_time_per_tx(&self, info: &BlockExecuteInfo<B>) -> Option<(Duration, Duration)> {
         let mut execute_time_per_tx = None;
-        let (ave_execute_time, weight) = info.avg_time();
-        if ave_execute_time > Duration::default() {
-            let (pre_execute_time_per_tx, pre_weight) = *self.execute_time_per_tx.lock().unwrap();
-            if weight > 0 {
-                let mut total_weight = (pre_weight + weight) as u128;
-                let new_exe_cute_time_per_tx = ((((ave_execute_time.as_micros() * weight as u128) << 20)
-                    + ((pre_execute_time_per_tx.as_micros() * pre_weight as u128)  << 20)) / total_weight) >> 20;
-                let new_avg_execute_time = Duration::from_micros(new_exe_cute_time_per_tx as u64);
-                // limit weight
-                if total_weight >> 20 > 0 {
-                    total_weight = total_weight >> 1;
+        let (avg_execute_time, tx_number) = info.avg_time();
+        if avg_execute_time > Duration::default() {
+            let (_, prev_window) = self.execute_time_per_tx.lock().unwrap().clone();
+            let (new_avg_execute_time, new_window) = if tx_number >= self.execute_avg_window.1 {
+                (avg_execute_time, vec![(self.execute_avg_window.1, avg_execute_time)])
+            } else {
+                let mut total_time = avg_execute_time.as_nanos() * tx_number as u128;
+                let mut new_window = vec![(tx_number, avg_execute_time)];
+                let mut remain = self.execute_avg_window.1 - tx_number;
+                for (number, avg_time) in prev_window {
+                    if new_window.len() >= self.execute_avg_window.0 {
+                        new_window.truncate(self.execute_avg_window.0);
+                        break;
+                    }
+                    if number >= remain {
+                        total_time += avg_time.as_nanos() * remain as u128;
+                        new_window.push((remain, avg_time));
+                        break;
+                    } else {
+                        remain = remain.saturating_sub(number);
+                        total_time += avg_time.as_nanos() * number as u128;
+                        new_window.push((number, avg_time));
+                    }
                 }
-                *self.execute_time_per_tx.lock().unwrap() = (new_avg_execute_time, total_weight as usize);
-                execute_time_per_tx = Some((ave_execute_time, new_avg_execute_time));
-            }
+                let new_avg_nanos = total_time / self.execute_avg_window.1.saturating_sub(remain) as u128;
+                (Duration::from_nanos(new_avg_nanos as u64), new_window)
+            };
+            *self.execute_time_per_tx.lock().unwrap() = (new_avg_execute_time, new_window);
+            execute_time_per_tx = Some((avg_execute_time, new_avg_execute_time));
         }
         execute_time_per_tx
     }
