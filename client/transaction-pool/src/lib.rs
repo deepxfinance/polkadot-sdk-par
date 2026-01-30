@@ -108,7 +108,7 @@ impl<T, Block: BlockT> ReadyPoll<T, Block> {
 		Self { updated_at: best_block_number, pollers: Default::default() }
 	}
 
-	fn trigger(&mut self, number: NumberFor<Block>, iterator_factory: impl Fn(Option<usize>) -> T) {
+	fn trigger(&mut self, number: NumberFor<Block>, iterator_factory: impl Fn(Option<NumberFor<Block>>, Option<usize>) -> T) {
 		self.updated_at = number;
 
 		let mut idx = 0;
@@ -116,7 +116,7 @@ impl<T, Block: BlockT> ReadyPoll<T, Block> {
 			if self.pollers[idx].0 <= number {
 				let poller_sender = self.pollers.swap_remove(idx);
 				log::debug!(target: LOG_TARGET, "Sending ready signal at block {}", number);
-				let _ = poller_sender.1.send(iterator_factory(poller_sender.2));
+				let _ = poller_sender.1.send(iterator_factory(Some(poller_sender.0), poller_sender.2));
 			} else {
 				idx += 1;
 			}
@@ -359,7 +359,7 @@ where
 
 		if self.ready_poll.lock().updated_at() >= at {
 			log::trace!(target: LOG_TARGET, "Transaction pool already processed block  #{}", at);
-			let iterator: ReadyIteratorFor<PoolApi> = Box::new(self.pool.validated_pool().ready(limit));
+			let iterator: ReadyIteratorFor<PoolApi> = Box::new(self.pool.validated_pool().ready(Some(at), limit));
 			return async move { iterator }.boxed()
 		}
 
@@ -374,7 +374,7 @@ where
 	}
 
 	fn ready(&self, limit: Option<usize>) -> ReadyIteratorFor<PoolApi> {
-		Box::new(self.pool.validated_pool().ready(limit))
+		Box::new(self.pool.validated_pool().ready(None, limit))
 	}
 }
 
@@ -762,10 +762,10 @@ where
 		// handler of "all blocks notification".
 		self.ready_poll
 			.lock()
-			.trigger(*block_number, move |limit| Box::new(extra_pool.validated_pool().ready(limit)));
+			.trigger(*block_number, move |at: Option<NumberFor<Block>>, limit| Box::new(extra_pool.validated_pool().ready(at, limit)));
 
 		if next_action.revalidate {
-			let hashes = pool.validated_pool().ready(Some(10000)).map(|tx| tx.hash).collect();
+			let hashes = pool.validated_pool().ready(None, Some(10000)).map(|tx| tx.hash).collect();
 			self.revalidation_queue.revalidate_later(*block_number, hashes).await;
 
 			self.revalidation_strategy.lock().clear();

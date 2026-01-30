@@ -27,11 +27,7 @@ use futures::channel::mpsc::{channel, Sender};
 use parking_lot::{Mutex, RwLock};
 use sc_transaction_pool_api::{error, PoolStatus, ReadyTransactions};
 use serde::Serialize;
-use sp_runtime::{
-	generic::BlockId,
-	traits::{self, SaturatedConversion},
-	transaction_validity::{TransactionSource, TransactionTag as Tag, ValidTransaction},
-};
+use sp_runtime::{generic::BlockId, traits::{self, SaturatedConversion}, transaction_validity::{TransactionSource, TransactionTag as Tag, ValidTransaction}, Saturating};
 use std::time::Instant;
 
 use super::{base_pool::{self as base, PruneStatus}, listener::Listener, pool::{
@@ -678,12 +674,20 @@ impl<B: ChainApi> ValidatedPool<B> {
 	}
 
 	/// Get an iterator for ready transactions ordered by priority
-	pub fn ready(&self, limit: Option<usize>) -> impl ReadyTransactions<Item = TransactionFor<B>> + Send {
+	pub fn ready(&self, at: Option<NumberFor<B>>, limit: Option<usize>) -> impl ReadyTransactions<Item = TransactionFor<B>> + Send {
 		let start_get_ready = std::time::Instant::now();
+		let filter = at
+			.map(|at| self.consensus_pool.read().get(&at.saturating_add(1u32.into()))
+				.map(|(_, hashes)| hashes)
+				.cloned()
+			)
+			.unwrap_or_default();
 		let read = self.pool.read();
 		let lock_time = start_get_ready.elapsed();
-		let (res, info) = read.ready(limit);
-		log::info!("get ready lock {lock_time:?} ready {info}");
+		let (res, info) = read.ready(filter, limit);
+		if res.total() > 0 {
+			log::info!(target: LOG_TARGET, "get ready {:?}(lock {lock_time:?} ready {info})", start_get_ready.elapsed());
+		}
 		res
 	}
 
@@ -715,7 +719,7 @@ impl<B: ChainApi> ValidatedPool<B> {
 	
 	pub fn on_consensus(&self, block: NumberFor<B>, root: ExtrinsicHash<B>, hashes: Vec<ExtrinsicHash<B>>) {
 		if hashes.len() > 0 {
-			log::trace!(target: "txpool_consensus", "consensus_pool on consensus block {block}, {} hashes registered, tx_root {root:?}", hashes.len());
+			log::info!(target: "txpool_consensus", "consensus_pool on consensus block {block}, {} hashes registered, tx_root {root:?}", hashes.len());
 			self.consensus_pool.write().insert(block, (root, hashes.into_iter().collect()));
 		}
 	}
@@ -732,7 +736,7 @@ impl<B: ChainApi> ValidatedPool<B> {
 		let res = self.consensus_pool.write().remove(&block);
 		if let Some((root, hash_set)) = &res {
 			if hash_set.len() > 1 {
-				log::trace!(target: "txpool_consensus", "consensus_pool on block {at}, {} hashes cleared, tx_root {root:?}", hash_set.len());
+				log::info!(target: "txpool_consensus", "consensus_pool on block {at}, {} hashes cleared, tx_root {root:?}", hash_set.len());
 			}
 		}
 		res

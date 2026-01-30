@@ -125,7 +125,8 @@ impl<B: BlockT, O: BlockOracle<B>> HotsOracle<B> for HotstuffOracle<B, O> {
                 let avg_time = ready_time.checked_div(ready_number as u32).unwrap_or_default();
                 if avg_time > Default::default() {
                     self.ready_avg_time.lock().unwrap().replace(avg_time);
-                    *self.limit_div_rate.lock().unwrap() *= 1;
+                    let prev_rate = *self.limit_div_rate.lock().unwrap();
+                    *self.limit_div_rate.lock().unwrap() *= (prev_rate / 2).max(1);
                 }
             },
             None => *self.limit_div_rate.lock().unwrap() *= 2,
@@ -235,10 +236,10 @@ impl<B: BlockT, O: BlockOracle<B>> BlockOracle<B> for  HotstuffOracle<B, O> {
         let execute_limit = linear_tx_limit * self.thread_limit() * ((self.pool_limit_rate * 100f32) as usize) / 100;
         let total_tx_limit = if let Some(ready_avg_time) = self.ready_avg_time.lock().unwrap().clone() {
             let ready_pool_limit = self.pool_time().as_nanos().div(ready_avg_time.as_nanos()) as usize;
-            execute_limit.min(ready_pool_limit)
+            execute_limit.max(1).min(ready_pool_limit)
         } else {
-            execute_limit
+            execute_limit.max(1)
         };
-        total_tx_limit / *self.limit_div_rate.lock().unwrap()
+        (total_tx_limit / *self.limit_div_rate.lock().unwrap()).max(1000)
     }
 }

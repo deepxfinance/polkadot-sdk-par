@@ -217,7 +217,7 @@ impl<B: BlockT> BlockOracle<B> for ExecutionOracle<B> {
         self.block_duration()
     }
 
-    fn thread_limit(&self) -> usize { self.thread_limit }
+    fn thread_limit(&self) -> usize { self.thread_limit.max(1) }
 
     fn round_tx(&self) -> usize { self.round_tx }
 
@@ -247,7 +247,7 @@ impl<B: BlockT> BlockOracle<B> for ExecutionOracle<B> {
         if execute_time_per_tx == Duration::default() {
             return None;
         }
-        Some(self.linear_execute_time().as_micros() as usize / execute_time_per_tx.as_micros() as usize)
+        Some((self.linear_execute_time().as_micros() as usize / execute_time_per_tx.as_micros() as usize).max(1))
     }
 
     fn linear_tx_limit(&self) -> usize {
