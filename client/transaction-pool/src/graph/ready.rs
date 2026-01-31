@@ -161,7 +161,7 @@ impl<Hash: hash::Hash + Member + Serialize, Ex> ReadyTransactions<Hash, Ex> {
 	/// The iterator is providing a way to report transactions that the receiver considers invalid.
 	/// In such case the entire subgraph of transactions that depend on the reported one will be
 	/// skipped.
-	pub fn get(&self, filter: Option<HashSet<Hash>>, limit: Option<usize>) -> (BestIterator<Hash, Ex>, String) {
+	pub fn get(&self, limit: Option<usize>) -> (BestIterator<Hash, Ex>, String) {
 		let best_start = std::time::Instant::now();
 		let (all, best, get_info) = if limit.is_none()
 			|| limit.as_ref().unwrap() >= &self.ready.read().len()
@@ -171,29 +171,20 @@ impl<Hash: hash::Hash + Member + Serialize, Ex> ReadyTransactions<Hash, Ex> {
 			let get_info = format!("all {all_info} best {:?}({})", best_start.elapsed(), self.best.len());
 			(all, best, get_info)
 		} else {
-			let filter = filter.as_ref();
 			let limit = limit.unwrap();
 			let mut unlocks = Vec::new();
 			let mut all = HashMap::new();
-			let mut filtered = 0usize;
 			let ready = self.ready.read();
 			let best: BTreeSet<_> = self.best.iter()
 				.rev()
 				.filter_map(|r| {
-					if let Some(tx) = ready.get(r.transaction.hash()) {
+					ready.get(r.transaction.hash()).map(|tx| {
 						if tx.unlocks.len() > 0 {
 							unlocks.push(tx.unlocks.clone());
 						}
-						if filter.map(|f| f.contains(r.transaction.hash())).unwrap_or(false) {
-							filtered += 1;
-							None
-						} else {
-							all.insert(tx.transaction.transaction.hash.clone(), tx.clone());
-							Some(r.clone())
-						}
-					} else {
-						None
-					}
+						all.insert(tx.transaction.transaction.hash.clone(), tx.clone());
+						r.clone()
+					})
 				})
 				.take(limit)
 				.collect();
@@ -204,15 +195,11 @@ impl<Hash: hash::Hash + Member + Serialize, Ex> ReadyTransactions<Hash, Ex> {
 						if tx.unlocks.len() > 0 {
 							unlocks.push(tx.unlocks.clone());
 						}
-						if !filter.map(|f| f.contains(&tx.transaction.transaction.hash)).unwrap_or(false) {
-							all.insert(tx.transaction.transaction.hash.clone(), tx.clone());
-						} else {
-							filtered += 1;
-						}
+						all.insert(tx.transaction.transaction.hash.clone(), tx.clone());
 					}
 				}
 			}
-			let get_info = format!("limited all {}/{} best {}/{} {:?} filtered {filtered}", all.len(), ready.len(), best.len(), self.best.len(), best_start.elapsed());
+			let get_info = format!("limited all {}/{} best {}/{} {:?}", all.len(), ready.len(), best.len(), self.best.len(), best_start.elapsed());
 			(all, best, get_info)
 		};
 		(

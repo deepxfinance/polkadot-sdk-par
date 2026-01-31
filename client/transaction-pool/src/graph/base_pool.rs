@@ -389,8 +389,8 @@ impl<Hash: hash::Hash + Member + Serialize, Ex: std::fmt::Debug> BasePool<Hash, 
 	}
 
 	/// Returns an iterator over ready transactions in the pool.
-	pub fn ready(&self, filter: Option<HashSet<Hash>>, limit: Option<usize>) -> (BestIterator<Hash, Ex>, String) {
-		self.ready.get(filter, limit)
+	pub fn ready(&self, limit: Option<usize>) -> (BestIterator<Hash, Ex>, String) {
+		self.ready.get(limit)
 	}
 
 	/// Returns an iterator over future transactions in the pool.
