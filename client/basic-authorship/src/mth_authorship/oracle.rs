@@ -186,8 +186,10 @@ impl<B: BlockT> ExecutionOracle<B> {
         }
         let full_time = info.time.as_nanos() + info.import.as_nanos();
         let import_permill = Permill::from_rational(info.import.as_nanos(), full_time);
+        let mut update_import = false;
         if full_time >= self.block_duration.lock().unwrap().as_micros() / 5 {
             *self.import_permill.lock().unwrap() = import_permill;
+            update_import = true;
         }
 
         let pool_permill = Permill::from_rational(info.group.time.as_micros(), info.time.as_micros());
@@ -213,7 +215,7 @@ impl<B: BlockT> ExecutionOracle<B> {
             if !update.is_empty() {
                 update += &format!(" finalize {:?}", finalize_permill * full_execute_permill);
             }
-            update += &format!(" import {:?}", import_permill);
+            update += &format!(" import {:?}({update_import})", import_permill);
             if !update.is_empty() { return Some(update); }
         } else {
             warn!(target: "oracle_exec", "[Update] Block {block} (pool({pool_permill:?}) + merge({merge_permill:?}) + finalize({finalize_permill:?})) > 100% with no time for execute!!!");

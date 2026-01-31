@@ -169,6 +169,9 @@ impl<B: ChainApi> Pool<B> {
 		xts: impl IntoIterator<Item = ExtrinsicFor<B>>,
 		multi: bool,
 	) -> Result<Vec<Result<ExtrinsicHash<B>, B::Error>>, B::Error> {
+		if self.validated_pool.locked() {
+			return Err(error::Error::ImmediatelyDropped.into());
+		}
 		let xts = xts.into_iter().map(|xt| (source, xt));
 		let validated_transactions = self.verify(at, xts, CheckBannedBeforeVerify::Yes, multi).await?;
 		Ok(self.validated_pool.submit(validated_transactions.into_values()))

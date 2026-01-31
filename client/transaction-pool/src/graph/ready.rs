@@ -183,13 +183,15 @@ impl<Hash: hash::Hash + Member + Serialize, Ex> ReadyTransactions<Hash, Ex> {
 						if tx.unlocks.len() > 0 {
 							unlocks.push(tx.unlocks.clone());
 						}
-						all.insert(tx.transaction.transaction.hash.clone(), tx.clone());
-					}
-					if filter.map(|f| f.contains(r.transaction.hash())).unwrap_or(false) {
-						filtered += 1;
-						None
+						if filter.map(|f| f.contains(r.transaction.hash())).unwrap_or(false) {
+							filtered += 1;
+							None
+						} else {
+							all.insert(tx.transaction.transaction.hash.clone(), tx.clone());
+							Some(r.clone())
+						}
 					} else {
-						Some(r.clone())
+						None
 					}
 				})
 				.take(limit)

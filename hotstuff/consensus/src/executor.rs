@@ -242,7 +242,6 @@ where
                 return Err(format!("Propose block {mission_block} failed for {e:?}"));
             }
         };
-        let import_start = std::time::Instant::now();
         // generate import params
         let (block, _storage_proof) = (proposal.block, proposal.proof);
         let (header, body) = block.deconstruct();
@@ -268,6 +267,7 @@ where
         if current < mission.commit.commit_time().as_millis() {
             tokio::time::sleep(std::time::Duration::from_millis(mission.commit.commit_time().as_millis() - current)).await;
         }
+        let import_start = std::time::Instant::now();
         match self.import.import_block(block_import_params).await {
             Ok(res) => {
                 res.handle_justification(
@@ -282,7 +282,7 @@ where
                         warn!(target: LOG_TARGET, "FinalizeBlock #{} ({}) failed for {e:?}", header.number(), header.hash());
                     }
                 }
-                info.import = import_start.elapsed();
+                info.set_import_time(import_start.elapsed());
                 Ok(info)
             },
             Err(err) => {

@@ -222,6 +222,10 @@ const RECENTLY_PRUNED_TAGS: usize = 2;
 /// required tags.
 #[derive(Debug)]
 pub struct BasePool<Hash: hash::Hash + Eq, Ex> {
+	/// If pool is locked, transaction can't in if locked.
+	pub locked: bool,
+	/// If pool `ready` reach this, unlock pool.
+	pub unlock_ready: usize,
 	reject_future_transactions: bool,
 	future: FutureTransactions<Hash, Ex>,
 	ready: ReadyTransactions<Hash, Ex>,
@@ -235,19 +239,35 @@ pub struct BasePool<Hash: hash::Hash + Eq, Ex> {
 
 impl<Hash: hash::Hash + Member + Serialize, Ex: std::fmt::Debug> Default for BasePool<Hash, Ex> {
 	fn default() -> Self {
-		Self::new(false)
+		Self::new(usize::MAX, false)
 	}
 }
 
 impl<Hash: hash::Hash + Member + Serialize, Ex: std::fmt::Debug> BasePool<Hash, Ex> {
 	/// Create new pool given reject_future_transactions flag.
-	pub fn new(reject_future_transactions: bool) -> Self {
+	pub fn new(unlock_ready: usize, reject_future_transactions: bool) -> Self {
 		Self {
+			locked: false,
+			unlock_ready,
 			reject_future_transactions,
 			future: Default::default(),
 			ready: Default::default(),
 			recently_pruned: Default::default(),
 			recently_pruned_index: 0,
+		}
+	}
+
+	pub fn try_lock(&mut self, ready_limit: &Limit) {
+		if !self.locked && self.ready.len() >= ready_limit.count {
+			self.locked = true;
+			log::info!(target: LOG_TARGET, "Pool locked for ready limit {}/{}", self.ready.len(), ready_limit.count);
+		}
+	}
+
+	pub fn try_unlock(&mut self) {
+		if self.locked && self.ready.len() <= self.unlock_ready {
+			self.locked = false;
+			log::info!(target: LOG_TARGET, "Pool unlocked for unlock_ready {}/{}", self.ready.len(), self.unlock_ready);
 		}
 	}
 
@@ -279,7 +299,7 @@ impl<Hash: hash::Hash + Member + Serialize, Ex: std::fmt::Debug> BasePool<Hash, 
 	/// other transactions in the pool.
 	/// The latter contains transactions that have all the requirements satisfied and are
 	/// ready to be included in the block.
-	pub fn import(&mut self, tx: Transaction<Hash, Ex>) -> error::Result<Imported<Hash, Ex>> {
+	pub fn import(&mut self, ready_limit: Limit, tx: Transaction<Hash, Ex>) -> error::Result<Imported<Hash, Ex>> {
 		if self.is_imported(&tx.hash) {
 			return Err(error::Error::AlreadyImported(Box::new(tx.hash)))
 		}
@@ -304,7 +324,7 @@ impl<Hash: hash::Hash + Member + Serialize, Ex: std::fmt::Debug> BasePool<Hash, 
 			return Ok(Imported::Future { hash })
 		}
 
-		self.import_to_ready(tx)
+		self.import_to_ready(&ready_limit, tx)
 	}
 
 	/// Imports transaction to ready queue.
@@ -312,6 +332,7 @@ impl<Hash: hash::Hash + Member + Serialize, Ex: std::fmt::Debug> BasePool<Hash, 
 	/// NOTE the transaction has to have all requirements satisfied.
 	fn import_to_ready(
 		&mut self,
+		ready_limit: &Limit,
 		tx: WaitingTransaction<Hash, Ex>,
 	) -> error::Result<Imported<Hash, Ex>> {
 		let hash = tx.transaction.hash.clone();
@@ -363,7 +384,7 @@ impl<Hash: hash::Hash + Member + Serialize, Ex: std::fmt::Debug> BasePool<Hash, 
 			debug!(target: LOG_TARGET, "[{:?}] Cycle detected, bailing.", hash);
 			return Err(error::Error::CycleDetected)
 		}
-
+		self.try_lock(ready_limit);
 		Ok(Imported::Ready { hash, promoted, failed, removed })
 	}
 
@@ -466,6 +487,7 @@ impl<Hash: hash::Hash + Member + Serialize, Ex: std::fmt::Debug> BasePool<Hash, 
 	pub fn remove_subtree(&mut self, hashes: &[Hash]) -> Vec<Arc<Transaction<Hash, Ex>>> {
 		let mut removed = self.ready.remove_subtree(hashes);
 		removed.extend(self.future.remove(hashes));
+		self.try_unlock();
 		removed
 	}
 
@@ -480,7 +502,7 @@ impl<Hash: hash::Hash + Member + Serialize, Ex: std::fmt::Debug> BasePool<Hash, 
 	/// but unlike `remove_subtree`, dependent transactions are not touched.
 	/// Additional transactions from future queue might be promoted to ready if you satisfy tags
 	/// that the pool didn't previously know about.
-	pub fn prune_tags(&mut self, tags: impl IntoIterator<Item = Tag>) -> PruneStatus<Hash, Ex> {
+	pub fn prune_tags(&mut self, tags: impl IntoIterator<Item = Tag>, ready_limit: Limit) -> PruneStatus<Hash, Ex> {
 		let mut to_import = vec![];
 		let mut pruned = vec![];
 		let recently_pruned = &mut self.recently_pruned[self.recently_pruned_index];
@@ -500,7 +522,7 @@ impl<Hash: hash::Hash + Member + Serialize, Ex: std::fmt::Debug> BasePool<Hash, 
 		let mut failed = vec![];
 		for tx in to_import {
 			let hash = tx.transaction.hash.clone();
-			match self.import_to_ready(tx) {
+			match self.import_to_ready(&ready_limit, tx) {
 				Ok(res) => promoted.push(res),
 				Err(e) => {
 					warn!(
@@ -511,7 +533,7 @@ impl<Hash: hash::Hash + Member + Serialize, Ex: std::fmt::Debug> BasePool<Hash, 
 				},
 			}
 		}
-
+		self.try_unlock();
 		PruneStatus { pruned, failed, promoted }
 	}
 

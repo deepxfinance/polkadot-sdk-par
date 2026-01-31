@@ -107,7 +107,12 @@ pub struct ValidatedPool<B: ChainApi> {
 impl<B: ChainApi> ValidatedPool<B> {
 	/// Create a new transaction pool.
 	pub fn new(options: Options, is_validator: IsValidator, api: Arc<B>) -> Self {
-		let base_pool = base::BasePool::new(options.reject_future_transactions);
+		let unlock_ready_percent: usize = std::env::var("POOL_LIMIT_UNLOCK_PERCENT").unwrap_or("90".into()).parse().unwrap_or(90);
+		if unlock_ready_percent >= 100 {
+			panic!("`POOL_LIMIT_UNLOCK_PERCENT` should be less than 100");
+		}
+		let unlock_ready = options.ready.count * unlock_ready_percent / 100;
+		let base_pool = base::BasePool::new(unlock_ready, options.reject_future_transactions);
 		let ban_time = options.ban_time;
 		Self {
 			is_validator,
@@ -119,6 +124,10 @@ impl<B: ChainApi> ValidatedPool<B> {
 			import_notification_sinks: Default::default(),
 			rotator: PoolRotator::new(ban_time),
 		}
+	}
+
+	pub fn locked(&self) -> bool {
+		self.pool.read().locked
 	}
 
 	/// Bans given set of hashes.
@@ -155,23 +164,24 @@ impl<B: ChainApi> ValidatedPool<B> {
 		&self,
 		txs: impl IntoIterator<Item = ValidatedTransactionFor<B>>,
 	) -> Vec<Result<ExtrinsicHash<B>, B::Error>> {
-		let results = self.submit_batch(txs);
+		// let results = self.submit_batch(txs);
 
-		// only enforce limits if there is at least one imported transaction
-		let removed = if results.iter().any(|res| res.is_ok()) {
-			self.enforce_limits()
-		} else {
-			Default::default()
-		};
-
-		results
-			.into_iter()
-			.map(|res| match res {
-				Ok(ref hash) if removed.contains(hash) =>
-					Err(error::Error::ImmediatelyDropped.into()),
-				other => other,
-			})
-			.collect()
+		// // only enforce limits if there is at least one imported transaction
+		// let removed = if results.iter().any(|res| res.is_ok()) {
+		// 	self.enforce_limits()
+		// } else {
+		// 	Default::default()
+		// };
+		//
+		// results
+		// 	.into_iter()
+		// 	.map(|res| match res {
+		// 		Ok(ref hash) if removed.contains(hash) =>
+		// 			Err(error::Error::ImmediatelyDropped.into()),
+		// 		other => other,
+		// 	})
+		// 	.collect()
+		self.submit_batch(txs)
 	}
 
 	/// Submit single pre-validated transaction to the pool.
@@ -182,7 +192,7 @@ impl<B: ChainApi> ValidatedPool<B> {
 					return Err(error::Error::Unactionable.into())
 				}
 
-				let imported = self.pool.write().import(tx)?;
+				let imported = self.pool.write().import(self.options.ready.clone(), tx)?;
 
 				if let base::Imported::Ready { ref hash, .. } = imported {
 					let sinks = &mut self.import_notification_sinks.lock();
@@ -222,13 +232,17 @@ impl<B: ChainApi> ValidatedPool<B> {
 		let mut results = vec![];
 		let mut imported_hashes = vec![];
 		for tx in txs {
+			if self.locked() {
+				results.push(Err(error::Error::ImmediatelyDropped.into()));
+				continue;
+			}
 			let result = match tx {
 				ValidatedTransaction::Valid(tx) => {
 					if !tx.propagate && !(self.is_validator.0)() {
 						results.push(Err(error::Error::Unactionable.into()));
 						continue;
 					}
-					let imported = match self.pool.write().import(tx) {
+					let imported = match self.pool.write().import(self.options.ready.clone(), tx) {
 						Ok(imported) => imported,
 						Err(e) => {
 							results.push(Err(e.into()));
@@ -408,7 +422,7 @@ impl<B: ChainApi> ValidatedPool<B> {
 				let mut final_statuses = HashMap::new();
 				for (hash, tx_to_resubmit) in txs_to_resubmit {
 					match tx_to_resubmit {
-						ValidatedTransaction::Valid(tx) => match pool.import(tx) {
+						ValidatedTransaction::Valid(tx) => match pool.import(self.options.ready.clone(), tx) {
 							Ok(imported) => match imported {
 								base::Imported::Ready { promoted, failed, removed, .. } => {
 									final_statuses.insert(hash, Status::Ready);
@@ -498,7 +512,7 @@ impl<B: ChainApi> ValidatedPool<B> {
 		tags: impl IntoIterator<Item = Tag>,
 	) -> Result<PruneStatus<ExtrinsicHash<B>, ExtrinsicFor<B>>, B::Error> {
 		// Perform tag-based pruning in the base pool
-		let status = self.pool.write().prune_tags(tags);
+		let status = self.pool.write().prune_tags(tags, self.options.ready.clone());
 		// Notify event listeners of all transactions
 		// that were promoted to `Ready` or were dropped.
 		{
