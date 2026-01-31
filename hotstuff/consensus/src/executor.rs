@@ -220,7 +220,7 @@ where
         if extrinsic.len() >= 2 && extrinsic[1].len() >= 1 {
             single = extrinsic[1][0].clone();
         }
-        let (proposal, info) = match BlockPropose::<B>::propose_block(
+        let (proposal, mut info) = match BlockPropose::<B>::propose_block(
             proposer,
             "Consensus",
             parent_hash,
@@ -242,6 +242,7 @@ where
                 return Err(format!("Propose block {mission_block} failed for {e:?}"));
             }
         };
+        let import_start = std::time::Instant::now();
         // generate import params
         let (block, _storage_proof) = (proposal.block, proposal.proof);
         let (header, body) = block.deconstruct();
@@ -281,6 +282,7 @@ where
                         warn!(target: LOG_TARGET, "FinalizeBlock #{} ({}) failed for {e:?}", header.number(), header.hash());
                     }
                 }
+                info.import = import_start.elapsed();
                 Ok(info)
             },
             Err(err) => {

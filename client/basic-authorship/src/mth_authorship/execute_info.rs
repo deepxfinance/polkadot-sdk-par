@@ -102,6 +102,7 @@ impl<B: BlockT> InfoRecorder<B> {
             max_time: self.max_time,
             finalize: self.finalize_start.take().expect("Finalize time not initialized").elapsed(),
             time: self.block_start.take().expect("BlockStart time not initialized").elapsed(),
+            import: Default::default(),
             group: self.group,
             inherent: self.inherent.unwrap_or_default(),
             threads: self.threads,
@@ -135,6 +136,8 @@ pub struct BlockExecuteInfo<B: BlockT> {
     pub finalize: Duration,
     /// full block execute time.
     pub time: Duration,
+    /// import time for block.
+    pub import: Duration,
     /// group transactions info from pool, not necessary.
     pub group: GroupInfo,
     pub inherent: ThreadExecutionInfo<B>,
@@ -151,6 +154,10 @@ impl<B: BlockT> BlockExecuteInfo<B> {
         self.group = group;
     }
 
+    pub fn set_import_time(&mut self, import: Duration) {
+        self.import = import;
+    }
+    
     pub fn is_empty_block(&self) -> bool {
         if self.threads.is_empty() {
             return true;
