@@ -126,7 +126,7 @@ impl<B: BlockT, O: BlockOracle<B>> HotsOracle<B> for HotstuffOracle<B, O> {
                 if avg_time > Default::default() {
                     self.ready_avg_time.lock().unwrap().replace(avg_time);
                     let prev_rate = *self.limit_div_rate.lock().unwrap();
-                    *self.limit_div_rate.lock().unwrap() *= (prev_rate / 2).max(1);
+                    *self.limit_div_rate.lock().unwrap() = (prev_rate / 2).max(1);
                 }
             },
             None => *self.limit_div_rate.lock().unwrap() *= 2,
@@ -240,6 +240,6 @@ impl<B: BlockT, O: BlockOracle<B>> BlockOracle<B> for  HotstuffOracle<B, O> {
         } else {
             execute_limit.max(1)
         };
-        (total_tx_limit / *self.limit_div_rate.lock().unwrap()).max(1000)
+        (total_tx_limit / self.limit_div_rate.lock().unwrap().max(1)).max(1000)
     }
 }

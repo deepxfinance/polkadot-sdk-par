@@ -155,6 +155,7 @@ where
                 wait,
                 sort,
                 ready_info: Some((ready_number, ready_time)),
+                extra_debug_info: Default::default(),
             },
             groups,
             single,

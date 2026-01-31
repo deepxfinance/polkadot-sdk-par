@@ -445,6 +445,8 @@ pub struct GroupInfo {
     pub sort: Duration,
     /// pool ready info(`ready_at`/`ready` number, time)
     pub ready_info: Option<(usize, Duration)>,
+    /// Extra info.
+    pub extra_debug_info: String,
 }
 
 impl GroupInfo {
@@ -463,7 +465,8 @@ impl GroupInfo {
             "".to_string()
         };
         format!(
-            "Group {}({}) tx in {}ms(W{}μs S{}μs){}(groups {}->{}){ready_info}(Input: {})",
+            "Group{} {}({}) tx in {}ms(W{}μs S{}μs){}(groups {}->{}){ready_info}(Input: {})",
+            self.extra_debug_info,
             self.tx_count,
             self.raw_tx_count,
             self.time.as_millis(),
