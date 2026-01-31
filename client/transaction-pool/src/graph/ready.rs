@@ -178,6 +178,7 @@ impl<Hash: hash::Hash + Member + Serialize, Ex> ReadyTransactions<Hash, Ex> {
 			let mut filtered = 0usize;
 			let ready = self.ready.read();
 			let best: BTreeSet<_> = self.best.iter()
+				.rev()
 				.filter_map(|r| {
 					if let Some(tx) = ready.get(r.transaction.hash()) {
 						if tx.unlocks.len() > 0 {
