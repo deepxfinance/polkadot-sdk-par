@@ -163,6 +163,7 @@ impl<B: BlockT> ExecutionOracle<B> {
                     if number >= remain {
                         total_time += avg_time.as_nanos() * remain as u128;
                         new_window.push((remain, avg_time));
+                        remain = remain.saturating_sub(number);
                         break;
                     } else {
                         remain = remain.saturating_sub(number);
