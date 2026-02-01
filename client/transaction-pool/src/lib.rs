@@ -108,7 +108,7 @@ impl<T, Block: BlockT> ReadyPoll<T, Block> {
 		Self { updated_at: best_block_number, pollers: Default::default() }
 	}
 
-	fn trigger(&mut self, number: NumberFor<Block>, iterator_factory: impl Fn(Option<NumberFor<Block>>, Option<usize>) -> T) {
+	fn trigger(&mut self, number: NumberFor<Block>, iterator_factory: impl Fn(Option<(NumberFor<Block>, NumberFor<Block>)>, Option<usize>) -> T) {
 		self.updated_at = number;
 
 		let mut idx = 0;
@@ -116,7 +116,7 @@ impl<T, Block: BlockT> ReadyPoll<T, Block> {
 			if self.pollers[idx].0 <= number {
 				let poller_sender = self.pollers.swap_remove(idx);
 				log::debug!(target: LOG_TARGET, "Sending ready signal at block {}", number);
-				let _ = poller_sender.1.send(iterator_factory(Some(poller_sender.0), poller_sender.2));
+				let _ = poller_sender.1.send(iterator_factory(Some((self.updated_at, poller_sender.0)), poller_sender.2));
 			} else {
 				idx += 1;
 			}
@@ -357,20 +357,23 @@ where
 			return async { Box::new(std::iter::empty()) as Box<_> }.boxed()
 		}
 
-		if self.ready_poll.lock().updated_at() >= at {
-			log::trace!(target: LOG_TARGET, "Transaction pool already processed block  #{}", at);
-			let iterator: ReadyIteratorFor<PoolApi> = Box::new(self.pool.validated_pool().ready(Some(at), limit));
-			return async move { iterator }.boxed()
-		}
-
-		let pending = self.ready_poll.lock().add(at, limit);
-		pending.map(|received| {
-			received.unwrap_or_else(|e| {
-				log::warn!("Error receiving pending set: {:?}", e);
-				Box::new(std::iter::empty())
-			})
-		})
-			.boxed()
+		let updated_at = self.ready_poll.lock().updated_at();
+		let iterator: ReadyIteratorFor<PoolApi> = Box::new(self.pool.validated_pool().ready(Some((updated_at, at)), limit));
+		async move { iterator }.boxed()
+		// if updated_at >= at {
+		// 	log::trace!(target: LOG_TARGET, "Transaction pool already processed block  #{}", at);
+		// 	let iterator: ReadyIteratorFor<PoolApi> = Box::new(self.pool.validated_pool().ready(Some(at), limit));
+		// 	return async move { iterator }.boxed()
+		// }
+		// 
+		// let pending = self.ready_poll.lock().add(at, limit);
+		// pending.map(|received| {
+		// 	received.unwrap_or_else(|e| {
+		// 		log::warn!("Error receiving pending set: {:?}", e);
+		// 		Box::new(std::iter::empty())
+		// 	})
+		// })
+		// 	.boxed()
 	}
 
 	fn ready(&self, limit: Option<usize>) -> ReadyIteratorFor<PoolApi> {
@@ -762,7 +765,7 @@ where
 		// handler of "all blocks notification".
 		self.ready_poll
 			.lock()
-			.trigger(*block_number, move |at: Option<NumberFor<Block>>, limit| Box::new(extra_pool.validated_pool().ready(at, limit)));
+			.trigger(*block_number, move |at: Option<(NumberFor<Block>, NumberFor<Block>)>, limit| Box::new(extra_pool.validated_pool().ready(at, limit)));
 
 		if next_action.revalidate {
 			let hashes = pool.validated_pool().ready(None, Some(10000)).map(|tx| tx.hash).collect();

@@ -688,16 +688,18 @@ impl<B: ChainApi> ValidatedPool<B> {
 	}
 
 	/// Get an iterator for ready transactions ordered by priority
-	pub fn ready(&self, at: Option<NumberFor<B>>, mut limit: Option<usize>) -> impl ReadyTransactions<Item = TransactionFor<B>> + Send {
+	pub fn ready(&self, at: Option<(NumberFor<B>, NumberFor<B>)>, mut limit: Option<usize>) -> impl ReadyTransactions<Item = TransactionFor<B>> + Send {
 		let start_get_ready = std::time::Instant::now();
 		let mut extra = 0usize;
 		if let Some(limit) = &mut limit {
-			extra = at
-				.map(|at| self.consensus_pool.read().get(&at.saturating_add(1u32.into()))
-					.map(|(_, hashes)| hashes.len())
-				)
-				.unwrap_or_default()
-				.unwrap_or_default();
+			if let Some((mut block, to)) = at {
+				let to = to.saturating_add(1u32.into());
+				loop {
+					if block > to { break; }
+					extra += self.consensus_pool.read().get(&block).map(|(_, hashes)| hashes.len()).unwrap_or_default();
+					block = block.saturating_add(1u32.into());
+				}
+			}
 			*limit += extra;
 		}
 		
@@ -705,7 +707,12 @@ impl<B: ChainApi> ValidatedPool<B> {
 		let lock_time = start_get_ready.elapsed();
 		let (res, info) = read.ready(limit);
 		if res.total() > 0 {
-			let call = at.map(|at| format!("ready_at {at}")).unwrap_or("ready".to_string());
+			let call = at.map(|(now, at)| if now != at {
+				format!("ready_at {at}({now})")
+			} else {
+				format!("ready_at {at}")
+			})
+				.unwrap_or("ready".to_string());
 			log::info!(target: LOG_TARGET, "get {call} {:?}(lock {lock_time:?} ready {info})(extra {extra})", start_get_ready.elapsed());
 		}
 		res
