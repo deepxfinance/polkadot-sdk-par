@@ -49,11 +49,12 @@ where
             block_size_limit,
         } = input.clone();
         let start = Instant::now();
+        let max_time = max_time * 2;
         let deadline = start + max_time;
         let block = parent_number + One::one();
         let mut t1 = self.transaction_pool.ready_at(parent_number, Some(total_tx_limit)).fuse();
         // let mut t2 = futures_timer::Delay::new(wait_pool).fuse();
-        let mut t3 = futures_timer::Delay::new(max_time).fuse();
+        // let mut t3 = futures_timer::Delay::new(max_time).fuse();
         let (ready_number, ready_time, mut pending_iterator) = select! {
             res = t1 => (res.total(), start.elapsed(), res),
             // _ = t2 => {
@@ -62,20 +63,20 @@ where
             //     let res = self.transaction_pool.ready(Some(total_tx_limit / 2));
             //     (res.total(), second_start.elapsed(), res)
             // },
-            _ = t3 => {
-                debug!(target: LOG_TARGET, "[GroupTx B {block}] Reach deadline {}/{} ms (txpool no response)", start.elapsed().as_millis(), max_time.as_millis());
-                let elapsed = start.elapsed();
-                return Ok(GroupTxOutput {
-                    info: GroupInfo {
-                        input,
-                        time: elapsed,
-                        wait: elapsed,
-                        ..Default::default()
-                    },
-                    groups: Vec::new(),
-                    single: Vec::new(),
-                })
-            }
+            // _ = t3 => {
+            //     debug!(target: LOG_TARGET, "[GroupTx B {block}] Reach deadline {}/{} ms (txpool no response)", start.elapsed().as_millis(), max_time.as_millis());
+            //     let elapsed = start.elapsed();
+            //     return Ok(GroupTxOutput {
+            //         info: GroupInfo {
+            //             input,
+            //             time: elapsed,
+            //             wait: elapsed,
+            //             ..Default::default()
+            //         },
+            //         groups: Vec::new(),
+            //         single: Vec::new(),
+            //     })
+            // }
         };
         let wait = start.elapsed();
 

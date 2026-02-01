@@ -234,12 +234,13 @@ impl<B: BlockT, O: BlockOracle<B>> BlockOracle<B> for  HotstuffOracle<B, O> {
     fn total_tx_limit(&self) -> usize {
         let linear_tx_limit = self.linear_tx_limit();
         let execute_limit = linear_tx_limit * self.thread_limit() * ((self.pool_limit_rate * 100f32) as usize) / 100;
-        let total_tx_limit = if let Some(ready_avg_time) = self.ready_avg_time.lock().unwrap().clone() {
-            let ready_pool_limit = self.pool_time().as_nanos().div(ready_avg_time.as_nanos()) as usize;
-            execute_limit.max(1).min(ready_pool_limit)
-        } else {
-            execute_limit.max(1)
-        };
-        (total_tx_limit / self.limit_div_rate.lock().unwrap().max(1)).max(1000)
+        // let total_tx_limit = if let Some(ready_avg_time) = self.ready_avg_time.lock().unwrap().clone() {
+        //     let ready_pool_limit = self.pool_time().as_nanos().div(ready_avg_time.as_nanos()) as usize;
+        //     execute_limit.max(1).min(ready_pool_limit)
+        // } else {
+        //     execute_limit.max(1)
+        // };
+        // (total_tx_limit / self.limit_div_rate.lock().unwrap().max(1)).max(1000)
+        execute_limit
     }
 }

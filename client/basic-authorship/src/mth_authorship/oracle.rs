@@ -52,7 +52,7 @@ pub struct ExecutionOracle<B: BlockT> {
     pub round_tx: usize,
     /// expected block execute time(default 200 millis, g.e than slot_duration).
     pub block_duration: Arc<Mutex<Duration>>,
-    /// max time for get transactions from pool(default 10%).
+    /// max time for get transactions from pool(default 15%).
     pub pool_permill: Arc<Mutex<Permill>>,
     /// `max_block_duration * execution_permill` estimates `linear_execution_time`(default 55%).
     pub execution_permill: Arc<Mutex<Permill>>,
@@ -90,7 +90,7 @@ impl<B: BlockT> ExecutionOracle<B> {
             Ok(tx) => tx.parse().expect("`ORACLE_ROUND_TX` should be a usize"),
             Err(_) => 500,
         };
-        let mut pool_permill = Permill::from_percent(10);
+        let mut pool_permill = Permill::from_percent(15);
         if let Ok(value) = env::var("ORACLE_POOL_PERCENT") {
             if let Ok(percent) = value.parse::<u32>() {
                 pool_permill = Permill::from_percent(percent);
@@ -202,7 +202,7 @@ impl<B: BlockT> ExecutionOracle<B> {
             let full_execute_permill = Permill::one() - import_permill;
             let execute_permill = Permill::one() - except_execute_permill;
             if !pool_permill.is_zero() {
-                *self.pool_permill.lock().unwrap() = pool_permill;
+                // *self.pool_permill.lock().unwrap() = pool_permill;
                 update += &format!(" pool {:?}", pool_permill * full_execute_permill);
             }
             if !execute_permill.is_zero() {
