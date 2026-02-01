@@ -167,6 +167,7 @@ impl<Hash: hash::Hash + Member + Serialize, Ex> ReadyTransactions<Hash, Ex> {
 			|| limit.as_ref().unwrap() >= &self.ready.read().len()
 		{
 			let (all, all_info) = self.ready.clone_map();
+			let best_start = std::time::Instant::now();
 			let best = self.best.clone();
 			let get_info = format!("all {all_info} best {:?}({})", best_start.elapsed(), self.best.len());
 			(all, best, get_info)
