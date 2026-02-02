@@ -1796,7 +1796,7 @@ impl<Block: BlockT> Backend<Block> {
 						apply_state_commit(&mut msg, commit);
 					}
                     let res = db_clone.commit(msg);
-					log::info!("🎾 import_block Commit State to DB success = {:?}", res);
+					debug!(target: "db", "🎾 import_block Commit State to DB success = {:?}", res);
 					//thread::sleep(Duration::from_millis(50)); 
 				}
 			});

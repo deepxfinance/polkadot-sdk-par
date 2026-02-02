@@ -174,7 +174,7 @@ impl<B: ChainApi> Pool<B> {
 		}
 		let xts = xts.into_iter().map(|xt| (source, xt));
 		let validated_transactions = self.verify(at, xts, CheckBannedBeforeVerify::Yes, multi).await?;
-		Ok(self.validated_pool.submit(validated_transactions.into_values()))
+		Ok(self.validated_pool.submit(validated_transactions))
 	}
 
 	/// Resubmit the given extrinsics to the pool.
@@ -188,7 +188,7 @@ impl<B: ChainApi> Pool<B> {
 	) -> Result<Vec<Result<ExtrinsicHash<B>, B::Error>>, B::Error> {
 		let xts = xts.into_iter().map(|xt| (source, xt));
 		let validated_transactions = self.verify(at, xts, CheckBannedBeforeVerify::No, false).await?;
-		Ok(self.validated_pool.submit(validated_transactions.into_values()))
+		Ok(self.validated_pool.submit(validated_transactions))
 	}
 
 	/// Imports one unverified extrinsic to the pool
@@ -429,7 +429,7 @@ impl<B: ChainApi> Pool<B> {
 		xts: impl IntoIterator<Item = (TransactionSource, ExtrinsicFor<B>)>,
 		check: CheckBannedBeforeVerify,
 		multi: bool,
-	) -> Result<HashMap<ExtrinsicHash<B>, ValidatedTransactionFor<B>>, B::Error> {
+	) -> Result<Vec<ValidatedTransactionFor<B>>, B::Error> {
 		// we need a block number to compute tx validity
 		let block_number = self.resolve_block_number(at)?;
 		let res = if !multi {
@@ -439,9 +439,10 @@ impl<B: ChainApi> Pool<B> {
 			)
 				.await
 				.into_iter()
-				.collect::<HashMap<_, _>>()
+				.map(|r| r.1)
+				.collect::<Vec<_>>()
 		} else {
-			self.verify_multi(at, block_number, xts.into_iter().collect(), check).await?.into_iter().collect::<HashMap<_, _>>()
+			self.verify_multi(at, block_number, xts.into_iter().collect(), check).await?.into_iter().map(|r| r.1).collect::<Vec<_>>()
 		};
 
 		Ok(res)
