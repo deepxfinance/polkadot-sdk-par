@@ -1756,7 +1756,9 @@ impl<Block: BlockT> Backend<Block> {
 
 		self.storage.db.commit(transaction.clone())?;
 
-		self.commit_db_state_background().send((transaction, commit_set));
+		if imported.is_some() {
+			self.commit_db_state_background().send((transaction, commit_set));
+		}
 
 		#[cfg(feature = "kvdb")]
 		drop(kv_cache);
@@ -1995,7 +1997,7 @@ fn apply_state_commit(
 const LUT: [bool; 256] = {
     let mut lut = [false; 256];
     lut[44] = true;
-    lut[58] = true;
+    //lut[58] = true;
     lut
 };
 
@@ -2003,9 +2005,6 @@ fn apply_state_commit_well_known_keys(
 	transaction: &mut Transaction<DbHash>,
 	commit: sc_state_db::CommitSet<Vec<u8>>,
 ) {
-	// let target = 58;
-	// let target4 = 44;
-	
 	for (key, val) in commit.data.inserted.into_iter() {
 		if LUT[key[0] as usize] {
 			transaction.set_from_vec(columns::STATE, &key[..], val);
