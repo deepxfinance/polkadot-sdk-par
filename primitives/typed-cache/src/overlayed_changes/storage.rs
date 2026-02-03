@@ -173,6 +173,17 @@ impl<V: Clone> StorageIO<V> for StorageOverlay<StorageKey, Option<V>> {
         }
     }
 
+    fn append<F, M>(&mut self, space: &[u8], key: &[u8], init: F, mutate: M) -> bool
+    where
+        F: FnOnce() -> V,
+        M: FnOnce(Option<&mut V>)
+    {
+        if space != &self.space { return false; }
+        // modify must have mutable reference of value returned
+        mutate(self.modify_append(key.to_vec(), init, None));
+        true
+    }
+
     fn cache(&mut self, space: &[u8], key: &[u8], value: Option<V>) {
         if space != &self.space { return; }
         let new_cache = Arc::new(OnceCell::<Option<V>>::new());

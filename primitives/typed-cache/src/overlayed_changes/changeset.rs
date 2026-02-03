@@ -425,6 +425,34 @@ impl<V: Clone> OverlayedChangeSet<V> {
 		Some(overlayed.value_mut())
 	}
 
+	pub fn modify_append(
+		&mut self,
+		key: StorageKey,
+		init: impl FnOnce() -> V,
+		at_extrinsic: Option<u32>,
+	) -> Option<&mut V> {
+		let overlayed = self.changes.entry(key.clone()).or_default();
+		let first_write_in_tx = insert_dirty(&mut self.dirty_keys, key.clone());
+		let clone_into_new_tx = if let Some(tx) = overlayed.transactions.last() {
+			if first_write_in_tx {
+				Some(Some(tx.value.clone().unwrap_or(init())))
+			} else if tx.value.is_none() {
+				Some(Some(init()))
+			} else {
+				None
+			}
+		} else if let Some(value) = self.cache.get(&key).map(|c| c.get()).unwrap_or(None) {
+			Some(Some(value.clone().unwrap_or(init())))
+		} else {
+			Some(Some(init()))
+		};
+
+		if let Some(cloned) = clone_into_new_tx {
+			overlayed.set(cloned, first_write_in_tx, at_extrinsic);
+		}
+		overlayed.value_mut().as_mut()
+	}
+
 	/// Set all values to deleted which are matched by the predicate.
 	///
 	/// Can be rolled back or committed when called inside a transaction.

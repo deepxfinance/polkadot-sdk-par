@@ -236,6 +236,18 @@ impl OverlayCache {
         self.handle_mut_or_default::<V, _, _>(space, f).unwrap_or(None)
     }
 
+    pub fn append<V: Clone + FullCodec + 'static, F, M>(&mut self, space: &[u8], key: &[u8], init: F, mutate: M) -> bool
+    where
+        F: FnOnce() -> V,
+        M: FnOnce(Option<&mut V>)
+    {
+        let f = |storage: &mut AnyStorage| {
+            storage.downcast_mut::<StorageOverlay<Vec<u8>, Option<V>>>()
+                .map(|overlay| overlay.append(space, key, init, mutate))
+        };
+        self.handle_mut_or_default::<V, _, _>(space, f).unwrap_or(false)
+    }
+
     pub fn cache<V: Clone + FullCodec + 'static>(&mut self, space: &[u8], key: &[u8], value: Option<V>) {
         #[cfg(all(feature = "std", feature = "dev-time"))]
         let start = std::time::Instant::now();

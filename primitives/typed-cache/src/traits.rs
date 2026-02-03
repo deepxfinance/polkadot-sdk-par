@@ -65,6 +65,10 @@ pub trait StorageIO<V> {
     where
         F: FnOnce() -> Option<V>,
         M: FnOnce(&mut QT::Query) -> Result<R, E>;
+    fn append<F, M>(&mut self, space: &[u8], key: &[u8], init: F, mutate: M) -> bool
+    where
+        F: FnOnce() -> V,
+        M: FnOnce(Option<&mut V>);
     fn cache(&mut self, space: &[u8], key: &[u8], value: Option<V>);
     fn cached(&self, space: &[u8], key: &[u8]) -> bool;
 }

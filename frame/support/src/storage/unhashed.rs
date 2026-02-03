@@ -185,7 +185,7 @@ pub fn kill_cache<T: FullCodec + TStorage>(key: &[u8]) {
 }
 
 #[cfg(feature = "std")]
-pub fn append_cache<T: FullCodec + TStorage, Item: Encode>(key: &[u8], item: Item)
+pub fn append_cache<T: FullCodec + TStorage, Item: Encode + Clone>(key: &[u8], item: Item)
 where
 	T: TypedAppend<Item> + TStorage
 {
@@ -197,16 +197,19 @@ where
 			};
 		};
 		if let Some(overlay) = ext.overlay_cache() {
-			let _ = overlay.mutate::<(), T, _, _, _, _>(
+			let updated = overlay.append::<T, _, _>(
 				key_prefix(key),
 				&key,
-				Some(|| { raw_value.and_then(|val| parse_type(key, val)) }),
+				|| { raw_value.clone().and_then(|val| parse_type(key, val)).unwrap_or_default() },
 				|t| {
-					t.append(item);
-					Ok::<(), u8>(())
+					t.map(|t| t.append(item.clone()));
 				}
-			)
-				.expect("append_cache should finish");
+			);
+			if !updated {
+				let mut new_value: T = get_cache(key, |_| { Option::<T>::None }).unwrap_or_default();
+				new_value.append(item);
+				sp_io::mut_typed_cache(|o| o.put(key_prefix(key), &key, new_value));
+			}
 		} else {
 			append(key, item);
 		}
