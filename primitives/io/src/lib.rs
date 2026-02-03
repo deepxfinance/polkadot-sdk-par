@@ -75,11 +75,13 @@ use secp256k1::{
 };
 #[cfg(feature = "std")]
 use sp_state_machine::OverlayCache;
+pub use sp_state_machine::TypedAppend;
 
 #[cfg(feature = "std")]
 use sp_externalities::{Externalities, ExternalitiesExt};
 
 pub use sp_externalities::MultiRemovalResults;
+use sp_state_machine::StorageIO;
 
 #[cfg(feature = "std")]
 const LOG_TARGET: &str = "runtime::io";
@@ -121,12 +123,12 @@ impl From<MultiRemovalResults> for KillStorageResult {
 
 #[cfg(feature = "std")]
 /// Returns the typed cache for only `std` feature.
-pub fn mut_typed_cache<F, O>(f: F) -> Option<O>
+pub fn mut_typed_io<F, O>(f: F) -> Option<O>
 where
-	F: FnOnce(&mut OverlayCache) -> O,
+	F: FnOnce(&mut dyn StorageIO) -> O,
 {
 	sp_runtime_interface::with_externalities(|mut __externalities__| {
-		__externalities__.overlay_cache().map(|overlay| f(overlay)).or(None)
+		__externalities__.mut_typed_io().map(|mut io| f(io.as_mut())).or(None)
 	})
 		.expect(
 		"`mut_overlay_cache` called outside of an Externalities-provided environment.",

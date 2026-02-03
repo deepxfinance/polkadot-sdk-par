@@ -3,9 +3,9 @@ use sp_std::collections::btree_map::BTreeMap;
 use sp_std::sync::Arc;
 use sp_std::hash::Hash;
 use sp_std::vec::Vec;
-use codec::FullCodec;
+use codec::{Encode, FullCodec};
 use once_cell::sync::OnceCell;
-use crate::{StorageIO, StorageApi, StorageKey, QueryTransfer};
+use crate::{StorageApi, StorageKey, QueryTransfer};
 use crate::changeset::{ExecutionMode, StorageOverlay};
 
 unsafe impl<K: Ord + Hash + Clone, V: Clone> Send for StorageOverlay<K, V> {}
@@ -89,8 +89,8 @@ impl<V: Clone + FullCodec + 'static> StorageApi for StorageOverlay<StorageKey, O
     }
 }
 
-impl<V: Clone> StorageIO<V> for StorageOverlay<StorageKey, Option<V>> {
-    fn contains(&self, space: &[u8], key: &[u8]) -> Option<bool> {
+impl<V: Clone> StorageOverlay<StorageKey, Option<V>> {
+    pub fn contains_key(&self, space: &[u8], key: &[u8]) -> Option<bool> {
         if space != self.space { return None; }
         self.changes
             .get(key)
@@ -105,15 +105,12 @@ impl<V: Clone> StorageIO<V> for StorageOverlay<StorageKey, Option<V>> {
             )
     }
     
-    fn put(&mut self, space: &[u8], key: &[u8], value: V) {
+    pub fn put(&mut self, space: &[u8], key: &[u8], value: V) {
         if space != &self.space { return; }
         self.set(key.to_vec(), Some(value), None);
     }
 
-    fn get<F>(&mut self, space: &[u8], key: &[u8], init: Option<F>) -> Option<Option<V>>
-    where
-        F: Fn(&[u8]) -> Option<V>
-    {
+    pub fn get(&mut self, space: &[u8], key: &[u8]) -> Option<Option<V>> {
         if space != &self.space { return None; }
         self.changes
             .get(key)
@@ -122,76 +119,49 @@ impl<V: Clone> StorageIO<V> for StorageOverlay<StorageKey, Option<V>> {
                 self.cache
                     .get(key)
                     .map(|c| c.get().cloned().unwrap_or(None))
-                    .or({
-                        init.map(|f| {
-                            let cache_value = f(key);
-                            let new_cell = Arc::new(OnceCell::new());
-                            let _ = new_cell.set(cache_value.clone());
-                            self.cache.insert(key.to_vec(), new_cell);
-                            cache_value
-                        })
-                    })
             )
     }
 
-    fn get_change(&self, space: &[u8], key: &[u8]) -> Option<Option<V>> {
+    pub fn get_change(&self, space: &[u8], key: &[u8]) -> Option<Option<V>> {
         if space != &self.space { return None; }
         self.changes.get(key).map(|x| x.value().cloned())
     }
 
-    fn take<F>(&mut self, space: &[u8], key: &[u8], init: Option<F>) -> Option<Option<V>>
-    where
-        F: Fn(&[u8]) -> Option<V>
-    {
+    pub fn take(&mut self, space: &[u8], key: &[u8]) -> Option<Option<V>> {
         if space != &self.space { return None; }
-        let v = self.get(space, key, init);
+        let v = self.get(space, key);
         if let Some(Some(_)) = &v { self.kill(space, key); }
         v
     }
 
-    fn kill(&mut self, space: &[u8], key: &[u8]) {
+    pub fn kill(&mut self, space: &[u8], key: &[u8]) {
         if space != &self.space { return; }
         self.set(key.to_vec(), None, None);
     }
 
-    fn mutate<QT: QueryTransfer<V>, F, R, E, M>(&mut self, space: &[u8], key: &[u8], init: Option<F>, mutate: M) -> Option<Result<R, E>>
+    pub fn mutate<QT: QueryTransfer<V>, F, R, E, M>(&mut self, space: &[u8], key: &[u8], init: F, mutate: M) -> Result<R, E>
     where
         F: FnOnce() -> Option<V>,
         M: FnOnce(&mut QT::Query) -> Result<R, E>,
     {
-        if space != &self.space { return None; }
+        if space != &self.space { panic!("StorageOverlay::mutate should be initialized"); }
         // modify must have mutable reference of value returned
-        match self.modify(key.to_vec(), init, None) {
-            Some(v) => {
-                let (res, new_value) = QT::mut_from_optional_value_to_query(v, mutate);
-                if let Some(new_value) = new_value {
-                    self.set(key.to_vec(), Some(new_value), None);
-                }
-                Some(res)
-            }
-            None => None,
+        let mut_value = self.modify(key.to_vec(), init, None);
+        let (res, new_value) = QT::mut_from_optional_value_to_query(mut_value, mutate);
+        if let Some(new_value) = new_value {
+            self.set(key.to_vec(), Some(new_value), None);
         }
+        res
     }
 
-    fn append<F, M>(&mut self, space: &[u8], key: &[u8], init: F, mutate: M) -> bool
-    where
-        F: FnOnce() -> V,
-        M: FnOnce(Option<&mut V>)
-    {
-        if space != &self.space { return false; }
-        // modify must have mutable reference of value returned
-        mutate(self.modify_append(key.to_vec(), init, None));
-        true
-    }
-
-    fn cache(&mut self, space: &[u8], key: &[u8], value: Option<V>) {
+    pub fn cache(&mut self, space: &[u8], key: &[u8], value: Option<V>) {
         if space != &self.space { return; }
         let new_cache = Arc::new(OnceCell::<Option<V>>::new());
         let _ = new_cache.try_insert(value);
         self.cache.insert(key.to_vec(), new_cache);
     }
     
-    fn cached(&self, space: &[u8], key: &[u8]) -> bool {
+    pub fn cached(&self, space: &[u8], key: &[u8]) -> bool {
         if space != &self.space { return false; }
         self.changes
             .get(key)

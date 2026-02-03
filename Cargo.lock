@@ -11540,6 +11540,7 @@ version = "0.13.0"
 dependencies = [
  "array-bytes 4.2.0",
  "assert_matches",
+ "environmental",
  "hash-db",
  "kv-db",
  "log",

@@ -1313,7 +1313,7 @@ impl<T: Config> Pallet<T> {
 	/// Gets the index of extrinsic that is currently executing.
 	pub fn extrinsic_index() -> Option<u32> {
 		#[cfg(feature = "std")]
-		{ storage::unhashed::get_cache(well_known_keys::EXTRINSIC_INDEX, |_| { Option::<u32>::None }) }
+		{ storage::unhashed::get_cache(well_known_keys::EXTRINSIC_INDEX) }
 		#[cfg(not(feature = "std"))]
 		storage::unhashed::get(well_known_keys::EXTRINSIC_INDEX)
 	}
@@ -1654,7 +1654,7 @@ impl<T: Config> Pallet<T> {
 	pub fn note_finished_extrinsics() {
 		#[cfg(feature = "std")]
 		let extrinsic_index: u32 =
-			storage::unhashed::take_cache(well_known_keys::EXTRINSIC_INDEX, |_| { Option::<u32>::None }).unwrap_or_default();
+			storage::unhashed::take_cache(well_known_keys::EXTRINSIC_INDEX).unwrap_or_default();
 		#[cfg(not(feature = "std"))]
 		let extrinsic_index: u32 =
 			storage::unhashed::take(well_known_keys::EXTRINSIC_INDEX).unwrap_or_default();

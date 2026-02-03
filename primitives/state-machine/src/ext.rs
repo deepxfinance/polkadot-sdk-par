@@ -22,7 +22,7 @@ use crate::overlayed_changes::OverlayedExtensions;
 use crate::{
 	backend::Backend, IndexOperation, IterArgs, OverlayedChanges, StorageKey, StorageValue,
 };
-use codec::{Decode, Encode, EncodeAppend};
+use codec::{Decode, Encode, EncodeAppend, FullCodec};
 use hash_db::Hasher;
 #[cfg(feature = "std")]
 use sp_core::hexdisplay::HexDisplay;
@@ -32,7 +32,7 @@ use sp_core::storage::{
 use sp_externalities::{Extension, ExtensionStore, Externalities, MultiRemovalResults};
 use sp_trie::{empty_child_trie_root, LayoutV1};
 
-use typed_cache::OverlayCache;
+use typed_cache::{OverlayCache, QueryTransfer, StorageIO, TStorage, TypedAppend};
 use crate::{log_error, trace, warn, debug, StorageTransactionCache};
 use sp_std::{
 	any::{Any, TypeId},
@@ -95,8 +95,26 @@ impl<B: error::Error, E: error::Error> error::Error for Error<B, E> {
 	}
 }
 
+environmental::environmental!(ext: Ext<H, B>);
+
+pub struct Ext<'a, H, B>(ExtS<'a, H, B>);
+
+impl<'a, H, B> core::ops::Deref for Ext<'a, H, B> {
+	type Target = ExtS<'a, H, B>;
+	fn deref(&self) -> &Self::Target {
+		&self.0
+	}
+}
+
+impl<'a, H, B> core::ops::DerefMut for Ext<'a, H, B> {
+	fn deref_mut(&mut self) -> &mut Self::Target {
+		&mut self.0
+	}
+}
+
+
 /// Wraps a read-only backend, call executor, and current overlayed changes.
-pub struct Ext<'a, H, B>
+pub struct ExtS<'a, H, B>
 where
 	H: Hasher,
 	B: 'a + Backend<H>,
@@ -135,7 +153,7 @@ where
 		storage_transaction_cache: &'a mut StorageTransactionCache<B::Transaction, H>,
 		backend: &'a B,
 	) -> Self {
-		Ext { cache, overlay, backend, id: 0, storage_transaction_cache }
+		Self(ExtS { cache, overlay, backend, id: 0, storage_transaction_cache })
 	}
 
 	/// Create a new `Ext` from overlayed changes and read-only backend
@@ -148,7 +166,7 @@ where
 		extensions: Option<&'a mut sp_externalities::Extensions>,
 	) -> Self {
 		let typed_cache: bool = std::env::var("TYPED_CACHE").unwrap_or("true".into()).parse().unwrap_or(true);
-		Self {
+		Self(ExtS {
 			cache: if typed_cache { cache } else { None },
 			overlay,
 			backend,
@@ -158,7 +176,7 @@ where
 			read_time: RwLock::new(0),
 			b_read_time: RwLock::new(0),
 			write_time: RwLock::new(0),
-		}
+		})
 	}
 
 	/// Invalidates the currently cached storage root and the db transaction.
@@ -233,16 +251,29 @@ where
 		}
 	}
 
+	fn mut_typed_io(&mut self) -> Option<Box<dyn StorageIO>> {
+		if self.cache.is_some() {
+			Some(Box(self.0))
+		} else {
+			None
+		}
+	}
+
 	fn storage(&self, key: &[u8]) -> Option<StorageValue> {
 		#[cfg(all(feature = "std", feature = "dev-time"))]
 		let start = std::time::Instant::now();
+		#[cfg(all(feature = "std", feature = "dev-time"))]
 		let mut backend = false;
 		let _guard = guard();
-		let result = self
+		let result = self.0
 			.overlay
 			.storage(key)
 			.map(|x| x.map(|x| x.to_vec()))
-			.unwrap_or_else(|| { backend = true; self.backend.storage(key).expect(EXT_NOT_ALLOWED_TO_FAIL) });
+			.unwrap_or_else(|| {
+				#[cfg(all(feature = "std", feature = "dev-time"))]
+				backend = true;
+				self.backend.storage(key).expect(EXT_NOT_ALLOWED_TO_FAIL)
+			});
 		#[cfg(all(feature = "std", feature = "dev-time"))]
 		{
 			let time = start.elapsed().as_nanos();
@@ -274,7 +305,7 @@ where
 
 	fn storage_hash(&self, key: &[u8]) -> Option<Vec<u8>> {
 		let _guard = guard();
-		let result = self
+		let result = self.0
 			.overlay
 			.storage(key)
 			.map(|x| x.map(|x| H::hash(x)))
@@ -292,7 +323,7 @@ where
 
 	fn child_storage(&self, child_info: &ChildInfo, key: &[u8]) -> Option<StorageValue> {
 		let _guard = guard();
-		let result = self
+		let result = self.0
 			.overlay
 			.child_storage(child_info, key)
 			.map(|x| x.map(|x| x.to_vec()))
@@ -314,7 +345,7 @@ where
 
 	fn child_storage_hash(&self, child_info: &ChildInfo, key: &[u8]) -> Option<Vec<u8>> {
 		let _guard = guard();
-		let result = self
+		let result = self.0
 			.overlay
 			.child_storage(child_info, key)
 			.map(|x| x.map(|x| H::hash(x)))
@@ -357,7 +388,7 @@ where
 
 		let result = match self.overlay.child_storage(child_info, key) {
 			Some(x) => x.is_some(),
-			_ => self
+			_ => self.0
 				.backend
 				.exists_child_storage(child_info, key)
 				.expect(EXT_NOT_ALLOWED_TO_FAIL),
@@ -839,6 +870,133 @@ where
 	fn get_read_and_written_keys(&self) -> Vec<(Vec<u8>, u32, u32, bool)> {
 		self.backend.get_read_and_written_keys()
 	}
+}
+
+#[cfg(not(feature = "std"))]
+impl<'a, H, B> typed_cache::StorageIO for ExtS<'a, H, B> {}
+
+#[cfg(feature = "std")]
+impl<'a, H, B> StorageIO for ExtS<'a, H, B> {
+	fn contains_key<V: Clone + TStorage>(&mut self, space: &[u8], key: &[u8]) -> bool {
+		if let Some(cache) = self.cache {
+			match cache.contains_key(space, key) {
+				Some(contains) => contains,
+				None => {
+					let value = self.storage(key).and_then(|val| parse_type(key, val.to_vec()));
+					cache.cache(space, key, value);
+					cache.contains_key(space, key).unwrap_or(false)
+				},
+			}
+		} else {
+			panic!("TypedCache not enabled!!!");
+		}
+	}
+
+	fn put<V: Clone + TStorage>(&mut self, space: &[u8], key: &[u8], value: V) {
+		if let Some(cache) = self.cache {
+			cache.put(space, key, value);
+		} else {
+			panic!("TypedCache not enabled!!!");
+		}
+	}
+
+	fn get<V: Clone + TStorage>(&mut self, space: &[u8], key: &[u8]) -> Option<V> {
+		if let Some(cache) = self.cache {
+			match cache.get(space, key) {
+				Some(value) => value,
+				None => {
+					let value = self.storage(key).and_then(|val| parse_type(key, val.to_vec()));
+					cache.cache(space, key, value);
+					cache.get(space, key).unwrap_or(None)
+				}
+			}
+		} else {
+			panic!("TypedCache not enabled!!!");
+		}
+	}
+
+	fn get_change<V: Clone + TStorage>(&self, space: &[u8], key: &[u8]) -> Option<Option<V>> {
+		if let Some(cache) = self.cache {
+			cache.get_change(space, key)
+		} else {
+			panic!("TypedCache not enabled!!!");
+		}
+	}
+
+	fn take<V: Clone + TStorage>(&mut self, space: &[u8], key: &[u8]) -> Option<V> {
+		if let Some(cache) = self.cache {
+			match cache.take(space, key) {
+				Some(value) => value,
+				None => {
+					let value = self.storage(key).and_then(|val| parse_type(key, val.to_vec()));
+					if value.is_some() {
+						cache.kill(space, key)
+					} else {
+						cache.cache(space, key, None);
+					}
+					value
+				}
+			}
+		} else {
+			panic!("TypedCache not enabled!!!");
+		}
+	}
+
+	/// Warn!!! Not check if value is Some, just insert None.
+	fn kill<V: Clone + TStorage>(&mut self, space: &[u8], key: &[u8]) {
+		if let Some(cache) = self.cache {
+			cache.kill(space, key);
+		} else {
+			panic!("TypedCache not enabled!!!");
+		}
+	}
+
+	fn mutate<V: Clone + TStorage, QT: QueryTransfer<V>, F, R, E, M>(&mut self, space: &[u8], key: &[u8], mutate: M) -> Result<R, E>
+	where
+		M: FnOnce(&mut QT::Query) -> Result<R, E>
+	{
+		if let Some(cache) = self.cache {
+			cache.mutate(
+				space,
+				key,
+				|| { self.storage(key).and_then(|val| parse_type(key, val.to_vec())) },
+				mutate,
+			)
+		} else {
+			panic!("TypedCache not enabled!!!");
+		}
+	}
+
+	fn typed_append<T, Item: Encode>(&mut self, space: &[u8], key: &[u8], item: Item)
+	where
+		T: TypedAppend<Item>
+	{
+		if let Some(cache) = self.cache {
+			cache.mutate::<(), T, _, _, _, _>(
+				space,
+				key,
+				Some(|| { self.storage(key).and_then(|val| parse_type(key, val)) }),
+				|t| {
+					t.append(item.clone());
+					Ok::<(), u8>(())
+				}
+			);
+		} else {
+			panic!("TypedCache not enabled!!!");
+		}
+	}
+}
+
+fn parse_type<T: Decode>(key: &[u8], val: Vec<u8>) -> Option<T> {
+	Decode::decode(&mut val.as_slice()).map(Some).unwrap_or_else(|e| {
+		log::error!(
+			target: "runtime::storage",
+			"Corrupted state at `{:?}: {:?}`",
+			key,
+			e,
+		);
+		None
+	})
 }
 
 impl<'a, H, B> Ext<'a, H, B>

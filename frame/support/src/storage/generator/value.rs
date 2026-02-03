@@ -55,7 +55,7 @@ impl<T: FullCodec + TStorage, G: StorageValue<T>> storage::StorageValue<T> for G
 		if sp_io::mut_typed_cache(|_| ()).is_none() {
 			unhashed::exists(&Self::storage_value_final_key())
 		} else {
-			unhashed::get_cache(&Self::storage_value_final_key(), |_| { Option::<T>::None }).is_some()
+			unhashed::get_typed(&Self::storage_value_final_key()).is_some()
 		}
 		#[cfg(not(feature = "std"))]
 		unhashed::exists(&Self::storage_value_final_key())
@@ -63,7 +63,7 @@ impl<T: FullCodec + TStorage, G: StorageValue<T>> storage::StorageValue<T> for G
 
 	fn get() -> Self::Query {
 		#[cfg(feature = "std")]
-		let value = unhashed::get_cache(&Self::storage_value_final_key(), |_| { Option::<T>::None });
+		let value = unhashed::get_typed(&Self::storage_value_final_key());
 		#[cfg(not(feature = "std"))]
 		let value = unhashed::get(&Self::storage_value_final_key());
 		G::from_optional_value_to_query(value)
@@ -71,7 +71,7 @@ impl<T: FullCodec + TStorage, G: StorageValue<T>> storage::StorageValue<T> for G
 
 	fn try_get() -> Result<T, ()> {
 		#[cfg(feature = "std")]
-		{ unhashed::get_cache(&Self::storage_value_final_key(), |_| { Option::<T>::None }).ok_or(()) }
+		{ unhashed::get_typed(&Self::storage_value_final_key()).ok_or(()) }
 		#[cfg(not(feature = "std"))]
 		unhashed::get(&Self::storage_value_final_key()).ok_or(())
 	}
@@ -102,7 +102,7 @@ impl<T: FullCodec + TStorage, G: StorageValue<T>> storage::StorageValue<T> for G
 	fn put(val: T) {
 		// detect if typed_cache exists.
 		let key = Self::storage_value_final_key();
-		unhashed::put_cache(&key, val);
+		unhashed::put_typed(&key, val);
 	}
 
 	#[cfg(not(feature = "std"))]
@@ -114,12 +114,12 @@ impl<T: FullCodec + TStorage, G: StorageValue<T>> storage::StorageValue<T> for G
 		let key = Self::storage_value_final_key();
 		if let Some(val) = G::from_query_to_optional_value(maybe_val) {
 			#[cfg(feature = "std")]
-			unhashed::put_cache(&key, val);
+			unhashed::put_typed(&key, val);
 			#[cfg(not(feature = "std"))]
 			unhashed::put(&key, &val)
 		} else {
 			#[cfg(feature = "std")]
-			unhashed::kill_cache::<T>(&key);
+			unhashed::kill_typed::<T>(&key);
 			#[cfg(not(feature = "std"))]
 			unhashed::kill(&key)
 		}
@@ -128,7 +128,7 @@ impl<T: FullCodec + TStorage, G: StorageValue<T>> storage::StorageValue<T> for G
 	fn kill() {
 		let key = Self::storage_value_final_key();
 		#[cfg(feature = "std")]
-		unhashed::kill_cache::<T>(&key);
+		unhashed::kill_typed::<T>(&key);
 		#[cfg(not(feature = "std"))]
 		unhashed::kill(&key)
 	}
@@ -140,9 +140,8 @@ impl<T: FullCodec + TStorage, G: StorageValue<T>> storage::StorageValue<T> for G
 	fn mutate_ref<R, F: FnOnce(&mut Self::Query) -> R>(f: F) -> R {
 		#[cfg(feature = "std")]
 		{
-			unhashed::mutate_cache::<G, T, _, _, _, _>(
+			unhashed::mutate_typed::<G, T, _, _, _>(
 				&Self::storage_value_final_key(),
-				|| { None::<T> },
 				|v| Ok::<R, Never>(f(v)),
 			)
 			.expect("`Never` can not be constructed; qed")
@@ -180,9 +179,8 @@ impl<T: FullCodec + TStorage, G: StorageValue<T>> storage::StorageValue<T> for G
 	fn mutate_exists_ref<R, F: FnOnce(&mut Option<T>) -> R>(f: F) -> R {
 		#[cfg(feature = "std")]
 		{
-			unhashed::mutate_cache::<OptionQT, T, _, _, _, _>(
+			unhashed::mutate_typed::<OptionQT, T, _, _, _>(
 				&Self::storage_value_final_key(),
-				|| { None::<T> },
 				|v| Ok::<R, Never>(f(v)),
 			)
 			.expect("`Never` can not be constructed; qed")
@@ -210,7 +208,7 @@ impl<T: FullCodec + TStorage, G: StorageValue<T>> storage::StorageValue<T> for G
 
 	fn take() -> G::Query {
 		#[cfg(feature = "std")]
-		let value = unhashed::get_cache(&Self::storage_value_final_key(), |_| { Option::<T>::None });
+		let value = unhashed::get_typed(&Self::storage_value_final_key());
 
 		#[cfg(not(feature = "std"))]
 		let value = unhashed::get(&Self::storage_value_final_key());
@@ -226,7 +224,7 @@ impl<T: FullCodec + TStorage, G: StorageValue<T>> storage::StorageValue<T> for G
 		T: TypedAppend<Item> + TStorage
 	{
 		let key = Self::storage_value_final_key();
-		unhashed::append_cache::<T, Item>(&key, item);
+		unhashed::append_typed::<T, Item>(&key, item);
 	}
 
 	#[cfg(not(feature = "std"))]

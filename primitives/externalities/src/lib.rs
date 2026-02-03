@@ -35,7 +35,7 @@ use sp_storage::{ChildInfo, StateVersion, TrackedStorageKey};
 
 pub use extensions::{Extension, ExtensionStore, Extensions};
 pub use scope_limited::{set_and_run_with_externalities, with_externalities};
-use typed_cache::OverlayCache;
+use typed_cache::{OverlayCache, StorageIO};
 
 mod extensions;
 mod scope_limited;
@@ -90,6 +90,8 @@ pub trait Externalities: ExtensionStore {
 
 	/// Get overlay typed cache for faster storage io.
 	fn overlay_cache(&mut self) -> Option<&mut OverlayCache>;
+
+	fn mut_typed_io(&mut self) -> Option<Box<dyn StorageIO>> { None }
 
 	/// Read runtime storage.
 	fn storage(&self, key: &[u8]) -> Option<Vec<u8>>;

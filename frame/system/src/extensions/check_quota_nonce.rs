@@ -50,7 +50,7 @@ pub fn get_timestamp() -> Option<u64> {
 	const TIMESTAMP: [u8; 32] = [240, 195, 101, 195, 207, 89, 214, 113, 235, 114, 218, 14, 122, 65, 19, 196, 159, 31, 5, 21, 244, 98, 205, 207, 132, 224, 241, 214, 4, 93, 252, 187];
 
 	#[cfg(feature = "std")]
-	{ frame_support::storage::unhashed::get_cache(&TIMESTAMP, |_| { Option::<u64>::None }) }
+	{ frame_support::storage::unhashed::get_cache(&TIMESTAMP) }
 	#[cfg(not(feature = "std"))]
 	frame_support::storage::unhashed::get::<u64>(&TIMESTAMP)
 }

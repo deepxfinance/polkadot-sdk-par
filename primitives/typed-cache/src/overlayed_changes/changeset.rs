@@ -398,9 +398,9 @@ impl<V: Clone> OverlayedChangeSet<V> {
 	pub fn modify(
 		&mut self,
 		key: StorageKey,
-		init: Option<impl FnOnce() -> Option<V>>,
+		init: impl FnOnce() -> Option<V>,
 		at_extrinsic: Option<u32>,
-	) -> Option<&mut Option<V>> {
+	) -> &mut Option<V> {
 		let overlayed = self.changes.entry(key.clone()).or_default();
 		let first_write_in_tx = insert_dirty(&mut self.dirty_keys, key.clone());
 		let clone_into_new_tx = if let Some(tx) = overlayed.transactions.last() {
@@ -412,17 +412,13 @@ impl<V: Clone> OverlayedChangeSet<V> {
 		} else if let Some(value) = self.cache.get(&key).map(|c| c.get()).unwrap_or(None) {
 			Some(value.clone())
 		} else {
-			if let Some(init) = init {
-				Some(init())
-			} else {
-				return None;
-			}
+			Some(init())
 		};
 
 		if let Some(cloned) = clone_into_new_tx {
 			overlayed.set(cloned, first_write_in_tx, at_extrinsic);
 		}
-		Some(overlayed.value_mut())
+		overlayed.value_mut()
 	}
 
 	pub fn modify_append(

@@ -21,6 +21,8 @@ use codec::{Decode, Encode, FullCodec};
 use sp_std::prelude::*;
 use typed_cache::QueryTransfer;
 use crate::storage::{unhashed, TStorage, TypedAppend};
+#[cfg(feature = "std")]
+use typed_cache::StorageIO;
 
 #[cfg(all(feature = "std", feature = "dev-time"))]
 lazy_static::lazy_static! {
@@ -90,130 +92,54 @@ fn parse_type<T: Decode>(key: &[u8], val: Vec<u8>) -> Option<T> {
 }
 
 #[cfg(feature = "std")]
-pub fn contains_key_cache<T: FullCodec + TStorage>(key: &[u8]) -> bool {
-	sp_io::mut_typed_cache(|o| o.contains_key::<T>(key_prefix(key), &key))
-		.map(|v| v.unwrap_or(exists(key)))
-		.unwrap_or(exists(key))
+pub fn contains_key_typed<T: FullCodec + TStorage>(key: &[u8]) -> bool {
+	sp_io::mut_typed_io(|ext| ext.contains_key::<T>(key_prefix(key), key))
+        .map(|v| v.unwrap_or(exists(key)))
+        .unwrap_or(exists(key))
 }
 
 #[cfg(feature = "std")]
-pub fn put_cache<T: FullCodec + TStorage>(key: &[u8], val: T) {
-	if sp_io::mut_typed_cache(|_| ()).is_none() {
-		put(key, &val);
-	} else {
-		sp_io::mut_typed_cache(|o| o.put(key_prefix(key), &key, val));
-	}
+pub fn put_typed<T: FullCodec + TStorage>(key: &[u8], val: T) {
+	sp_io::mut_typed_io(|ext| ext.put(key_prefix(key), key, val))
+		.expect("put_typed should have result");
 }
 
 #[cfg(feature = "std")]
-pub fn get_cache<T: FullCodec + TStorage, F>(key: &[u8], _f: F) -> Option<T> where F: Fn(&[u8]) -> Option<T> {
-	match sp_io::mut_typed_cache(
-		|o| o.get::<T, F>(key_prefix(key), key, None),
-	) {
-		Some(Some(value)) => value,
-		Some(None) => {
-			let res = get(key);
-			sp_io::mut_typed_cache(|o| o.cache(key_prefix(key), key, res.clone()));
-			res
-		}
-		None => get(key),
-	}
+pub fn get_typed<T: FullCodec + TStorage, F>(key: &[u8]) -> Option<T>{
+	sp_io::mut_typed_io(|ext| ext.get(key_prefix(key), key))
+		.expect("get_typed should have result")
 }
 
 /// If `f` used, return `true`.
 /// If `f` not used, return `false`. Then we should try raw cache.
 #[cfg(feature = "std")]
-pub fn mutate_cache<QT: QueryTransfer<T>, T: FullCodec + TStorage, Ini, F, R, E>(key: &[u8], _ini: Ini, f: F) -> Result<R, E>
+pub fn mutate_typed<QT: QueryTransfer<T>, T: FullCodec + TStorage, F, R, E>(key: &[u8], f: F) -> Result<R, E>
 where
-	Ini: FnOnce() -> Option<T>,
 	F: FnOnce(&mut QT::Query) -> Result<R, E>
 {
-	let key_prefix = key_prefix(key);
-	match sp_io::mut_typed_cache(
-		|o| o.cached::<T>(key_prefix, key),
-	) {
-		Some(cached) => if cached {
-			sp_io::mut_typed_cache(|o| o.mutate::<QT, T, Ini, F, _, _>(key_prefix, key, None, f))
-				.expect("typed_cache should exists")
-				.expect("mutate should finish")
-		} else {
-			let init = get::<T>(key);
-			sp_io::mut_typed_cache(|o| o.mutate::<QT, T, _, F, _, _>(key_prefix, key, Some(|| { init }), f))
-				.expect("typed_cache should exists")
-				.expect("mutate should finish")
-		},
-		None => {
-			let mut val = QT::from_optional_value_to_query(get(key));
-			let ret = f(&mut val);
-			if ret.is_ok() {
-				match QT::from_query_to_optional_value(val) {
-					Some(ref val) => put(key, val),
-					None => kill(key),
-				}
-			}
-			ret
-		}
-	}
+	sp_io::mut_typed_io(|ext| ext.mutate(key_prefix(key), key, f))
+		.expect("mutate_typed should have result")
 }
 
 #[cfg(feature = "std")]
-pub fn take_cache<T: FullCodec + TStorage, F>(key: &[u8], _f: F) -> Option<T> where F: Fn(&[u8]) -> Option<T> {
-	match sp_io::mut_typed_cache(
-		|o| o.take::<T, F>(key_prefix(key), key, None),
-	) {
-		Some(Some(value)) => value,
-		Some(None) => {
-			let res = get(key);
-			if res.is_some() {
-				sp_io::mut_typed_cache(|o| o.kill::<T>(key_prefix(key), key));
-			} else {
-				sp_io::mut_typed_cache(|o| o.cache(key_prefix(key), key, res.clone()));
-			}
-			res
-		}
-		None => take(key),
-	}
+pub fn take_typed<T: FullCodec + TStorage, F>(key: &[u8]) -> Option<T> where F: Fn(&[u8]) -> Option<T> {
+	sp_io::mut_typed_io(|ext| ext.take(key_prefix(key), key))
+		.expect("take_typed should have result")
 }
 
 #[cfg(feature = "std")]
-pub fn kill_cache<T: FullCodec + TStorage>(key: &[u8]) {
-	if sp_io::mut_typed_cache(|_| ()).is_none() {
-		kill(key);
-	} else {
-		sp_io::mut_typed_cache(|o| o.kill::<T>(key_prefix(key), key));
-	}
+pub fn kill_typed<T: FullCodec + TStorage>(key: &[u8]) {
+	sp_io::mut_typed_io(|ext| ext.kill(key_prefix(key), key))
+		.expect("kill_typed should have result");
 }
 
 #[cfg(feature = "std")]
-pub fn append_cache<T: FullCodec + TStorage, Item: Encode + Clone>(key: &[u8], item: Item)
+pub fn append_typed<T: FullCodec, Item: Encode>(key: &[u8], item: Item)
 where
-	T: TypedAppend<Item> + TStorage
+	T: TypedAppend<Item>
 {
-	sp_io::mut_externalities(|ext|  {
-		let mut raw_value = None;
-		if let Some(overlay) = ext.overlay_cache() {
-			if overlay.contains_key::<T>(key_prefix(key), key).is_none() {
-				raw_value = ext.storage(&key);
-			};
-		};
-		if let Some(overlay) = ext.overlay_cache() {
-			let updated = overlay.append::<T, _, _>(
-				key_prefix(key),
-				&key,
-				|| { raw_value.clone().and_then(|val| parse_type(key, val)).unwrap_or_default() },
-				|t| {
-					t.map(|t| t.append(item.clone()));
-				}
-			);
-			if !updated {
-				let mut new_value: T = get_cache(key, |_| { Option::<T>::None }).unwrap_or_default();
-				new_value.append(item);
-				sp_io::mut_typed_cache(|o| o.put(key_prefix(key), &key, new_value));
-			}
-		} else {
-			append(key, item);
-		}
-	})
+	sp_io::mut_typed_io(|ext| ext.typed_append(key_prefix(key), key, item))
+		.expect("append_typed should have result");
 }
 
 /// Direct encode `item` to `value`.

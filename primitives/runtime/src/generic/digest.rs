@@ -108,6 +108,12 @@ pub enum DigestItem {
 	RuntimeEnvironmentUpdated,
 }
 
+impl sp_state_machine::TypedAppend<DigestItem> for Digest {
+	fn append(&mut self, item: DigestItem) {
+		self.logs.push(item);
+	}
+}
+
 #[cfg(feature = "serde")]
 impl serde::Serialize for DigestItem {
 	fn serialize<S>(&self, seq: S) -> Result<S::Ok, S::Error>

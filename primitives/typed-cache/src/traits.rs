@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+use codec::Encode;
 #[cfg(feature = "std")]
 use downcast_rs::{impl_downcast, DowncastSync};
 use sp_std::collections::btree_map::BTreeMap;
@@ -54,23 +56,50 @@ impl_downcast!(sync StorageApi);
 /// `key` should be calculated full key
 /// `space` define specific workspace for same `V`.
 /// `init` is another data source
-pub trait StorageIO<V> {
-    fn contains(&self, space: &[u8], key: &[u8]) -> Option<bool>;
-    fn put(&mut self, space: &[u8], key: &[u8], value: V);
-    fn get<F>(&mut self, space: &[u8], key: &[u8], init: Option<F>) -> Option<Option<V>> where F: Fn(&[u8]) -> Option<V>;
-    fn get_change(&self, space: &[u8], key: &[u8]) -> Option<Option<V>>;
-    fn take<F>(&mut self, space: &[u8], key: &[u8], init: Option<F>) -> Option<Option<V>> where F: Fn(&[u8]) -> Option<V>;
-    fn kill(&mut self, space: &[u8], key: &[u8]);
-    fn mutate<QT: QueryTransfer<V>, F, R, E, M>(&mut self, space: &[u8], key: &[u8], init: Option<F>, mutate: M) -> Option<Result<R, E>>
+pub trait StorageIO {
+    fn contains_key<V>(&mut self, _space: &[u8], _key: &[u8]) -> bool {
+        panic!("StorageO::contains_key should be override");
+    }
+    fn put<V>(&mut self, _space: &[u8], _key: &[u8], _value: V) {
+        panic!("StorageO::put should be override");
+    }
+    fn get<V>(&mut self, _space: &[u8], _key: &[u8]) -> Option<V> {
+        panic!("StorageO::get should be override");
+    }
+    fn get_change<V>(&self, _space: &[u8], _key: &[u8]) -> Option<Option<V>> {
+        panic!("StorageO::get_change should be override");
+    }
+    fn take<V>(&mut self, _space: &[u8], _key: &[u8]) -> Option<V> {
+        panic!("StorageO::take should be override");
+    }
+    fn kill<V>(&mut self, _space: &[u8], _key: &[u8]) {
+        panic!("StorageO::kill should be override");
+    }
+    fn mutate<V, QT: QueryTransfer<V>, F, R, E, M>(&mut self, _space: &[u8], _key: &[u8], _mutate: M) -> Result<R, E>
     where
-        F: FnOnce() -> Option<V>,
-        M: FnOnce(&mut QT::Query) -> Result<R, E>;
-    fn append<F, M>(&mut self, space: &[u8], key: &[u8], init: F, mutate: M) -> bool
+        M: FnOnce(&mut QT::Query) -> Result<R, E>
+    {
+        panic!("StorageO::mutate should be override");
+    }
+    fn typed_append<T, Item: Encode>(&mut self, space: &[u8], key: &[u8], item: Item)
     where
-        F: FnOnce() -> V,
-        M: FnOnce(Option<&mut V>);
-    fn cache(&mut self, space: &[u8], key: &[u8], value: Option<V>);
-    fn cached(&self, space: &[u8], key: &[u8]) -> bool;
+        T: TypedAppend<Item>;
+}
+
+pub trait TypedAppend<Item>: Default {
+    fn append(&mut self, item: Item);
+}
+
+impl<T> TypedAppend<T> for Vec<T> {
+    fn append(&mut self, item: T) {
+        self.push(item);
+    }
+}
+
+impl<T: core::cmp::Ord> TypedAppend<T> for BTreeSet<T> {
+    fn append(&mut self, item: T) {
+        self.insert(item);
+    }
 }
 
 /// Trait for value transfer.
