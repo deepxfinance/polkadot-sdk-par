@@ -25,6 +25,7 @@ use sp_std::borrow::Borrow;
 use scale_info::prelude::string::String;
 #[cfg(not(feature = "std"))]
 use sp_std::prelude::*;
+use typed_cache::{OptionQT, QueryTransfer};
 use crate::storage::TypedAppend;
 
 /// Generator for `StorageMap` used by `decl_storage`.
@@ -38,10 +39,7 @@ use crate::storage::TypedAppend;
 ///
 /// If the keys are not trusted (e.g. can be set by a user), a cryptographic `hasher` such as
 /// `blake2_256` must be used.  Otherwise, other values in storage can be compromised.
-pub trait StorageMap<K: FullEncode, V: FullCodec + TStorage> {
-	/// The type that get/take returns.
-	type Query;
-
+pub trait StorageMap<K: FullEncode, V: FullCodec + TStorage>: QueryTransfer<V> {
 	/// Hasher. Used for generating final key.
 	type Hasher: StorageHasher;
 
@@ -57,12 +55,6 @@ pub trait StorageMap<K: FullEncode, V: FullCodec + TStorage> {
 		let result = storage_prefix(Self::module_prefix(), Self::storage_prefix());
 		result.to_vec()
 	}
-
-	/// Convert an optional value retrieved from storage to the type queried.
-	fn from_optional_value_to_query(v: Option<V>) -> Self::Query;
-
-	/// Convert a query to an optional value into storage.
-	fn from_query_to_optional_value(v: Self::Query) -> Option<V>;
 
 	/// Generate the full key used in top storage.
 	fn storage_map_final_key<KeyArg>(key: KeyArg) -> Vec<u8>
@@ -313,10 +305,6 @@ impl<K: FullEncode, V: FullCodec + TStorage, G: StorageMap<K, V>> storage::Stora
 
 	#[cfg(feature = "std")]
 	fn insert<KeyArg: EncodeLike<K>>(key: KeyArg, val: V) {
-		log::trace!(target: "storage_dev", "map insert {} {}",
-			String::from_utf8(Self::module_prefix().to_vec()).unwrap(),
-			String::from_utf8(Self::storage_prefix().to_vec()).unwrap(),
-		);
 		#[cfg(feature = "std")]
 		unhashed::put_cache(Self::storage_map_final_key(key).as_ref(), val);
 		#[cfg(not(feature = "std"))]
@@ -325,10 +313,6 @@ impl<K: FullEncode, V: FullCodec + TStorage, G: StorageMap<K, V>> storage::Stora
 
 	#[cfg(not(feature = "std"))]
 	fn insert<KeyArg: EncodeLike<K>, ValArg: EncodeLike<V>>(key: KeyArg, val: ValArg) {
-		log::trace!(target: "storage_dev", "map insert {} {}",
-			String::from_utf8(Self::module_prefix().to_vec()).unwrap(), 
-			String::from_utf8(Self::storage_prefix().to_vec()).unwrap(),
-		);
 		unhashed::put(Self::storage_map_final_key(key).as_ref(), &val)
 	}
 
@@ -344,10 +328,38 @@ impl<K: FullEncode, V: FullCodec + TStorage, G: StorageMap<K, V>> storage::Stora
 			.expect("`Never` can not be constructed; qed")
 	}
 
+	fn mutate_ref<KeyArg: EncodeLike<K>, R, F: FnOnce(&mut Self::Query) -> R>(key: KeyArg, f: F) -> R {
+		#[cfg(feature = "std")]
+		{
+			let final_key = Self::storage_map_final_key(key);
+			unhashed::mutate_cache::<G, V, _, _, _, _>(
+				&final_key,
+				|| { None::<V> },
+				|v| Ok::<R, Never>(f(v)),
+			)
+				.expect("`Never` can not be constructed; qed")
+		}
+		#[cfg(not(feature = "std"))]
+		Self::try_mutate(key, |v| Ok::<R, Never>(f(v)))
+			.expect("`Never` can not be constructed; qed")
+	}
+
 	fn mutate_exists<KeyArg: EncodeLike<K>, R, F: FnOnce(&mut Option<V>) -> R>(
 		key: KeyArg,
 		f: F,
 	) -> R {
+		Self::try_mutate_exists(key, |v| Ok::<R, Never>(f(v)))
+			.expect("`Never` can not be constructed; qed")
+	}
+
+	fn mutate_exists_ref<KeyArg: EncodeLike<K>, R, F: FnOnce(&mut Option<V>) -> R>(key: KeyArg, f: F) -> R {
+		#[cfg(feature = "std")]
+		{
+			let final_key = Self::storage_map_final_key(key);
+			unhashed::mutate_cache::<OptionQT, V, _, _, _, _>(&final_key, || { None::<V> }, |v| Ok::<R, Never>(f(v)))
+				.expect("`Never` can not be constructed; qed")
+		}
+		#[cfg(not(feature = "std"))]
 		Self::try_mutate_exists(key, |v| Ok::<R, Never>(f(v)))
 			.expect("`Never` can not be constructed; qed")
 	}
@@ -367,10 +379,6 @@ impl<K: FullEncode, V: FullCodec + TStorage, G: StorageMap<K, V>> storage::Stora
 
 		let ret = f(&mut val);
 		if ret.is_ok() {
-			log::trace!(target: "storage_dev", "map mutate {} {}",
-				String::from_utf8(Self::module_prefix().to_vec()).unwrap(), 
-				String::from_utf8(Self::storage_prefix().to_vec()).unwrap(),
-			);
 			match G::from_query_to_optional_value(val) {
 				Some(ref val) => {
 					#[cfg(feature = "std")]
@@ -401,10 +409,6 @@ impl<K: FullEncode, V: FullCodec + TStorage, G: StorageMap<K, V>> storage::Stora
 
 		let ret = f(&mut val);
 		if ret.is_ok() {
-			log::trace!(target: "storage_dev", "map mutate_exists {} {}",
-				String::from_utf8(Self::module_prefix().to_vec()).unwrap(), 
-				String::from_utf8(Self::storage_prefix().to_vec()).unwrap(),
-			);
 			match val {
 				Some(ref val) => {
 					#[cfg(feature = "std")]
@@ -437,10 +441,6 @@ impl<K: FullEncode, V: FullCodec + TStorage, G: StorageMap<K, V>> storage::Stora
 		EncodeLikeKey: EncodeLike<K>,
 		V: TypedAppend<Item> + TStorage
 	{
-		log::trace!(target: "storage_dev", "map append {} {}",
-			String::from_utf8(Self::module_prefix().to_vec()).unwrap(),
-			String::from_utf8(Self::storage_prefix().to_vec()).unwrap(),
-		);
 		let final_key = Self::storage_map_final_key(key);
 		unhashed::append_cache::<V, Item>(&final_key, item);
 	}
@@ -453,10 +453,6 @@ impl<K: FullEncode, V: FullCodec + TStorage, G: StorageMap<K, V>> storage::Stora
 		EncodeLikeItem: EncodeLike<Item>,
 		V: StorageAppend<Item>,
 	{
-		log::trace!(target: "storage_dev", "map append {} {}",
-			String::from_utf8(Self::module_prefix().to_vec()).unwrap(), 
-			String::from_utf8(Self::storage_prefix().to_vec()).unwrap(),
-		);
 		sp_io::storage::append(&Self::storage_map_final_key(key), item.encode());
 	}
 

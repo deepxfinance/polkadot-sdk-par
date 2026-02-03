@@ -29,6 +29,7 @@ use crate::{
 use codec::{Decode, Encode, EncodeLike, FullCodec, MaxEncodedLen};
 use sp_arithmetic::traits::SaturatedConversion;
 use sp_std::prelude::*;
+use typed_cache::QueryTransfer;
 use crate::storage::TypedAppend;
 
 /// A type that allow to store a value.
@@ -41,6 +42,30 @@ pub struct StorageValue<Prefix, Value, QueryKind = OptionQuery, OnEmpty = GetDef
 	core::marker::PhantomData<(Prefix, Value, QueryKind, OnEmpty)>,
 );
 
+impl<Prefix, Value, QueryKind, OnEmpty> QueryTransfer<Value> for StorageValue<Prefix, Value, QueryKind, OnEmpty>
+where
+	Prefix: StorageInstance,
+	Value: FullCodec + TStorage,
+	QueryKind: QueryKindTrait<Value, OnEmpty>,
+	OnEmpty: crate::traits::Get<QueryKind::Query> + 'static,
+{
+	type Query = QueryKind::Query;
+	fn from_optional_value_to_query(v: Option<Value>) -> QueryKind::Query {
+		QueryKind::from_optional_value_to_query(v)
+	}
+
+	fn mut_from_optional_value_to_query<M, R, E>(v: &mut Option<Value>, m: M) -> (Result<R, E>, Option<Value>)
+	where
+		M: FnOnce(&mut Self::Query) -> Result<R, E>
+	{
+		QueryKind::mut_from_optional_value_to_query(v, m)
+	}
+
+	fn from_query_to_optional_value(v: QueryKind::Query) -> Option<Value> {
+		QueryKind::from_query_to_optional_value(v)
+	}
+}
+
 impl<Prefix, Value, QueryKind, OnEmpty> crate::storage::generator::StorageValue<Value>
 	for StorageValue<Prefix, Value, QueryKind, OnEmpty>
 where
@@ -49,18 +74,11 @@ where
 	QueryKind: QueryKindTrait<Value, OnEmpty>,
 	OnEmpty: crate::traits::Get<QueryKind::Query> + 'static,
 {
-	type Query = QueryKind::Query;
 	fn module_prefix() -> &'static [u8] {
 		Prefix::pallet_prefix().as_bytes()
 	}
 	fn storage_prefix() -> &'static [u8] {
 		Prefix::STORAGE_PREFIX.as_bytes()
-	}
-	fn from_optional_value_to_query(v: Option<Value>) -> Self::Query {
-		QueryKind::from_optional_value_to_query(v)
-	}
-	fn from_query_to_optional_value(v: Self::Query) -> Option<Value> {
-		QueryKind::from_query_to_optional_value(v)
 	}
 }
 
@@ -142,6 +160,11 @@ where
 		<Self as crate::storage::StorageValue<Value>>::mutate(f)
 	}
 
+	/// Mutate the value by reference
+	pub fn mutate_ref<R, F: FnOnce(&mut QueryKind::Query) -> R>(f: F) -> R {
+		<Self as crate::storage::StorageValue<Value>>::mutate_ref(f)
+	}
+
 	/// Mutate the value if closure returns `Ok`
 	pub fn try_mutate<R, E, F: FnOnce(&mut QueryKind::Query) -> Result<R, E>>(
 		f: F,
@@ -152,6 +175,11 @@ where
 	/// Mutate the value. Deletes the item if mutated to a `None`.
 	pub fn mutate_exists<R, F: FnOnce(&mut Option<Value>) -> R>(f: F) -> R {
 		<Self as crate::storage::StorageValue<Value>>::mutate_exists(f)
+	}
+
+	/// Mutate the value by reference. Deletes the item if mutated to a `None`.
+	pub fn mutate_exists_ref<R, F: FnOnce(&mut Option<Value>) -> R>(f: F) -> R {
+		<Self as crate::storage::StorageValue<Value>>::mutate_exists_ref(f)
 	}
 
 	/// Mutate the value if closure returns `Ok`. Deletes the item if mutated to a `None`.

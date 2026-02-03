@@ -24,7 +24,6 @@ use sp_std::collections::btree_set::BTreeSet as Set;
 #[cfg(feature = "std")]
 use std::collections::HashSet as Set;
 use sp_std::sync::Arc;
-use codec::Encode;
 use once_cell::sync::OnceCell;
 use crate::warn;
 use smallvec::SmallVec;
@@ -399,25 +398,31 @@ impl<V: Clone> OverlayedChangeSet<V> {
 	pub fn modify(
 		&mut self,
 		key: StorageKey,
-		init: impl Fn() -> V,
+		init: Option<impl FnOnce() -> Option<V>>,
 		at_extrinsic: Option<u32>,
-	) -> &mut Option<V> {
+	) -> Option<&mut Option<V>> {
 		let overlayed = self.changes.entry(key.clone()).or_default();
-		let first_write_in_tx = insert_dirty(&mut self.dirty_keys, key);
+		let first_write_in_tx = insert_dirty(&mut self.dirty_keys, key.clone());
 		let clone_into_new_tx = if let Some(tx) = overlayed.transactions.last() {
 			if first_write_in_tx {
 				Some(tx.value.clone())
 			} else {
 				None
 			}
+		} else if let Some(value) = self.cache.get(&key).map(|c| c.get()).unwrap_or(None) {
+			Some(value.clone())
 		} else {
-			Some(Some(init()))
+			if let Some(init) = init {
+				Some(init())
+			} else {
+				return None;
+			}
 		};
 
 		if let Some(cloned) = clone_into_new_tx {
 			overlayed.set(cloned, first_write_in_tx, at_extrinsic);
 		}
-		overlayed.value_mut()
+		Some(overlayed.value_mut())
 	}
 
 	/// Set all values to deleted which are matched by the predicate.

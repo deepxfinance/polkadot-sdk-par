@@ -737,8 +737,8 @@ impl<H: Hasher> SharedTrieCache<H> {
 		let kv_db_info = format!(", kv_cache_max_inline_size = {kv_cache_max_inline_size}, kv_cache_max_heap_size = {kv_cache_max_heap_size}");
 		#[cfg(not(feature = "kvdb"))]
 		let kv_db_info = "";
-		tracing::debug!(
-			target: super::LOG_TARGET,
+		tracing::info!(
+			target: super::KV_LOG_TARGET,
 			"Configured a shared trie cache with a budget of ~{} bytes (node_cache_max_inline_size = {}, node_cache_max_heap_size = {}, value_cache_max_inline_size = {}, value_cache_max_heap_size = {}{kv_db_info})",
 			total_budget,
 			node_cache_max_inline_size,

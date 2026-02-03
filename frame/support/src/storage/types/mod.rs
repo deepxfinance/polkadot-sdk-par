@@ -60,6 +60,12 @@ pub trait QueryKindTrait<Value, OnEmpty> {
 	/// query.
 	fn from_optional_value_to_query(v: Option<Value>) -> Self::Query;
 
+	/// Convert an optional value (i.e. some if trie contains the value or none otherwise) to the
+	/// query.
+	fn mut_from_optional_value_to_query<M, R, E>(v: &mut Option<Value>, m: M) -> (Result<R, E>, Option<Value>)
+	where
+		M: FnOnce(&mut Self::Query) -> Result<R, E>;
+
 	/// Convert a query to an optional value.
 	fn from_query_to_optional_value(v: Self::Query) -> Option<Value>;
 }
@@ -81,6 +87,13 @@ where
 	fn from_optional_value_to_query(v: Option<Value>) -> Self::Query {
 		// NOTE: OnEmpty is fixed to GetDefault, thus it returns `None` on no value.
 		v
+	}
+
+	fn mut_from_optional_value_to_query<M, R, E>(v: &mut Option<Value>, m: M) -> (Result<R, E>, Option<Value>)
+	where
+		M: FnOnce(&mut Self::Query) -> Result<R, E>
+	{
+		(m(v), None)
 	}
 
 	fn from_query_to_optional_value(v: Self::Query) -> Option<Value> {
@@ -107,6 +120,13 @@ where
 		}
 	}
 
+	fn mut_from_optional_value_to_query<M, R, E>(_v: &mut Option<Value>, _m: M) -> (Result<R, E>, Option<Value>)
+	where
+		M: FnOnce(&mut Self::Query) -> Result<R, E>
+	{
+		panic!("Not supported from `&mut Option` to `&mut Result`")
+	}
+
 	fn from_query_to_optional_value(v: Self::Query) -> Option<Value> {
 		v.ok()
 	}
@@ -125,6 +145,19 @@ where
 
 	fn from_optional_value_to_query(v: Option<Value>) -> Self::Query {
 		v.unwrap_or_else(|| OnEmpty::get())
+	}
+
+	fn mut_from_optional_value_to_query<M, R, E>(v: &mut Option<Value>, m: M) -> (Result<R, E>, Option<Value>)
+	where
+		M: FnOnce(&mut Self::Query) -> Result<R, E>
+	{
+		match v {
+			Some(v) => (m(v), None),
+			None => {
+				let mut v = OnEmpty::get();
+				(m(&mut v), Some(v))
+			},
+		}
 	}
 
 	fn from_query_to_optional_value(v: Self::Query) -> Option<Value> {

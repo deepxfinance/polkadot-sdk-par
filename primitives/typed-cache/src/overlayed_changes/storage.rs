@@ -5,7 +5,7 @@ use sp_std::hash::Hash;
 use sp_std::vec::Vec;
 use codec::FullCodec;
 use once_cell::sync::OnceCell;
-use crate::{StorageIO, StorageApi, StorageKey};
+use crate::{StorageIO, StorageApi, StorageKey, QueryTransfer};
 use crate::changeset::{ExecutionMode, StorageOverlay};
 
 unsafe impl<K: Ord + Hash + Clone, V: Clone> Send for StorageOverlay<K, V> {}
@@ -92,7 +92,18 @@ impl<V: Clone + FullCodec + 'static> StorageApi for StorageOverlay<StorageKey, O
 impl<V: Clone> StorageIO<V> for StorageOverlay<StorageKey, Option<V>> {
     fn contains(&self, space: &[u8], key: &[u8]) -> bool {
         if space != self.space { return false; }
-        self.changes.contains_key(key)
+        self.changes
+            .get(key)
+            .map(|x| true)
+            .or(
+                self.cache
+                    .get(key)
+                    .map(|c| c
+                        .get()
+                        .is_some()
+                    )
+            )
+            .unwrap_or(false)
     }
     
     fn put(&mut self, space: &[u8], key: &[u8], value: V) {
@@ -144,15 +155,23 @@ impl<V: Clone> StorageIO<V> for StorageOverlay<StorageKey, Option<V>> {
         self.set(key.to_vec(), None, None);
     }
 
-    fn mutate<F, M>(&mut self, space: &[u8], key: &[u8], init: F, mutate: M) -> bool
+    fn mutate<QT: QueryTransfer<V>, F, R, E, M>(&mut self, space: &[u8], key: &[u8], init: Option<F>, mutate: M) -> Option<Result<R, E>>
     where
-        F: Fn() -> V,
-        M: FnOnce(Option<&mut V>)
+        F: FnOnce() -> Option<V>,
+        M: FnOnce(&mut QT::Query) -> Result<R, E>,
     {
-        if space != &self.space { return false; }
+        if space != &self.space { return None; }
         // modify must have mutable reference of value returned
-        mutate(self.modify(key.to_vec(), init, None).as_mut());
-        true
+        match self.modify(key.to_vec(), init, None) {
+            Some(v) => {
+                let (res, new_value) = QT::mut_from_optional_value_to_query(v, mutate);
+                if let Some(new_value) = new_value {
+                    self.set(key.to_vec(), Some(new_value), None);
+                }
+                Some(res)
+            }
+            None => None,
+        }
     }
 
     fn cache(&mut self, space: &[u8], key: &[u8], value: Option<V>) {
@@ -160,6 +179,22 @@ impl<V: Clone> StorageIO<V> for StorageOverlay<StorageKey, Option<V>> {
         let new_cache = Arc::new(OnceCell::<Option<V>>::new());
         let _ = new_cache.try_insert(value);
         self.cache.insert(key.to_vec(), new_cache);
+    }
+    
+    fn peek(&self, space: &[u8], key: &[u8]) -> bool {
+        if space != &self.space { return false; }
+        self.changes
+            .get(key)
+            .map(|x| true)
+            .or(
+                self.cache
+                    .get(key)
+                    .map(|c| c
+                        .get()
+                        .is_some()
+                    )
+            )
+            .unwrap_or(false)
     }
 }
 

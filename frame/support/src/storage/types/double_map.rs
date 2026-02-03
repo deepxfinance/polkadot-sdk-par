@@ -30,6 +30,7 @@ use crate::{
 use codec::{Decode, Encode, EncodeLike, FullCodec, MaxEncodedLen};
 use sp_arithmetic::traits::SaturatedConversion;
 use sp_std::prelude::*;
+use typed_cache::QueryTransfer;
 use crate::storage::TypedAppend;
 
 /// A type that allow to store values for `(key1, key2)` couple. Similar to `StorageMap` but allow
@@ -101,6 +102,36 @@ impl<Prefix, Hasher1, Key1, Hasher2, Key2, Value, QueryKind, OnEmpty, MaxValues>
 	}
 }
 
+impl<Prefix, Hasher1, Key1, Hasher2, Key2, Value, QueryKind, OnEmpty, MaxValues> QueryTransfer<Value>
+for StorageDoubleMap<Prefix, Hasher1, Key1, Hasher2, Key2, Value, QueryKind, OnEmpty, MaxValues>
+where
+	Prefix: StorageInstance,
+	Hasher1: crate::hash::StorageHasher,
+	Hasher2: crate::hash::StorageHasher,
+	Key1: FullCodec,
+	Key2: FullCodec,
+	Value: FullCodec + TStorage,
+	QueryKind: QueryKindTrait<Value, OnEmpty>,
+	OnEmpty: Get<QueryKind::Query> + 'static,
+	MaxValues: Get<Option<u32>>,
+{
+	type Query = QueryKind::Query;
+	fn from_optional_value_to_query(v: Option<Value>) -> QueryKind::Query {
+		QueryKind::from_optional_value_to_query(v)
+	}
+
+	fn mut_from_optional_value_to_query<M, R, E>(v: &mut Option<Value>, m: M) -> (Result<R, E>, Option<Value>)
+	where
+		M: FnOnce(&mut Self::Query) -> Result<R, E>
+	{
+		QueryKind::mut_from_optional_value_to_query(v, m)
+	}
+
+	fn from_query_to_optional_value(v: QueryKind::Query) -> Option<Value> {
+		QueryKind::from_query_to_optional_value(v)
+	}
+}
+
 impl<Prefix, Hasher1, Key1, Hasher2, Key2, Value, QueryKind, OnEmpty, MaxValues>
 	crate::storage::generator::StorageDoubleMap<Key1, Key2, Value>
 	for StorageDoubleMap<Prefix, Hasher1, Key1, Hasher2, Key2, Value, QueryKind, OnEmpty, MaxValues>
@@ -115,7 +146,6 @@ where
 	OnEmpty: Get<QueryKind::Query> + 'static,
 	MaxValues: Get<Option<u32>>,
 {
-	type Query = QueryKind::Query;
 	type Hasher1 = Hasher1;
 	type Hasher2 = Hasher2;
 	fn module_prefix() -> &'static [u8] {
@@ -123,12 +153,6 @@ where
 	}
 	fn storage_prefix() -> &'static [u8] {
 		Prefix::STORAGE_PREFIX.as_bytes()
-	}
-	fn from_optional_value_to_query(v: Option<Value>) -> Self::Query {
-		QueryKind::from_optional_value_to_query(v)
-	}
-	fn from_query_to_optional_value(v: Self::Query) -> Option<Value> {
-		QueryKind::from_query_to_optional_value(v)
 	}
 }
 
@@ -344,6 +368,16 @@ where
 		<Self as crate::storage::StorageDoubleMap<Key1, Key2, Value>>::mutate(k1, k2, f)
 	}
 
+	/// Mutate the value by reference under the given keys.
+	pub fn mutate_ref<KArg1, KArg2, R, F>(k1: KArg1, k2: KArg2, f: F) -> R
+	where
+		KArg1: EncodeLike<Key1>,
+		KArg2: EncodeLike<Key2>,
+		F: FnOnce(&mut QueryKind::Query) -> R,
+	{
+		<Self as crate::storage::StorageDoubleMap<Key1, Key2, Value>>::mutate_ref(k1, k2, f)
+	}
+
 	/// Mutate the value under the given keys when the closure returns `Ok`.
 	pub fn try_mutate<KArg1, KArg2, R, E, F>(k1: KArg1, k2: KArg2, f: F) -> Result<R, E>
 	where
@@ -362,6 +396,16 @@ where
 		F: FnOnce(&mut Option<Value>) -> R,
 	{
 		<Self as crate::storage::StorageDoubleMap<Key1, Key2, Value>>::mutate_exists(k1, k2, f)
+	}
+
+	/// Mutate the value by reference under the given keys. Deletes the item if mutated to a `None`.
+	pub fn mutate_exists_ref<KArg1, KArg2, R, F>(k1: KArg1, k2: KArg2, f: F) -> R
+	where
+		KArg1: EncodeLike<Key1>,
+		KArg2: EncodeLike<Key2>,
+		F: FnOnce(&mut Option<Value>) -> R,
+	{
+		<Self as crate::storage::StorageDoubleMap<Key1, Key2, Value>>::mutate_exists_ref(k1, k2, f)
 	}
 
 	/// Mutate the item, only if an `Ok` value is returned. Deletes the item if mutated to a `None`.

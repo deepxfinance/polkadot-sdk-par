@@ -61,9 +61,68 @@ pub trait StorageIO<V> {
     fn get_change(&self, space: &[u8], key: &[u8]) -> Option<Option<V>>;
     fn take<F>(&mut self, space: &[u8], key: &[u8], init: Option<F>) -> Option<Option<V>> where F: Fn(&[u8]) -> Option<V>;
     fn kill(&mut self, space: &[u8], key: &[u8]);
-    fn mutate<F, M>(&mut self, space: &[u8], key: &[u8], init: F, mutate: M) -> bool
+    fn mutate<QT: QueryTransfer<V>, F, R, E, M>(&mut self, space: &[u8], key: &[u8], init: Option<F>, mutate: M) -> Option<Result<R, E>>
     where
-        F: Fn() -> V,
-        M: FnOnce(Option<&mut V>);
+        F: FnOnce() -> Option<V>,
+        M: FnOnce(&mut QT::Query) -> Result<R, E>;
     fn cache(&mut self, space: &[u8], key: &[u8], value: Option<V>);
+    fn peek(&self, space: &[u8], key: &[u8]) -> bool;
+}
+
+/// Trait for value transfer.
+pub trait QueryTransfer<V> {
+    type Query;
+
+    /// Convert an optional value retrieved from storage to the type queried.
+    fn from_optional_value_to_query(v: Option<V>) -> Self::Query;
+
+    /// Convert an optional value retrieved from storage to the type queried.
+    fn mut_from_optional_value_to_query<M, R, E>(v: &mut Option<V>, m: M) -> (Result<R, E>, Option<V>)
+    where
+        M: FnOnce(&mut Self::Query) -> Result<R, E>;
+
+    /// Convert a query to an optional value into storage.
+    fn from_query_to_optional_value(v: Self::Query) -> Option<V>;
+}
+
+pub struct OptionQT;
+
+impl<V> QueryTransfer<V> for OptionQT {
+    type Query = Option<V>;
+    fn from_optional_value_to_query(v: Option<V>) -> Self::Query {
+        v
+    }
+
+    fn mut_from_optional_value_to_query<M, R, E>(v: &mut Option<V>, m: M) -> (Result<R, E>, Option<V>)
+    where
+        M: FnOnce(&mut Self::Query) -> Result<R, E>
+    {
+        (m(v), None)
+    }
+
+    fn from_query_to_optional_value(v: Self::Query) -> Option<V> {
+        v
+    }
+}
+
+impl<V> QueryTransfer<V> for () {
+    type Query = V;
+
+    fn from_optional_value_to_query(v: Option<V>) -> Self::Query {
+        v.expect("Default QueryTransfer should not be None")
+    }
+
+    fn mut_from_optional_value_to_query<M, R, E>(v: &mut Option<V>, m: M) -> (Result<R, E>, Option<V>)
+    where
+        M: FnOnce(&mut Self::Query) -> Result<R, E>
+    {
+        match v {
+            Some(v) => (m(v), None),
+            None => panic!("Default QueryTransfer should not be None"),
+        }
+    }
+
+    fn from_query_to_optional_value(v: Self::Query) -> Option<V> {
+        Some(v)
+    }
 }

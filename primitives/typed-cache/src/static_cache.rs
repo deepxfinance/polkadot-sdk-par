@@ -6,7 +6,7 @@ use sp_std::sync::Arc;
 #[cfg(feature = "std")]
 use sp_std::sync::RwLock;
 use sp_std::any::Any;
-use crate::{StorageIO, StorageKey};
+use crate::{QueryTransfer, StorageIO, StorageKey};
 #[cfg(feature = "std")]
 use crate::StorageApi;
 #[cfg(feature = "std")]
@@ -224,26 +224,25 @@ impl OverlayCache {
         self.handle_mut_or_default::<V, _, _>(space, f);
     }
 
-    pub fn mutate<V: Clone + FullCodec + 'static, F, M>(&mut self, space: &[u8], key: &[u8], init: F, mutate: M) -> bool
-    where
-        F: Fn() -> V,
-        M: FnOnce(Option<&mut V>)
-    {
-        #[cfg(all(feature = "std", feature = "dev-time"))]
-        let start = std::time::Instant::now();
-        let f = |storage: &mut AnyStorage| {
-            let step1 = storage.downcast_mut::<StorageOverlay<Vec<u8>, Option<V>>>();
-            #[cfg(all(feature = "std", feature = "dev-time"))]
-            let time1 = start.elapsed();
-            let res = step1.map(|overlay| overlay.mutate(space, key, init, mutate));
-            #[cfg(all(feature = "std", feature = "dev-time"))]
-            {
-                let time = start.elapsed();
-                PUT.lock().unwrap().entry(space.to_vec()).or_default().push((time1, time));
-            }
-            res
+    pub fn peek<V: Clone + FullCodec + 'static>(&self, space: &[u8], key: &[u8]) -> bool {
+        let f = |storage: &AnyStorage| {
+            storage.downcast_ref::<StorageOverlay<Vec<u8>, Option<V>>>()
+                .map(|overlay| overlay.contains(space, key))
+                .unwrap_or(false)
         };
-        self.handle_mut_or_default::<V, _, _>(space, f).unwrap_or(false)
+        self.handle_ref::<_, _>(space, f).unwrap_or(false)
+    }
+
+    pub fn mutate<QT: QueryTransfer<V>, V: Clone + FullCodec + 'static, F, M, R, E>(&mut self, space: &[u8], key: &[u8], init: Option<F>, mutate: M) -> Option<Result<R, E>>
+    where
+        F: FnOnce() -> Option<V>,
+        M: FnOnce(&mut QT::Query) -> Result<R, E>,
+    {
+        let f = |storage: &mut AnyStorage| {
+            storage.downcast_mut::<StorageOverlay<Vec<u8>, Option<V>>>()
+                .map(|overlay| overlay.mutate::<QT, _, _, _, _>(space, key, init, mutate))
+        };
+        self.handle_mut_or_default::<V, _, _>(space, f).unwrap_or(None)
     }
 
     pub fn cache<V: Clone + FullCodec + 'static>(&mut self, space: &[u8], key: &[u8], value: Option<V>) {

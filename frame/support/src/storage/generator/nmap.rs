@@ -43,6 +43,7 @@ use crate::{
 use codec::{Decode, Encode, EncodeLike, FullCodec};
 #[cfg(not(feature = "std"))]
 use sp_std::prelude::*;
+use typed_cache::{OptionQT, QueryTransfer};
 use crate::storage::TypedAppend;
 
 /// Generator for `StorageNMap` used by `decl_storage` and storage types.
@@ -58,10 +59,7 @@ use crate::storage::TypedAppend;
 /// If the keys are not trusted (e.g. can be set by a user), a cryptographic `hasher` such as
 /// `blake2_256` must be used.  Otherwise, other values in storage with the same prefix can
 /// be compromised.
-pub trait StorageNMap<K: KeyGenerator, V: FullCodec + TStorage> {
-	/// The type that get/take returns.
-	type Query;
-
+pub trait StorageNMap<K: KeyGenerator, V: FullCodec + TStorage>: QueryTransfer<V> {
 	/// Module prefix. Used for generating final key.
 	fn module_prefix() -> &'static [u8];
 
@@ -74,12 +72,6 @@ pub trait StorageNMap<K: KeyGenerator, V: FullCodec + TStorage> {
 		let result = storage_prefix(Self::module_prefix(), Self::storage_prefix());
 		result.to_vec()
 	}
-
-	/// Convert an optional value retrieved from storage to the type queried.
-	fn from_optional_value_to_query(v: Option<V>) -> Self::Query;
-
-	/// Convert a query to an optional value into storage.
-	fn from_query_to_optional_value(v: Self::Query) -> Option<V>;
 
 	/// Generate a partial key used in top storage.
 	fn storage_n_map_partial_key<KP>(key: KP) -> Vec<u8>
@@ -307,6 +299,27 @@ where
 			.expect("`Never` can not be constructed; qed")
 	}
 
+	fn mutate_ref<KArg, R, F>(key: KArg, f: F) -> R
+	where
+		KArg: EncodeLikeTuple<K::KArg> + TupleToEncodedIter,
+		F: FnOnce(&mut Self::Query) -> R
+	{
+
+		#[cfg(feature = "std")]
+		{
+			let final_key = Self::storage_n_map_final_key::<K, _>(key);
+			unhashed::mutate_cache::<G, V, _, _, _, _>(
+				&final_key,
+				|| { None::<V> },
+				|v| Ok::<R, Never>(f(v)),
+			)
+				.expect("`Never` can not be constructed; qed")
+		}
+		#[cfg(not(feature = "std"))]
+		Self::try_mutate(key, |v| Ok::<R, Never>(f(v)))
+			.expect("`Never` can not be constructed; qed")
+	}
+
 	fn try_mutate<KArg, R, E, F>(key: KArg, f: F) -> Result<R, E>
 	where
 		KArg: EncodeLikeTuple<K::KArg> + TupleToEncodedIter,
@@ -346,6 +359,22 @@ where
 		KArg: EncodeLikeTuple<K::KArg> + TupleToEncodedIter,
 		F: FnOnce(&mut Option<V>) -> R,
 	{
+		Self::try_mutate_exists(key, |v| Ok::<R, Never>(f(v)))
+			.expect("`Never` can not be constructed; qed")
+	}
+
+	fn mutate_exists_ref<KArg, R, F>(key: KArg, f: F) -> R
+	where
+		KArg: EncodeLikeTuple<K::KArg> + TupleToEncodedIter,
+		F: FnOnce(&mut Option<V>) -> R
+	{
+		#[cfg(feature = "std")]
+		{
+			let final_key = Self::storage_n_map_final_key::<K, _>(key);
+			unhashed::mutate_cache::<OptionQT, V, _, _, _, _>(&final_key, || { None::<V> }, |v| Ok::<R, Never>(f(v)))
+				.expect("`Never` can not be constructed; qed")
+		}
+		#[cfg(not(feature = "std"))]
 		Self::try_mutate_exists(key, |v| Ok::<R, Never>(f(v)))
 			.expect("`Never` can not be constructed; qed")
 	}
