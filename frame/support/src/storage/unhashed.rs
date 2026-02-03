@@ -90,6 +90,13 @@ fn parse_type<T: Decode>(key: &[u8], val: Vec<u8>) -> Option<T> {
 }
 
 #[cfg(feature = "std")]
+pub fn contains_key_cache<T: FullCodec + TStorage>(key: &[u8]) -> bool {
+	sp_io::mut_typed_cache(|o| o.contains_key::<T>(key_prefix(key), &key))
+		.map(|v| v.unwrap_or(exists(key)))
+		.unwrap_or(exists(key))
+}
+
+#[cfg(feature = "std")]
 pub fn put_cache<T: FullCodec + TStorage>(key: &[u8], val: T) {
 	if sp_io::mut_typed_cache(|_| ()).is_none() {
 		put(key, &val);
@@ -123,7 +130,7 @@ where
 {
 	let key_prefix = key_prefix(key);
 	match sp_io::mut_typed_cache(
-		|o| o.contains_key::<T>(key_prefix, key),
+		|o| o.cached::<T>(key_prefix, key),
 	) {
 		Some(cached) => if cached {
 			sp_io::mut_typed_cache(|o| o.mutate::<QT, T, Ini, F, _, _>(key_prefix, key, None, f))
@@ -178,32 +185,28 @@ pub fn kill_cache<T: FullCodec + TStorage>(key: &[u8]) {
 }
 
 #[cfg(feature = "std")]
-pub fn append_cache<T: FullCodec + TStorage, Item: Encode + Clone>(key: &[u8], item: Item)
+pub fn append_cache<T: FullCodec + TStorage, Item: Encode>(key: &[u8], item: Item)
 where
 	T: TypedAppend<Item> + TStorage
 {
 	sp_io::mut_externalities(|ext|  {
 		let mut raw_value = None;
 		if let Some(overlay) = ext.overlay_cache() {
-			if !overlay.contains_key::<T>(key_prefix(key), key) {
+			if overlay.contains_key::<T>(key_prefix(key), key).is_none() {
 				raw_value = ext.storage(&key);
 			};
 		};
 		if let Some(overlay) = ext.overlay_cache() {
-			let updated = overlay.mutate::<(), T, _, _, _, _>(
+			let _ = overlay.mutate::<(), T, _, _, _, _>(
 				key_prefix(key),
 				&key,
-				Some(|| { raw_value.clone().and_then(|val| parse_type(key, val)) }),
+				Some(|| { raw_value.and_then(|val| parse_type(key, val)) }),
 				|t| {
-					t.append(item.clone());
+					t.append(item);
 					Ok::<(), u8>(())
 				}
-			);
-			if updated.is_none() {
-				let mut new_value: T = get_cache(key, |_| { Option::<T>::None }).unwrap_or_default();
-				new_value.append(item);
-				sp_io::mut_typed_cache(|o| o.put(key_prefix(key), &key, new_value));
-			}
+			)
+				.expect("append_cache should finish");
 		} else {
 			append(key, item);
 		}

@@ -123,13 +123,13 @@ impl OverlayCache {
         self.handle_mut(space, f);
     }
 
-    pub fn contains_key<V: Clone + FullCodec + 'static>(&self, space: &[u8], key: &[u8]) -> bool {
+    pub fn contains_key<V: Clone + FullCodec + 'static>(&self, space: &[u8], key: &[u8]) -> Option<bool> {
         let f = |storage: &AnyStorage| {
             storage.downcast_ref::<StorageOverlay<Vec<u8>, Option<V>>>()
                 .map(|overlay| overlay.contains(space, key))
-        }
-            .unwrap_or(false);
-        self.handle_ref::<_, _>(space, f).unwrap_or(false)
+                .unwrap_or(None)
+        };
+        self.handle_ref::<_, _>(space, f).unwrap_or(None)
     }
 
     pub fn get<V: Clone + FullCodec + 'static, F>(&mut self, space: &[u8], key: &[u8], init: Option<F>) -> Option<Option<V>>
@@ -224,15 +224,6 @@ impl OverlayCache {
         self.handle_mut_or_default::<V, _, _>(space, f);
     }
 
-    pub fn peek<V: Clone + FullCodec + 'static>(&self, space: &[u8], key: &[u8]) -> bool {
-        let f = |storage: &AnyStorage| {
-            storage.downcast_ref::<StorageOverlay<Vec<u8>, Option<V>>>()
-                .map(|overlay| overlay.contains(space, key))
-                .unwrap_or(false)
-        };
-        self.handle_ref::<_, _>(space, f).unwrap_or(false)
-    }
-
     pub fn mutate<QT: QueryTransfer<V>, V: Clone + FullCodec + 'static, F, M, R, E>(&mut self, space: &[u8], key: &[u8], init: Option<F>, mutate: M) -> Option<Result<R, E>>
     where
         F: FnOnce() -> Option<V>,
@@ -260,6 +251,15 @@ impl OverlayCache {
             }
         };
         self.handle_mut_or_default::<V, _, _>(space, f);
+    }
+
+    pub fn cached<V: Clone + FullCodec + 'static>(&self, space: &[u8], key: &[u8]) -> bool {
+        let f = |storage: &AnyStorage| {
+            storage.downcast_ref::<StorageOverlay<Vec<u8>, Option<V>>>()
+                .map(|overlay| overlay.cached(space, key))
+                .unwrap_or(false)
+        };
+        self.handle_ref::<_, _>(space, f).unwrap_or(false)
     }
 }
 

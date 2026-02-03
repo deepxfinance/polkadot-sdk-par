@@ -90,11 +90,11 @@ impl<V: Clone + FullCodec + 'static> StorageApi for StorageOverlay<StorageKey, O
 }
 
 impl<V: Clone> StorageIO<V> for StorageOverlay<StorageKey, Option<V>> {
-    fn contains(&self, space: &[u8], key: &[u8]) -> bool {
-        if space != self.space { return false; }
+    fn contains(&self, space: &[u8], key: &[u8]) -> Option<bool> {
+        if space != self.space { return None; }
         self.changes
             .get(key)
-            .map(|x| true)
+            .map(|x| x.value().is_some())
             .or(
                 self.cache
                     .get(key)
@@ -103,7 +103,6 @@ impl<V: Clone> StorageIO<V> for StorageOverlay<StorageKey, Option<V>> {
                         .is_some()
                     )
             )
-            .unwrap_or(false)
     }
     
     fn put(&mut self, space: &[u8], key: &[u8], value: V) {
@@ -181,11 +180,11 @@ impl<V: Clone> StorageIO<V> for StorageOverlay<StorageKey, Option<V>> {
         self.cache.insert(key.to_vec(), new_cache);
     }
     
-    fn peek(&self, space: &[u8], key: &[u8]) -> bool {
+    fn cached(&self, space: &[u8], key: &[u8]) -> bool {
         if space != &self.space { return false; }
         self.changes
             .get(key)
-            .map(|x| true)
+            .map(|_| true)
             .or(
                 self.cache
                     .get(key)

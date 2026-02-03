@@ -55,7 +55,7 @@ impl_downcast!(sync StorageApi);
 /// `space` define specific workspace for same `V`.
 /// `init` is another data source
 pub trait StorageIO<V> {
-    fn contains(&self, space: &[u8], key: &[u8]) -> bool;
+    fn contains(&self, space: &[u8], key: &[u8]) -> Option<bool>;
     fn put(&mut self, space: &[u8], key: &[u8], value: V);
     fn get<F>(&mut self, space: &[u8], key: &[u8], init: Option<F>) -> Option<Option<V>> where F: Fn(&[u8]) -> Option<V>;
     fn get_change(&self, space: &[u8], key: &[u8]) -> Option<Option<V>>;
@@ -66,7 +66,7 @@ pub trait StorageIO<V> {
         F: FnOnce() -> Option<V>,
         M: FnOnce(&mut QT::Query) -> Result<R, E>;
     fn cache(&mut self, space: &[u8], key: &[u8], value: Option<V>);
-    fn peek(&self, space: &[u8], key: &[u8]) -> bool;
+    fn cached(&self, space: &[u8], key: &[u8]) -> bool;
 }
 
 /// Trait for value transfer.

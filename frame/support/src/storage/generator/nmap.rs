@@ -122,11 +122,7 @@ where
 	fn contains_key<KArg: EncodeLikeTuple<K::KArg> + TupleToEncodedIter>(key: KArg) -> bool {
 		let final_key = Self::storage_n_map_final_key::<K, _>(key);
 		#[cfg(feature = "std")]
-		if sp_io::mut_typed_cache(|_| ()).is_none() {
-			unhashed::exists(&final_key)
-		} else {
-			unhashed::get_cache(&final_key, |_| { Option::<V>::None }).is_some()
-		}
+		{ unhashed::contains_key_cache::<V>(&final_key) }
 		#[cfg(not(feature = "std"))]
 		unhashed::exists(&final_key)
 	}

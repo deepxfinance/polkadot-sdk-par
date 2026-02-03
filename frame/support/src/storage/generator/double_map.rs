@@ -128,11 +128,7 @@ where
 	{
 		let key = Self::storage_double_map_final_key(k1, k2);
 		#[cfg(feature = "std")]
-		if sp_io::mut_typed_cache(|_| ()).is_none() {
-			unhashed::exists(&key)
-		} else {
-			unhashed::get_cache(&key, |_| { Option::<V>::None }).is_some()
-		}
+		{ unhashed::contains_key_cache::<V>(&key) }
 		#[cfg(not(feature = "std"))]
 		unhashed::exists(&key)
 	}

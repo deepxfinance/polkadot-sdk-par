@@ -261,11 +261,7 @@ impl<K: FullEncode, V: FullCodec + TStorage, G: StorageMap<K, V>> storage::Stora
 	fn contains_key<KeyArg: EncodeLike<K>>(key: KeyArg) -> bool {
 		let key = Self::storage_map_final_key(key);
 		#[cfg(feature = "std")]
-		if sp_io::mut_typed_cache(|_| ()).is_none() {
-			unhashed::exists(key.as_ref())
-		} else {
-			unhashed::get_cache(key.as_ref(), |_| { Option::<V>::None }).is_some()
-		}
+		{ unhashed::contains_key_cache::<V>(&key) }
 		#[cfg(not(feature = "std"))]
 		unhashed::exists(key.as_ref())
 	}
