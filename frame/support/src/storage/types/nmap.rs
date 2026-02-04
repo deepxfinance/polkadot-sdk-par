@@ -307,6 +307,15 @@ where
 		<Self as crate::storage::StorageNMap<Key, Value>>::try_mutate(key, f)
 	}
 
+	/// Mutate the value by reference under the given keys when the closure returns `Ok`.
+	pub fn try_mutate_ref<KArg, R, E, F>(key: KArg, f: F) -> Result<R, E>
+	where
+		KArg: EncodeLikeTuple<Key::KArg> + TupleToEncodedIter,
+		F: FnOnce(&mut QueryKind::Query) -> Result<R, E>,
+	{
+		<Self as crate::storage::StorageNMap<Key, Value>>::try_mutate_ref(key, f)
+	}
+
 	/// Mutate the value under the given keys. Deletes the item if mutated to a `None`.
 	pub fn mutate_exists<KArg, R, F>(key: KArg, f: F) -> R
 	where

@@ -138,17 +138,7 @@ impl<T: FullCodec + TStorage, G: StorageValue<T>> storage::StorageValue<T> for G
 	}
 
 	fn mutate_ref<R, F: FnOnce(&mut Self::Query) -> R>(f: F) -> R {
-		#[cfg(feature = "std")]
-		{
-			unhashed::mutate_cache::<G, T, _, _, _, _>(
-				&Self::storage_value_final_key(),
-				|| { None::<T> },
-				|v| Ok::<R, Never>(f(v)),
-			)
-			.expect("`Never` can not be constructed; qed")
-		}
-		#[cfg(not(feature = "std"))]
-		Self::try_mutate(|v| Ok::<R, Never>(f(v))).expect("`Never` can not be constructed; qed")
+		Self::try_mutate_ref(|v| Ok::<R, Never>(f(v))).expect("`Never` can not be constructed; qed")
 	}
 
 	fn try_mutate<R, E, F: FnOnce(&mut G::Query) -> Result<R, E>>(f: F) -> Result<R, E> {
@@ -167,6 +157,19 @@ impl<T: FullCodec + TStorage, G: StorageValue<T>> storage::StorageValue<T> for G
 			}
 		}
 		ret
+	}
+
+	fn try_mutate_ref<R, E, F: FnOnce(&mut G::Query) -> Result<R, E>>(f: F) -> Result<R, E> {
+		#[cfg(feature = "std")]
+		{
+			unhashed::mutate_cache::<G, T, _, _, _, _>(
+				&Self::storage_value_final_key(),
+				|| { None::<T> },
+				|v| f(v),
+			)
+		}
+		#[cfg(not(feature = "std"))]
+		Self::try_mutate(|v| f(v))
 	}
 
 	fn mutate_exists<R, F>(f: F) -> R

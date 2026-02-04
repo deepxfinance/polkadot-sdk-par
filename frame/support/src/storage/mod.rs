@@ -131,6 +131,9 @@ pub trait StorageValue<T: FullCodec + TStorage> {
 	/// Mutate the value if closure returns `Ok`
 	fn try_mutate<R, E, F: FnOnce(&mut Self::Query) -> Result<R, E>>(f: F) -> Result<R, E>;
 
+	/// Mutate the value by reference if closure returns `Ok`
+	fn try_mutate_ref<R, E, F: FnOnce(&mut Self::Query) -> Result<R, E>>(f: F) -> Result<R, E>;
+
 	/// Mutate the value. Deletes the item if mutated to a `None`.
 	fn mutate_exists<R, F: FnOnce(&mut Option<T>) -> R>(f: F) -> R;
 
@@ -233,6 +236,12 @@ pub trait StorageMap<K: FullEncode, V: FullCodec> {
 
 	/// Mutate the item, only if an `Ok` value is returned.
 	fn try_mutate<KeyArg: EncodeLike<K>, R, E, F: FnOnce(&mut Self::Query) -> Result<R, E>>(
+		key: KeyArg,
+		f: F,
+	) -> Result<R, E>;
+
+	/// Mutate the item by reference, only if an `Ok` value is returned.
+	fn try_mutate_ref<KeyArg: EncodeLike<K>, R, E, F: FnOnce(&mut Self::Query) -> Result<R, E>>(
 		key: KeyArg,
 		f: F,
 	) -> Result<R, E>;
@@ -654,6 +663,13 @@ pub trait StorageDoubleMap<K1: FullEncode, K2: FullEncode, V: FullCodec> {
 		KArg2: EncodeLike<K2>,
 		F: FnOnce(&mut Self::Query) -> Result<R, E>;
 
+	/// Mutate the value by reference under the given keys when the closure returns `Ok`.
+	fn try_mutate_ref<KArg1, KArg2, R, E, F>(k1: KArg1, k2: KArg2, f: F) -> Result<R, E>
+	where
+		KArg1: EncodeLike<K1>,
+		KArg2: EncodeLike<K2>,
+		F: FnOnce(&mut Self::Query) -> Result<R, E>;
+
 	/// Mutate the value under the given keys. Deletes the item if mutated to a `None`.
 	fn mutate_exists<KArg1, KArg2, R, F>(k1: KArg1, k2: KArg2, f: F) -> R
 	where
@@ -859,6 +875,12 @@ pub trait StorageNMap<K: KeyGenerator, V: FullCodec> {
 
 	/// Mutate the item, only if an `Ok` value is returned.
 	fn try_mutate<KArg, R, E, F>(key: KArg, f: F) -> Result<R, E>
+	where
+		KArg: EncodeLikeTuple<K::KArg> + TupleToEncodedIter,
+		F: FnOnce(&mut Self::Query) -> Result<R, E>;
+
+	/// Mutate the item by reference, only if an `Ok` value is returned.
+	fn try_mutate_ref<KArg, R, E, F>(key: KArg, f: F) -> Result<R, E>
 	where
 		KArg: EncodeLikeTuple<K::KArg> + TupleToEncodedIter,
 		F: FnOnce(&mut Self::Query) -> Result<R, E>;

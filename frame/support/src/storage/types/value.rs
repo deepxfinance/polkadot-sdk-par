@@ -172,6 +172,13 @@ where
 		<Self as crate::storage::StorageValue<Value>>::try_mutate(f)
 	}
 
+	/// Mutate the value by reference if closure returns `Ok`
+	pub fn try_mutate_ref<R, E, F: FnOnce(&mut QueryKind::Query) -> Result<R, E>>(
+		f: F,
+	) -> Result<R, E> {
+		<Self as crate::storage::StorageValue<Value>>::try_mutate_ref(f)
+	}
+
 	/// Mutate the value. Deletes the item if mutated to a `None`.
 	pub fn mutate_exists<R, F: FnOnce(&mut Option<Value>) -> R>(f: F) -> R {
 		<Self as crate::storage::StorageValue<Value>>::mutate_exists(f)

@@ -332,18 +332,7 @@ where
 		KArg2: EncodeLike<K2>,
 		F: FnOnce(&mut Self::Query) -> R
 	{
-		#[cfg(feature = "std")]
-		{
-			let final_key = Self::storage_double_map_final_key(k1, k2);
-			unhashed::mutate_cache::<G, V, _, _, _, _>(
-				&final_key,
-				|| { None::<V> },
-				|v| Ok::<R, Never>(f(v)),
-			)
-				.expect("`Never` can not be constructed; qed")
-		}
-		#[cfg(not(feature = "std"))]
-		Self::try_mutate(k1, k2, |v| Ok::<R, Never>(f(v)))
+		Self::try_mutate_ref(k1, k2, |v| Ok::<R, Never>(f(v)))
 			.expect("`Never` can not be constructed; qed")
 	}
 
@@ -407,6 +396,21 @@ where
 			}
 		}
 		ret
+	}
+
+	fn try_mutate_ref<KArg1, KArg2, R, E, F>(k1: KArg1, k2: KArg2, f: F) -> Result<R, E>
+	where
+		KArg1: EncodeLike<K1>,
+		KArg2: EncodeLike<K2>,
+		F: FnOnce(&mut Self::Query) -> Result<R, E>,
+	{
+		#[cfg(feature = "std")]
+		{
+			let final_key = Self::storage_double_map_final_key(k1, k2);
+			unhashed::mutate_cache::<G, V, _, _, _, _>(&final_key, || { None::<V> }, |v| f(v))
+		}
+		#[cfg(not(feature = "std"))]
+		Self::try_mutate(k1, k2, |v| f(v))
 	}
 
 	fn try_mutate_exists<KArg1, KArg2, R, E, F>(k1: KArg1, k2: KArg2, f: F) -> Result<R, E>

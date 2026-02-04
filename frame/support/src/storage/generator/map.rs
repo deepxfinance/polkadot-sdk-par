@@ -325,18 +325,7 @@ impl<K: FullEncode, V: FullCodec + TStorage, G: StorageMap<K, V>> storage::Stora
 	}
 
 	fn mutate_ref<KeyArg: EncodeLike<K>, R, F: FnOnce(&mut Self::Query) -> R>(key: KeyArg, f: F) -> R {
-		#[cfg(feature = "std")]
-		{
-			let final_key = Self::storage_map_final_key(key);
-			unhashed::mutate_cache::<G, V, _, _, _, _>(
-				&final_key,
-				|| { None::<V> },
-				|v| Ok::<R, Never>(f(v)),
-			)
-				.expect("`Never` can not be constructed; qed")
-		}
-		#[cfg(not(feature = "std"))]
-		Self::try_mutate(key, |v| Ok::<R, Never>(f(v)))
+		Self::try_mutate_ref(key, |v| Ok::<R, Never>(f(v)))
 			.expect("`Never` can not be constructed; qed")
 	}
 
@@ -391,6 +380,19 @@ impl<K: FullEncode, V: FullCodec + TStorage, G: StorageMap<K, V>> storage::Stora
 			}
 		}
 		ret
+	}
+
+	fn try_mutate_ref<KeyArg: EncodeLike<K>, R, E, F: FnOnce(&mut Self::Query) -> Result<R, E>>(
+		key: KeyArg,
+		f: F,
+	) -> Result<R, E> {
+		#[cfg(feature = "std")]
+		{
+			let final_key = Self::storage_map_final_key(key);
+			unhashed::mutate_cache::<G, V, _, _, _, _>(&final_key, || { None::<V> }, |v| f(v))
+		}
+		#[cfg(not(feature = "std"))]
+		Self::try_mutate(key, |v| f(v))
 	}
 
 	fn try_mutate_exists<KeyArg: EncodeLike<K>, R, E, F: FnOnce(&mut Option<V>) -> Result<R, E>>(

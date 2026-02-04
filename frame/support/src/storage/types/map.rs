@@ -224,6 +224,15 @@ where
 		<Self as crate::storage::StorageMap<Key, Value>>::try_mutate(key, f)
 	}
 
+	/// Mutate the item by reference, only if an `Ok` value is returned.
+	pub fn try_mutate_ref<KeyArg, R, E, F>(key: KeyArg, f: F) -> Result<R, E>
+	where
+		KeyArg: EncodeLike<Key>,
+		F: FnOnce(&mut QueryKind::Query) -> Result<R, E>,
+	{
+		<Self as crate::storage::StorageMap<Key, Value>>::try_mutate_ref(key, f)
+	}
+
 	/// Mutate the value under a key. Deletes the item if mutated to a `None`.
 	pub fn mutate_exists<KeyArg: EncodeLike<Key>, R, F: FnOnce(&mut Option<Value>) -> R>(
 		key: KeyArg,

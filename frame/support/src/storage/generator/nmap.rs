@@ -300,19 +300,7 @@ where
 		KArg: EncodeLikeTuple<K::KArg> + TupleToEncodedIter,
 		F: FnOnce(&mut Self::Query) -> R
 	{
-
-		#[cfg(feature = "std")]
-		{
-			let final_key = Self::storage_n_map_final_key::<K, _>(key);
-			unhashed::mutate_cache::<G, V, _, _, _, _>(
-				&final_key,
-				|| { None::<V> },
-				|v| Ok::<R, Never>(f(v)),
-			)
-				.expect("`Never` can not be constructed; qed")
-		}
-		#[cfg(not(feature = "std"))]
-		Self::try_mutate(key, |v| Ok::<R, Never>(f(v)))
+		Self::try_mutate_ref(key, |v| Ok::<R, Never>(f(v)))
 			.expect("`Never` can not be constructed; qed")
 	}
 
@@ -348,6 +336,24 @@ where
 			}
 		}
 		ret
+	}
+
+	fn try_mutate_ref<KArg, R, E, F>(key: KArg, f: F) -> Result<R, E>
+	where
+		KArg: EncodeLikeTuple<K::KArg> + TupleToEncodedIter,
+		F: FnOnce(&mut Self::Query) -> Result<R, E>,
+	{
+		#[cfg(feature = "std")]
+		{
+			let final_key = Self::storage_n_map_final_key::<K, _>(key);
+			unhashed::mutate_cache::<G, V, _, _, _, _>(
+				&final_key,
+				|| { None::<V> },
+				|v| f(v),
+			)
+		}
+		#[cfg(not(feature = "std"))]
+		Self::try_mutate(key, |v| f(v))
 	}
 
 	fn mutate_exists<KArg, R, F>(key: KArg, f: F) -> R
