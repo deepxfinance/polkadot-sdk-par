@@ -44,7 +44,7 @@ use codec::{Decode, Encode, EncodeLike, FullCodec};
 #[cfg(not(feature = "std"))]
 use sp_std::prelude::*;
 use typed_cache::{OptionQT, QueryTransfer};
-use crate::storage::TypedAppend;
+use crate::storage::{TypedAppend, RcT};
 
 /// Generator for `StorageNMap` used by `decl_storage` and storage types.
 ///
@@ -139,6 +139,13 @@ where
 		G::from_optional_value_to_query(unhashed::get(&Self::storage_n_map_final_key::<K, _>(key)))
 	}
 
+	fn get_ref<KArg: EncodeLikeTuple<K::KArg> + TupleToEncodedIter>(key: KArg) -> RcT<Option<V>> {
+		unhashed::get_cache_ref(
+			&Self::storage_n_map_final_key::<K, _>(key),
+			#[cfg(feature = "std")] |_| { Option::<V>::None }
+		)
+	}
+
 	fn try_get<KArg: EncodeLikeTuple<K::KArg> + TupleToEncodedIter>(key: KArg) -> Result<V, ()> {
 		#[cfg(feature = "std")]
 		{
@@ -162,7 +169,7 @@ where
 	fn take<KArg: EncodeLikeTuple<K::KArg> + TupleToEncodedIter>(key: KArg) -> Self::Query {
 		let final_key = Self::storage_n_map_final_key::<K, _>(key);
 		#[cfg(feature = "std")]
-		let value = unhashed::take_cache(&final_key, |_| { Option::<V>::None });
+		let value = unhashed::take_cache(&final_key);
 		#[cfg(not(feature = "std"))]
 		let value = unhashed::take(&final_key);
 		G::from_optional_value_to_query(value)
@@ -472,7 +479,7 @@ where
 		};
 		#[cfg(feature = "std")]
 		{
-			unhashed::take_cache(&old_key, |_| { Option::<V>::None }).map(|value| {
+			unhashed::take_cache::<V>(&old_key).map(|value| {
 				unhashed::put_cache(Self::storage_n_map_final_key::<K, _>(key).as_ref(), value.clone());
 				value
 			})

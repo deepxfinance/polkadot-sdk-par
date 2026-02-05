@@ -6,19 +6,12 @@ use sp_std::sync::Arc;
 #[cfg(feature = "std")]
 use sp_std::sync::RwLock;
 use sp_std::any::Any;
-use crate::{QueryTransfer, StorageIO, StorageKey};
+use crate::{QueryTransfer, RcT, StorageIO, StorageKey};
 #[cfg(feature = "std")]
 use crate::StorageApi;
 #[cfg(feature = "std")]
-use crate::changeset::{Cache, StorageOverlay};
+use crate::changeset::StorageOverlay;
 use crate::changeset::ExecutionMode;
-
-#[cfg(all(feature = "std", feature = "dev-time"))]
-lazy_static::lazy_static!{
-    pub static ref GET: std::sync::Mutex<std::collections::HashMap<Vec<u8>, Vec<(std::time::Duration, std::time::Duration)>>> = std::sync::Mutex::new(std::collections::HashMap::new());
-    pub static ref PUT: std::sync::Mutex<std::collections::HashMap<Vec<u8>, Vec<(std::time::Duration, std::time::Duration)>>> = std::sync::Mutex::new(std::collections::HashMap::new());
-    pub static ref ENCODE: std::sync::Mutex<std::collections::HashMap<Vec<u8>, Vec<std::time::Duration>>> = std::sync::Mutex::new(std::collections::HashMap::new());
-}
 
 #[cfg(feature = "std")]
 pub type AnyStorage = Box<dyn StorageApi>;
@@ -53,7 +46,7 @@ impl OverlayCache {
         match self.inner.entry(space.to_vec()) {
             std::collections::hash_map::Entry::Occupied(entry) => { return f(&mut entry.into_mut()) },
             std::collections::hash_map::Entry::Vacant(e) => {
-                e.insert(Box::new(StorageOverlay::<Vec<u8>, Option<V>>::new(space, self.client_transactions, self.runtime_transactions)));
+                e.insert(Box::new(StorageOverlay::<Vec<u8>, V>::new(space, self.client_transactions, self.runtime_transactions)));
             }
         }
         f(&mut self.inner.get_mut(space).unwrap())
@@ -79,53 +72,26 @@ impl OverlayCache {
 #[cfg(feature = "std")]
 impl OverlayCache {
     pub fn put<V: Clone + FullCodec + 'static>(&mut self, space: &[u8], key: &[u8], value: V) {
-        #[cfg(all(feature = "std", feature = "dev-time"))]
-        let start = std::time::Instant::now();
         let f = |storage: &mut AnyStorage| {
-            let step1 = storage.downcast_mut::<StorageOverlay<Vec<u8>, Option<V>>>();
-            #[cfg(all(feature = "std", feature = "dev-time"))]
-            let time1 = start.elapsed();
-            step1.map(|overlay| overlay.put(space, key, value));
-            #[cfg(all(feature = "std", feature = "dev-time"))]
-            {
-                let time = start.elapsed();
-                PUT.lock().unwrap().entry(space.to_vec()).or_default().push((time1, time));
-            }
+            storage.downcast_mut::<StorageOverlay<Vec<u8>, V>>()
+                .map(|overlay| overlay.put(space, key, value));
         };
         self.handle_mut_or_default::<V, _, _>(space, f);
     }
 
     pub fn try_update_raw(&mut self, space: &[u8], key: &[u8], data: Vec<u8>) {
-        #[cfg(all(feature = "std", feature = "dev-time"))]
-        let start = std::time::Instant::now();
-        let f = |storage: &mut AnyStorage| {
-            storage.try_update_raw(space, key, data);
-            #[cfg(all(feature = "std", feature = "dev-time"))]
-            {
-                let time = start.elapsed();
-                PUT.lock().unwrap().entry(space.to_vec()).or_default().push((Default::default(), time));
-            }
-        };
+        let f = |storage: &mut AnyStorage| { storage.try_update_raw(space, key, data); };
         self.handle_mut(space, f);
     }
 
     pub fn try_kill(&mut self, space: &[u8], key: &[u8]) {
-        #[cfg(all(feature = "std", feature = "dev-time"))]
-        let start = std::time::Instant::now();
-        let f = |storage: &mut AnyStorage| {
-            storage.try_kill(space, key);
-            #[cfg(all(feature = "std", feature = "dev-time"))]
-            {
-                let time = start.elapsed();
-                PUT.lock().unwrap().entry(space.to_vec()).or_default().push((Default::default(), time));
-            }
-        };
+        let f = |storage: &mut AnyStorage| { storage.try_kill(space, key); };
         self.handle_mut(space, f);
     }
 
     pub fn contains_key<V: Clone + FullCodec + 'static>(&self, space: &[u8], key: &[u8]) -> Option<bool> {
         let f = |storage: &AnyStorage| {
-            storage.downcast_ref::<StorageOverlay<Vec<u8>, Option<V>>>()
+            storage.downcast_ref::<StorageOverlay<Vec<u8>, V>>()
                 .map(|overlay| overlay.contains(space, key))
                 .unwrap_or(None)
         };
@@ -136,90 +102,66 @@ impl OverlayCache {
     where
         F: Fn(&[u8]) -> Option<V>
     {
-        #[cfg(all(feature = "std", feature = "dev-time"))]
-        let start = std::time::Instant::now();
         let f = |storage: &mut AnyStorage| {
-            let step1 = storage.downcast_mut::<StorageOverlay<Vec<u8>, Option<V>>>();
-            #[cfg(all(feature = "std", feature = "dev-time"))]
-            let time1 = start.elapsed();
-            let res = step1.map(|overlay| overlay.get(space, key, init));
-            #[cfg(all(feature = "std", feature = "dev-time"))]
-            {
-                let time = start.elapsed();
-                GET.lock().unwrap().entry(space.to_vec()).or_default().push((time1, time));
-            }
-            res
+            storage.downcast_mut::<StorageOverlay<Vec<u8>, V>>()
+                .map(|overlay| overlay.get(space, key, init))
+        };
+        self.handle_mut_or_default::<V, _, _>(space, f).unwrap_or(None)
+    }
+
+    pub fn get_ref<V: Clone + FullCodec + 'static, F>(&mut self, space: &[u8], key: &[u8], init: Option<F>) -> Option<RcT<Option<V>>>
+    where
+        F: Fn(&[u8]) -> Option<V>
+    {
+        let f = |storage: &mut AnyStorage| {
+            storage.downcast_mut::<StorageOverlay<Vec<u8>, V>>()
+                .map(|overlay| overlay.get_ref(space, key, init))
         };
         self.handle_mut_or_default::<V, _, _>(space, f).unwrap_or(None)
     }
 
     pub fn get_change_encode(&self, space: &[u8], key: &[u8]) -> Option<Option<Vec<u8>>> {
-        #[cfg(all(feature = "std", feature = "dev-time"))]
-        let start = std::time::Instant::now();
-        let f = |storage: &AnyStorage| {
-            let res = storage.get_change_encode(key);
-            #[cfg(all(feature = "std", feature = "dev-time"))]
-            {
-                let time = start.elapsed();
-                GET.lock().unwrap().entry(space.to_vec()).or_default().push((Default::default(), time));
-            }
-            res
-        };
+        let f = |storage: &AnyStorage| { storage.get_change_encode(key) };
         self.handle_ref::<_, _>(space, f)?
     }
 
     pub fn get_change<V: Clone + FullCodec + 'static>(&self, space: &[u8], key: &[u8]) -> Option<Option<V>> {
-        #[cfg(all(feature = "std", feature = "dev-time"))]
-        let start = std::time::Instant::now();
         let f = |storage: &AnyStorage| {
-            let step1 = storage.downcast_ref::<StorageOverlay<Vec<u8>, Option<V>>>();
-            #[cfg(all(feature = "std", feature = "dev-time"))]
-            let time1 = start.elapsed();
-            let res = step1.map(|overlay| overlay.get_change(space, key));
-            #[cfg(all(feature = "std", feature = "dev-time"))]
-            {
-                let time = start.elapsed();
-                GET.lock().unwrap().entry(space.to_vec()).or_default().push((time1, time));
-            }
-            res
+            storage.downcast_ref::<StorageOverlay<Vec<u8>, V>>()
+                .map(|overlay| overlay.get_change(space, key))
         };
         self.handle_ref::<_, _>(space, f)?.unwrap_or(None)
     }
 
-    pub fn take<V: Clone + FullCodec + 'static, F>(&mut self, space: &[u8], key: &[u8], init: Option<F>) -> Option<Option<V>>
-    where
-        F: Fn(&[u8]) -> Option<V>
-    {
-        #[cfg(all(feature = "std", feature = "dev-time"))]
-        let start = std::time::Instant::now();
+    pub fn get_change_ref<V: Clone + FullCodec + 'static>(&self, space: &[u8], key: &[u8]) -> Option<RcT<Option<V>>> {
+        let f = |storage: &AnyStorage| {
+            storage.downcast_ref::<StorageOverlay<Vec<u8>, V>>()
+                .map(|overlay| overlay.get_change_ref(space, key))
+        };
+        self.handle_ref::<_, _>(space, f)?.unwrap_or(None)
+    }
+
+    pub fn take<V: Clone + FullCodec + 'static>(&mut self, space: &[u8], key: &[u8]) -> Option<Option<V>> {
         let f = |storage: &mut AnyStorage| {
-            let step1 = storage.downcast_mut::<StorageOverlay<Vec<u8>, Option<V>>>();
-            #[cfg(all(feature = "std", feature = "dev-time"))]
-            let time1 = start.elapsed();
-            let res = step1.map(|overlay| overlay.take(space, key, init));
-            #[cfg(all(feature = "std", feature = "dev-time"))]
-            {
-                let time = start.elapsed();
-                GET.lock().unwrap().entry(space.to_vec()).or_default().push((time1, time));
-            }
-            res
+            storage.downcast_mut::<StorageOverlay<Vec<u8>, V>>()
+                .map(|overlay| overlay.take(space, key))
         };
         self.handle_mut_or_default::<V, _, _>(space, f).unwrap_or(None)
     }
 
-    pub fn kill<V: Clone + FullCodec + 'static>(&mut self, space: &[u8], key: &[u8]) {
-        #[cfg(all(feature = "std", feature = "dev-time"))]
-        let start = std::time::Instant::now();
+    pub fn pop_ref<V: Clone + FullCodec + 'static>(&mut self, space: &[u8], key: &[u8]) -> Option<RcT<Option<V>>> {
         let f = |storage: &mut AnyStorage| {
-            let step1 = storage.downcast_mut::<StorageOverlay<Vec<u8>, Option<V>>>();
-            #[cfg(all(feature = "std", feature = "dev-time"))]
-            let time1 = start.elapsed();
-            step1.map(|overlay| overlay.kill(space, key));
-            #[cfg(all(feature = "std", feature = "dev-time"))]
-            {
-                let time = start.elapsed();
-                PUT.lock().unwrap().entry(space.to_vec()).or_default().push((time1, time));
-            }
+            storage.downcast_mut::<StorageOverlay<Vec<u8>, V>>()
+                .map(|overlay| overlay.pop_ref(space, key))
+                .unwrap_or(None)
+        };
+        self.handle_mut::<_, _>(space, f).unwrap_or(None)
+    }
+
+    pub fn kill<V: Clone + FullCodec + 'static>(&mut self, space: &[u8], key: &[u8]) {
+        let f = |storage: &mut AnyStorage| {
+            storage.downcast_mut::<StorageOverlay<Vec<u8>, V>>()
+                .map(|overlay| overlay.kill(space, key));
         };
         self.handle_mut_or_default::<V, _, _>(space, f);
     }
@@ -230,7 +172,7 @@ impl OverlayCache {
         M: FnOnce(&mut QT::Query) -> Result<R, E>,
     {
         let f = |storage: &mut AnyStorage| {
-            storage.downcast_mut::<StorageOverlay<Vec<u8>, Option<V>>>()
+            storage.downcast_mut::<StorageOverlay<Vec<u8>, V>>()
                 .map(|overlay| overlay.mutate::<QT, _, _, _, _>(space, key, init, mutate))
         };
         self.handle_mut_or_default::<V, _, _>(space, f).unwrap_or(None)
@@ -239,35 +181,26 @@ impl OverlayCache {
     pub fn append<V: Clone + FullCodec + 'static, F, M>(&mut self, space: &[u8], key: &[u8], init: F, mutate: M) -> bool
     where
         F: FnOnce() -> V,
-        M: FnOnce(Option<&mut V>)
+        M: FnOnce(&mut Option<V>)
     {
         let f = |storage: &mut AnyStorage| {
-            storage.downcast_mut::<StorageOverlay<Vec<u8>, Option<V>>>()
+            storage.downcast_mut::<StorageOverlay<Vec<u8>, V>>()
                 .map(|overlay| overlay.append(space, key, init, mutate))
         };
         self.handle_mut_or_default::<V, _, _>(space, f).unwrap_or(false)
     }
 
-    pub fn cache<V: Clone + FullCodec + 'static>(&mut self, space: &[u8], key: &[u8], value: Option<V>) {
-        #[cfg(all(feature = "std", feature = "dev-time"))]
-        let start = std::time::Instant::now();
+    pub fn init<V: Clone + FullCodec + 'static>(&mut self, space: &[u8], key: &[u8], value: Option<V>) {
         let f = |storage: &mut AnyStorage| {
-            let step1 = storage.downcast_mut::<StorageOverlay<Vec<u8>, Option<V>>>();
-            #[cfg(all(feature = "std", feature = "dev-time"))]
-            let time1 = start.elapsed();
-            step1.map(|overlay| overlay.cache(space, key, value));
-            #[cfg(all(feature = "std", feature = "dev-time"))]
-            {
-                let time = start.elapsed();
-                PUT.lock().unwrap().entry(space.to_vec()).or_default().push((time1, time));
-            }
+            storage.downcast_mut::<StorageOverlay<Vec<u8>, V>>()
+                .map(|overlay| overlay.init(space, key, value));
         };
         self.handle_mut_or_default::<V, _, _>(space, f);
     }
 
     pub fn cached<V: Clone + FullCodec + 'static>(&self, space: &[u8], key: &[u8]) -> bool {
         let f = |storage: &AnyStorage| {
-            storage.downcast_ref::<StorageOverlay<Vec<u8>, Option<V>>>()
+            storage.downcast_ref::<StorageOverlay<Vec<u8>, V>>()
                 .map(|overlay| overlay.cached(space, key))
                 .unwrap_or(false)
         };
@@ -400,6 +333,7 @@ pub mod test {
     #[test]
     fn test_multi_threads_write() {
         let mut cache1 = OverlayCache::default();
+        cache1.init(b"u128", b"thread1", Some(128u128));
         let mut cache2 = cache1.copy_data();
 
         let mut cache1 = std::thread::spawn(move || {
@@ -412,9 +346,12 @@ pub mod test {
 
         let mut none_f_u32 = Some(|_: &_| { None });
         none_f_u32.take();
+        let mut none_f_u128 = Some(|_: &_| { Some(1u128) });
+        none_f_u128.take();
         let mut cache2 = std::thread::spawn(move || {
             assert_eq!(cache2.get(b"u32", b"thread1", none_f_u32), Option::<Option<u32>>::None);
             cache2.put(b"u64", b"thread2", 200u64);
+            assert_eq!(cache2.get(b"u128", b"thread1", none_f_u128), Some(Some(128u128)));
             cache2
         }).join().unwrap();
 
@@ -446,7 +383,7 @@ pub mod test {
     #[test]
     fn test_copy_data() {
         let mut cache = OverlayCache::default();
-        cache.cache(b"u32", b"11", Some(0u32));
+        cache.init(b"u32", b"11", Some(0u32));
         cache.start_transaction();
         cache.put(b"u32", b"11", 11u32);
 
@@ -472,9 +409,49 @@ pub mod test {
             struct A {
                 v: u32,
             }
-            assert_eq!(cache.get_change(b"u32", b"11"), Some(Some(A { v: 1 })));
+            assert_eq!(cache.get_change::<A>(b"u32", b"11"), None);
         }
         assert_eq!(cache.get_change(b"u32", b"11"), Some(Some(A { v: 1 })));
+    }
+
+    #[test]
+    fn get_cache_change_ref() {
+        #[derive(Clone, Encode, PartialEq, Eq, Decode, Debug)]
+        struct A {
+            v: u32,
+        }
+        let mut cache = OverlayCache::default();
+        cache.init::<A>(b"not_change", b"11", None);
+        cache.put(b"u32", b"11", A { v: 1 });
+
+        {
+            #[derive(Clone, Encode, PartialEq, Eq, Decode, Debug)]
+            struct A {
+                v: u32,
+            }
+            assert_eq!(cache.get_change_ref::<A>(b"u32", b"11").map(|r| r.clone_inner()), None);
+        }
+        assert_eq!(cache.get_change_ref(b"u32", b"11").unwrap().clone_inner(), Some(A { v: 1 }));
+
+        let mut value_ref = cache.get_change_ref::<A>(b"u32", b"11").unwrap();
+        value_ref.mutate(|a| a.as_mut().map(|v| v.v += 1));
+        assert_eq!(cache.get_change_ref(b"u32", b"11").unwrap().clone_inner(), Some(A { v: 2 }));
+
+        cache.init(b"another", b"11", Some(A { v: 10 }));
+        let mut value_ref = cache.get_ref::<A, _>(b"another", b"11", Some(|_: &_| { Some(A { v: 10 }) })).unwrap();
+        assert_eq!(value_ref.muted(), false);
+        value_ref.mutate(|a| a.as_mut().map(|v| v.v += 1));
+        assert_eq!(value_ref.muted(), true);
+        assert_eq!(cache.get_change_ref(b"another", b"11").unwrap().clone_inner(), Some(A { v: 11 }));
+        assert_eq!(cache.get_change_ref::<A>(b"another", b"11").unwrap().muted(), true);
+        assert_eq!(cache.get_change_ref::<A>(b"another", b"11").unwrap().into_inner(), Err(3));
+        let a = value_ref.muted();
+        let popped_ref = cache.pop_ref::<A>(b"another", b"11");
+        assert_eq!(popped_ref.as_ref().map(|c| c.clone_ref()).unwrap().into_inner(), Err(3));
+        drop(value_ref);
+        assert_eq!(popped_ref.unwrap().into_inner(), Ok(Some(Some(A { v: 11 }))));
+
+        assert_eq!(cache.drain_commited().len(), 1);
     }
 
     #[test]

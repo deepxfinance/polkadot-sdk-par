@@ -33,7 +33,7 @@ use codec::{Decode, Encode, EncodeLike, FullCodec, MaxEncodedLen};
 use sp_runtime::SaturatedConversion;
 use sp_std::prelude::*;
 use typed_cache::QueryTransfer;
-use crate::storage::TypedAppend;
+use crate::storage::{TypedAppend, RcT};
 
 /// A type that allow to store values for an arbitrary number of keys in the form of
 /// `(Key<Hasher1, key1>, Key<Hasher2, key2>, ..., Key<HasherN, keyN>)`.
@@ -153,6 +153,13 @@ where
 		key: KArg,
 	) -> QueryKind::Query {
 		<Self as crate::storage::StorageNMap<Key, Value>>::get(key)
+	}
+
+	/// Load the value associated with the given key from the map.
+	pub fn get_ref<KArg: EncodeLikeTuple<Key::KArg> + TupleToEncodedIter>(
+		key: KArg,
+	) -> RcT<Option<Value>> {
+		<Self as crate::storage::StorageNMap<Key, Value>>::get_ref(key)
 	}
 
 	/// Try to get the value for the given key from the map.

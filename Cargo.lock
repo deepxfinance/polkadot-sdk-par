@@ -1565,12 +1565,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "critical-section"
-version = "1.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "790eea4361631c5e7d22598ecd5723ff611904e3344ce8720784c93e3d83d40b"
-
-[[package]]
 name = "crossbeam-deque"
 version = "0.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5930,10 +5924,6 @@ name = "once_cell"
 version = "1.21.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "42f5e15c9953c5e4ccceeb2e7382a716482c34515315f7b03532b8b4e8393d2d"
-dependencies = [
- "critical-section",
- "portable-atomic 1.11.1",
-]
 
 [[package]]
 name = "once_cell_polyfill"
@@ -12935,7 +12925,6 @@ dependencies = [
  "env_logger 0.11.8",
  "lazy_static",
  "log",
- "once_cell",
  "parity-scale-codec",
  "smallvec",
  "sp-std",

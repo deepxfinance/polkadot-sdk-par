@@ -31,7 +31,7 @@ use codec::{Decode, Encode, EncodeLike, FullCodec, MaxEncodedLen};
 use sp_arithmetic::traits::SaturatedConversion;
 use sp_std::prelude::*;
 use typed_cache::QueryTransfer;
-use crate::storage::TypedAppend;
+use crate::storage::{TypedAppend, RcT};
 
 /// A type that allow to store value for given key. Allowing to insert/remove/iterate on values.
 ///
@@ -164,6 +164,11 @@ where
 	/// Load the value associated with the given key from the map.
 	pub fn get<KeyArg: EncodeLike<Key>>(key: KeyArg) -> QueryKind::Query {
 		<Self as crate::storage::StorageMap<Key, Value>>::get(key)
+	}
+
+	/// Load the value reference associated with the given key from the map.
+	pub fn get_ref<KeyArg: EncodeLike<Key>>(key: KeyArg) -> RcT<Option<Value>> {
+		<Self as crate::storage::StorageMap<Key, Value>>::get_ref(key)
 	}
 
 	/// Try to get the value for the given key from the map.

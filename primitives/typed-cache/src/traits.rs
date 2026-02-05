@@ -3,7 +3,7 @@ use downcast_rs::{impl_downcast, DowncastSync};
 use sp_std::collections::btree_map::BTreeMap;
 use sp_std::vec::Vec;
 use crate::changeset::ExecutionMode;
-use crate::StorageKey;
+use crate::{RcT, StorageKey};
 
 #[cfg(not(feature = "std"))]
 /// Default no requirements for `no_std`
@@ -59,8 +59,11 @@ pub trait StorageIO<V> {
     fn put(&mut self, space: &[u8], key: &[u8], value: V);
     fn get<F>(&mut self, space: &[u8], key: &[u8], init: Option<F>) -> Option<Option<V>> where F: Fn(&[u8]) -> Option<V>;
     fn get_change(&self, space: &[u8], key: &[u8]) -> Option<Option<V>>;
-    fn take<F>(&mut self, space: &[u8], key: &[u8], init: Option<F>) -> Option<Option<V>> where F: Fn(&[u8]) -> Option<V>;
+    fn take(&mut self, space: &[u8], key: &[u8]) -> Option<Option<V>>;
     fn kill(&mut self, space: &[u8], key: &[u8]);
+    fn get_ref<F>(&mut self, space: &[u8], key: &[u8], init: Option<F>) -> Option<RcT<Option<V>>> where F: Fn(&[u8]) -> Option<V>;
+    fn get_change_ref(&self, space: &[u8], key: &[u8]) -> Option<RcT<Option<V>>>;
+    fn pop_ref(&mut self, space: &[u8], key: &[u8]) -> Option<RcT<Option<V>>>;
     fn mutate<QT: QueryTransfer<V>, F, R, E, M>(&mut self, space: &[u8], key: &[u8], init: Option<F>, mutate: M) -> Option<Result<R, E>>
     where
         F: FnOnce() -> Option<V>,
@@ -68,8 +71,8 @@ pub trait StorageIO<V> {
     fn append<F, M>(&mut self, space: &[u8], key: &[u8], init: F, mutate: M) -> bool
     where
         F: FnOnce() -> V,
-        M: FnOnce(Option<&mut V>);
-    fn cache(&mut self, space: &[u8], key: &[u8], value: Option<V>);
+        M: FnOnce(&mut Option<V>);
+    fn init(&mut self, space: &[u8], key: &[u8], value: Option<V>) -> bool;
     fn cached(&self, space: &[u8], key: &[u8]) -> bool;
 }
 

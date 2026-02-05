@@ -30,7 +30,7 @@ use codec::{Decode, Encode, EncodeLike, FullCodec, MaxEncodedLen};
 use sp_arithmetic::traits::SaturatedConversion;
 use sp_std::prelude::*;
 use typed_cache::QueryTransfer;
-use crate::storage::TypedAppend;
+use crate::storage::{TypedAppend, RcT};
 
 /// A type that allow to store a value.
 ///
@@ -102,6 +102,11 @@ where
 	/// Load the value from the provided storage instance.
 	pub fn get() -> QueryKind::Query {
 		<Self as crate::storage::StorageValue<Value>>::get()
+	}
+
+	/// Load the value reference from the provided storage instance.
+	pub fn get_ref() -> RcT<Option<Value>> {
+		<Self as crate::storage::StorageValue<Value>>::get_ref()
 	}
 
 	/// Try to get the underlying value from the provided storage instance; `Ok` if it exists,

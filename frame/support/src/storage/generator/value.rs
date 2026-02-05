@@ -22,7 +22,7 @@ use crate::{
 use codec::{Decode, Encode, EncodeLike, FullCodec};
 use scale_info::prelude::string::String;
 use typed_cache::{OptionQT, QueryTransfer};
-use crate::storage::TypedAppend;
+use crate::storage::{TypedAppend, RcT};
 
 /// Generator for `StorageValue` used by `decl_storage`.
 ///
@@ -67,6 +67,10 @@ impl<T: FullCodec + TStorage, G: StorageValue<T>> storage::StorageValue<T> for G
 		#[cfg(not(feature = "std"))]
 		let value = unhashed::get(&Self::storage_value_final_key());
 		G::from_optional_value_to_query(value)
+	}
+
+	fn get_ref() -> RcT<Option<T>> {
+		unhashed::get_cache_ref(&Self::storage_value_final_key(), #[cfg(feature = "std")] |_| { Option::<T>::None })
 	}
 
 	fn try_get() -> Result<T, ()> {

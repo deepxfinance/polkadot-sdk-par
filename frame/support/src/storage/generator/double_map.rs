@@ -24,7 +24,7 @@ use codec::{Decode, Encode, EncodeLike, FullCodec, FullEncode};
 use sp_std::prelude::*;
 use scale_info::prelude::string::String;
 use typed_cache::{OptionQT, QueryTransfer};
-use crate::storage::TypedAppend;
+use crate::storage::{TypedAppend, RcT};
 
 /// Generator for `StorageDoubleMap` used by `decl_storage`.
 ///
@@ -149,6 +149,17 @@ where
 		G::from_optional_value_to_query(unhashed::get(&Self::storage_double_map_final_key(k1, k2)))
 	}
 
+	fn get_ref<KArg1, KArg2>(k1: KArg1, k2: KArg2) -> RcT<Option<V>>
+	where
+		KArg1: EncodeLike<K1>,
+		KArg2: EncodeLike<K2>
+	{
+		unhashed::get_cache_ref(
+			&Self::storage_double_map_final_key(k1, k2),
+			#[cfg(feature = "std")] |_| { Option::<V>::None },
+		)
+	}
+
 	fn try_get<KArg1, KArg2>(k1: KArg1, k2: KArg2) -> Result<V, ()>
 	where
 		KArg1: EncodeLike<K1>,
@@ -180,7 +191,7 @@ where
 	{
 		let final_key = Self::storage_double_map_final_key(k1, k2);
 		#[cfg(feature = "std")]
-		let value = unhashed::take_cache(&final_key, |_| { Option::<V>::None });
+		let value = unhashed::take_cache(&final_key);
 		#[cfg(not(feature = "std"))]
 		let value = unhashed::take(&final_key);
 		G::from_optional_value_to_query(value)
@@ -495,7 +506,7 @@ where
 		};
 		#[cfg(feature = "std")]
 		{
-			unhashed::take_cache(&old_key, |_| { Option::<V>::None }).map(|value| {
+			unhashed::take_cache::<V>(&old_key).map(|value| {
 				unhashed::put_cache(Self::storage_double_map_final_key(key1, key2).as_ref(), value.clone());
 				value
 			})

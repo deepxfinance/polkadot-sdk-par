@@ -26,7 +26,7 @@ use scale_info::prelude::string::String;
 #[cfg(not(feature = "std"))]
 use sp_std::prelude::*;
 use typed_cache::{OptionQT, QueryTransfer};
-use crate::storage::TypedAppend;
+use crate::storage::{TypedAppend, RcT};
 
 /// Generator for `StorageMap` used by `decl_storage`.
 ///
@@ -279,6 +279,13 @@ impl<K: FullEncode, V: FullCodec + TStorage, G: StorageMap<K, V>> storage::Stora
 		G::from_optional_value_to_query(unhashed::get(Self::storage_map_final_key(key).as_ref()))
 	}
 
+	fn get_ref<KeyArg: EncodeLike<K>>(key: KeyArg) -> RcT<Option<V>> {
+		unhashed::get_cache_ref(
+			Self::storage_map_final_key(key).as_ref(),
+			#[cfg(feature = "std")] |_| { Option::<V>::None }
+		)
+	}
+
 	fn try_get<KeyArg: EncodeLike<K>>(key: KeyArg) -> Result<V, ()> {
 		#[cfg(feature = "std")]
 		{
@@ -428,7 +435,7 @@ impl<K: FullEncode, V: FullCodec + TStorage, G: StorageMap<K, V>> storage::Stora
 	fn take<KeyArg: EncodeLike<K>>(key: KeyArg) -> Self::Query {
 		let key = Self::storage_map_final_key(key);
 		#[cfg(feature = "std")]
-		let value = unhashed::take_cache(&key, |_| { Option::<V>::None });
+		let value = unhashed::take_cache(&key);
 		#[cfg(not(feature = "std"))]
 		let value = unhashed::take(key.as_ref());
 		G::from_optional_value_to_query(value)
@@ -469,7 +476,7 @@ impl<K: FullEncode, V: FullCodec + TStorage, G: StorageMap<K, V>> storage::Stora
 		};
 		#[cfg(feature = "std")]
 		{
-			unhashed::take_cache(&old_key, |_| { Option::<V>::None }).map(|value| {
+			unhashed::take_cache::<V>(&old_key).map(|value| {
 				unhashed::put_cache(Self::storage_map_final_key(key).as_ref(), value.clone());
 				value
 			})

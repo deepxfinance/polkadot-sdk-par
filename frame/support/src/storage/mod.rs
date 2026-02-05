@@ -41,7 +41,13 @@ pub use types::Key;
 
 #[cfg(feature = "std")]
 pub use sp_state_machine::TStorage;
+#[cfg(feature = "std")]
+pub use typed_cache::RcT;
+#[cfg(not(feature = "std"))]
+pub use no_std_rct::RcT;
 
+#[cfg(not(feature = "std"))]
+pub mod no_std_rct;
 pub mod bounded_btree_map;
 pub mod bounded_btree_set;
 pub mod bounded_vec;
@@ -82,6 +88,9 @@ pub trait StorageValue<T: FullCodec + TStorage> {
 
 	/// Load the value from the provided storage instance.
 	fn get() -> Self::Query;
+
+	/// Load the value reference from the provided storage instance.
+	fn get_ref() -> RcT<Option<T>>;
 
 	/// Try to get the underlying value from the provided storage instance.
 	///
@@ -205,6 +214,9 @@ pub trait StorageMap<K: FullEncode, V: FullCodec> {
 
 	/// Load the value associated with the given key from the map.
 	fn get<KeyArg: EncodeLike<K>>(key: KeyArg) -> Self::Query;
+
+	/// Load the value reference associated with the given key from the map.
+	fn get_ref<KeyArg: EncodeLike<K>>(key: KeyArg) -> RcT<Option<V>>;
 
 	/// Store or remove the value to be associated with `key` so that `get` returns the `query`.
 	fn set<KeyArg: EncodeLike<K>>(key: KeyArg, query: Self::Query);
@@ -545,6 +557,12 @@ pub trait StorageDoubleMap<K1: FullEncode, K2: FullEncode, V: FullCodec> {
 		KArg1: EncodeLike<K1>,
 		KArg2: EncodeLike<K2>;
 
+	/// Load the value reference associated with the given key from the double map.
+	fn get_ref<KArg1, KArg2>(k1: KArg1, k2: KArg2) -> RcT<Option<V>>
+	where
+		KArg1: EncodeLike<K1>,
+		KArg2: EncodeLike<K2>;
+
 	/// Try to get the value for the given key from the double map.
 	///
 	/// Returns `Ok` if it exists, `Err` if not.
@@ -770,6 +788,9 @@ pub trait StorageNMap<K: KeyGenerator, V: FullCodec> {
 
 	/// Load the value associated with the given key from the map.
 	fn get<KArg: EncodeLikeTuple<K::KArg> + TupleToEncodedIter>(key: KArg) -> Self::Query;
+
+	/// Load the value reference associated with the given key from the map.
+	fn get_ref<KArg: EncodeLikeTuple<K::KArg> + TupleToEncodedIter>(key: KArg) -> RcT<Option<V>>;
 
 	/// Try to get the value for the given key from the map.
 	///

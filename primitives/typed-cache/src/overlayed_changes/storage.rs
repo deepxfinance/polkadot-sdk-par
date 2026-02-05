@@ -1,17 +1,15 @@
 use sp_std::boxed::Box;
 use sp_std::collections::btree_map::BTreeMap;
-use sp_std::sync::Arc;
 use sp_std::hash::Hash;
 use sp_std::vec::Vec;
-use codec::FullCodec;
-use once_cell::sync::OnceCell;
-use crate::{StorageIO, StorageApi, StorageKey, QueryTransfer};
+use codec::{Encode, FullCodec};
+use crate::{StorageIO, StorageApi, StorageKey, QueryTransfer, RcT};
 use crate::changeset::{ExecutionMode, StorageOverlay};
 
 unsafe impl<K: Ord + Hash + Clone, V: Clone> Send for StorageOverlay<K, V> {}
 unsafe impl<K: Ord + Hash + Clone, V: Clone> Sync for StorageOverlay<K, V> {}
 
-impl<V: Clone + FullCodec + 'static> StorageApi for StorageOverlay<StorageKey, Option<V>> {
+impl<V: Clone + FullCodec + 'static> StorageApi for StorageOverlay<StorageKey, V> {
     fn enter_runtime(&mut self) {
         self.enter_runtime();
     }
@@ -34,41 +32,56 @@ impl<V: Clone + FullCodec + 'static> StorageApi for StorageOverlay<StorageKey, O
     }
 
     fn get_change_encode(&self, key: &[u8]) -> Option<Option<Vec<u8>>> {
-        self.changes.get(key).map(|v| v.value().map(|v| v.encode()))
+        match self.changes.get(key) {
+            Some(entry) => {
+                let value = entry.value_ref();
+                if value.muted() {
+                    Some(value.borrow().as_ref().map(|v| v.encode()))
+                } else {
+                    None
+                }
+            },
+            None => None,
+        }
     }
 
     fn get_changed_keys(&self) -> Vec<StorageKey> {
         self.changes
             .iter()
-            .map(|(k , _)| k.clone())
+            .filter_map(|(k , v)|
+                if v.value_ref().muted() {
+                    Some(k.clone())
+                } else {
+                    None
+                }
+            )
             .collect()
     }
 
     fn get_commited(&self) -> BTreeMap<StorageKey, Option<Vec<u8>>> {
         self.changes
             .iter()
-            .map(|(k ,v)| {
-                #[cfg(all(feature = "std", feature = "dev-time"))]
-                let start = std::time::Instant::now();
-                let res = (k.clone(), v.value().map(|v| v.encode()));
-                #[cfg(all(feature = "std", feature = "dev-time"))]
-                crate::ENCODE.lock().unwrap().entry(self.space.clone()).or_default().push(start.elapsed());
-                res
-            })
+            .filter_map(|(k ,v)|
+                if v.value_ref().muted() {
+                    Some((k.clone(), v.value_ref().borrow().as_ref().map(|v| v.encode())))
+                } else {
+                    None
+                }
+            )
             .collect()
     }
 
     fn drain_commited(&mut self) -> Vec<(Vec<u8>, Option<Vec<u8>>)> {
         self.drain_changes()
             .into_iter()
-            .map(|(k, mut v)| {
-                #[cfg(all(feature = "std", feature = "dev-time"))]
-                let start = std::time::Instant::now();
-                let res = (k, v.pop_value().map(|v| v.encode()));
-                #[cfg(all(feature = "std", feature = "dev-time"))]
-                crate::ENCODE.lock().unwrap().entry(self.space.clone()).or_default().push(start.elapsed());
-                res
-            })
+            .filter_map(|(k, mut v)|
+                if v.value_ref().muted() {
+                    Some((k, v.pop_value().borrow().as_ref().map(|v| v.encode())))
+                } else {
+                    None
+
+                }
+            )
             .collect()
     }
 
@@ -89,20 +102,12 @@ impl<V: Clone + FullCodec + 'static> StorageApi for StorageOverlay<StorageKey, O
     }
 }
 
-impl<V: Clone> StorageIO<V> for StorageOverlay<StorageKey, Option<V>> {
+impl<V: Clone> StorageIO<V> for StorageOverlay<StorageKey, V> {
     fn contains(&self, space: &[u8], key: &[u8]) -> Option<bool> {
         if space != self.space { return None; }
         self.changes
             .get(key)
-            .map(|x| x.value().is_some())
-            .or(
-                self.cache
-                    .get(key)
-                    .map(|c| c
-                        .get()
-                        .is_some()
-                    )
-            )
+            .map(|x| x.value_ref().borrow().is_some())
     }
     
     fn put(&mut self, space: &[u8], key: &[u8], value: V) {
@@ -115,38 +120,77 @@ impl<V: Clone> StorageIO<V> for StorageOverlay<StorageKey, Option<V>> {
         F: Fn(&[u8]) -> Option<V>
     {
         if space != &self.space { return None; }
-        self.changes
-            .get(key)
-            .map(|x| x.value().cloned())
-            .or(
-                self.cache
-                    .get(key)
-                    .map(|c| c.get().cloned().unwrap_or(None))
-                    .or({
-                        init.map(|f| {
-                            let cache_value = f(key);
-                            let new_cell = Arc::new(OnceCell::new());
-                            let _ = new_cell.set(cache_value.clone());
-                            self.cache.insert(key.to_vec(), new_cell);
-                            cache_value
-                        })
-                    })
-            )
+        if let Some(x) = self.changes.get(key) {
+            Some(x.value_ref().clone_inner())
+        } else {
+            init.map(|f| {
+                let value = f(key);
+                self.init_cache(key.to_vec(), value.clone());
+                Some(value)
+            })
+                .unwrap_or(None)
+        }
     }
 
     fn get_change(&self, space: &[u8], key: &[u8]) -> Option<Option<V>> {
         if space != &self.space { return None; }
-        self.changes.get(key).map(|x| x.value().cloned())
+        match self.changes.get(key) {
+            Some(entry) => if entry.value_ref().muted() {
+                Some(entry.value_ref().clone_inner())
+            } else {
+                None
+            },
+            None => None,
+        }
     }
 
-    fn take<F>(&mut self, space: &[u8], key: &[u8], init: Option<F>) -> Option<Option<V>>
+    fn get_ref<F>(&mut self, space: &[u8], key: &[u8], init: Option<F>) -> Option<RcT<Option<V>>>
     where
         F: Fn(&[u8]) -> Option<V>
     {
         if space != &self.space { return None; }
-        let v = self.get(space, key, init);
-        if let Some(Some(_)) = &v { self.kill(space, key); }
-        v
+        if let Some(x) = self.changes.get(key) {
+            Some(x.value_ref().clone_ref())
+        } else {
+            init.map(|f| {
+                let value = f(key);
+                self.init_cache(key.to_vec(), value.clone());
+                self.changes.get(key).map(|e| e.value_ref().clone_ref())
+            })
+                .unwrap_or(None)
+        }
+    }
+
+    fn get_change_ref(&self, space: &[u8], key: &[u8]) -> Option<RcT<Option<V>>> {
+        if space != &self.space { return None; }
+        match self.changes.get(key) {
+            Some(entry) => if entry.value_ref().muted() {
+                Some(entry.value_ref().clone_ref())
+            } else {
+                None
+            },
+            None => None,
+        }
+    }
+
+    fn take(&mut self, space: &[u8], key: &[u8]) -> Option<Option<V>> {
+        if space != &self.space { return None; }
+        self.changes
+            .get_mut(key)
+            .map(|entry| entry.value_mut().mutate(|v| std::mem::take(v)))
+    }
+
+    fn pop_ref(&mut self, space: &[u8], key: &[u8]) -> Option<RcT<Option<V>>> {
+        if space != &self.space { return None; }
+        if let Some(mut entry) = self.changes.remove(key) {
+            let rct = entry.pop_value();
+            if !entry.empty() {
+                self.changes.insert(key.to_vec(), entry);
+            }
+            Some(rct)
+        } else {
+            None
+        }
     }
 
     fn kill(&mut self, space: &[u8], key: &[u8]) {
@@ -163,7 +207,7 @@ impl<V: Clone> StorageIO<V> for StorageOverlay<StorageKey, Option<V>> {
         // modify must have mutable reference of value returned
         match self.modify(key.to_vec(), init, None) {
             Some(v) => {
-                let (res, new_value) = QT::mut_from_optional_value_to_query(v, mutate);
+                let (res, new_value) = v.mutate(|t| QT::mut_from_optional_value_to_query(t, mutate));
                 if let Some(new_value) = new_value {
                     self.set(key.to_vec(), Some(new_value), None);
                 }
@@ -176,19 +220,19 @@ impl<V: Clone> StorageIO<V> for StorageOverlay<StorageKey, Option<V>> {
     fn append<F, M>(&mut self, space: &[u8], key: &[u8], init: F, mutate: M) -> bool
     where
         F: FnOnce() -> V,
-        M: FnOnce(Option<&mut V>)
+        M: FnOnce(&mut Option<V>)
     {
         if space != &self.space { return false; }
         // modify must have mutable reference of value returned
-        mutate(self.modify_append(key.to_vec(), init, None));
+        self.modify_append(key.to_vec(), init, None)
+            .map(|v| v.mutate(mutate))
+            .expect("append value should have initialized");
         true
     }
 
-    fn cache(&mut self, space: &[u8], key: &[u8], value: Option<V>) {
-        if space != &self.space { return; }
-        let new_cache = Arc::new(OnceCell::<Option<V>>::new());
-        let _ = new_cache.try_insert(value);
-        self.cache.insert(key.to_vec(), new_cache);
+    fn init(&mut self, space: &[u8], key: &[u8], value: Option<V>) -> bool {
+        if space != &self.space { false; }
+        self.init_cache(key.to_vec(), value)
     }
     
     fn cached(&self, space: &[u8], key: &[u8]) -> bool {
@@ -196,14 +240,6 @@ impl<V: Clone> StorageIO<V> for StorageOverlay<StorageKey, Option<V>> {
         self.changes
             .get(key)
             .map(|_| true)
-            .or(
-                self.cache
-                    .get(key)
-                    .map(|c| c
-                        .get()
-                        .is_some()
-                    )
-            )
             .unwrap_or(false)
     }
 }
@@ -260,7 +296,7 @@ fn test_cache() {
     let mut none_f = Some(|_: &_| { None });
     none_f.take();
     let mut overlay = StorageOverlay::new(b"str", 0, 0);
-    overlay.cache(b"str", b"key1", Some(b"value1".to_vec()));
+    overlay.init(b"str", b"key1", Some(b"value1".to_vec()));
     assert_eq!(overlay.get(b"str", b"key1", none_f), Some(Some(b"value1".to_vec())));
 }
 
@@ -269,7 +305,7 @@ fn test_storage_copy_data() {
     let mut none_f = Some(|_: &_| { None });
     none_f.take();
     let mut overlay = StorageOverlay::new(b"str", 0, 0);
-    overlay.cache(b"str", b"key1", Some(b"value1".to_vec()));
+    overlay.init(b"str", b"key1", Some(b"value1".to_vec()));
     assert_eq!(overlay.get(b"str", b"key1", none_f), Some(Some(b"value1".to_vec())));
     overlay.start_transaction();
     overlay.put(b"str", b"key1", b"value2".to_vec());
@@ -281,7 +317,7 @@ fn test_storage_copy_data() {
     assert_eq!(overlay.get(b"str", b"key1", none_f), Some(Some(b"value1".to_vec())));
 
     assert_eq!(
-        overlay1.downcast_mut::<StorageOverlay<Vec<u8>, Option<Vec<u8>>>>()
+        overlay1.downcast_mut::<StorageOverlay<Vec<u8>, Vec<u8>>>()
             .unwrap()
             .get(b"str", b"key1", none_f),
         Some(Some(b"value2".to_vec()))
@@ -289,7 +325,7 @@ fn test_storage_copy_data() {
     overlay1.rollback_transaction(&ExecutionMode::Client);
     assert_eq!(
         overlay1
-            .downcast_mut::<StorageOverlay<Vec<u8>, Option<Vec<u8>>>>()
+            .downcast_mut::<StorageOverlay<Vec<u8>, Vec<u8>>>()
             .unwrap()
             .get(b"str", b"key1", none_f),
         Some(Some(b"value1".to_vec()))

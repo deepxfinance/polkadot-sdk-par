@@ -31,7 +31,7 @@ use codec::{Decode, Encode, EncodeLike, FullCodec, MaxEncodedLen};
 use sp_arithmetic::traits::SaturatedConversion;
 use sp_std::prelude::*;
 use typed_cache::QueryTransfer;
-use crate::storage::TypedAppend;
+use crate::storage::{TypedAppend,  RcT};
 
 /// A type that allow to store values for `(key1, key2)` couple. Similar to `StorageMap` but allow
 /// to iterate and remove value associated to first key.
@@ -216,6 +216,15 @@ where
 		KArg2: EncodeLike<Key2>,
 	{
 		<Self as crate::storage::StorageDoubleMap<Key1, Key2, Value>>::get(k1, k2)
+	}
+
+	/// Load the value reference associated with the given key from the double map.
+	pub fn get_ref<KArg1, KArg2>(k1: KArg1, k2: KArg2) -> RcT<Option<Value>>
+	where
+		KArg1: EncodeLike<Key1>,
+		KArg2: EncodeLike<Key2>,
+	{
+		<Self as crate::storage::StorageDoubleMap<Key1, Key2, Value>>::get_ref(k1, k2)
 	}
 
 	/// Try to get the value for the given key from the double map.
