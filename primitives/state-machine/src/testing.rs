@@ -37,6 +37,7 @@ use sp_core::{
 };
 use sp_externalities::{Extension, ExtensionStore, Extensions};
 use sp_trie::StorageProof;
+use typed_cache::OverlayCache;
 
 /// Simple HashMap-based Externalities impl.
 pub struct TestExternalities<H>
@@ -44,6 +45,7 @@ where
 	H: Hasher + 'static,
 	H::Out: codec::Codec + Ord,
 {
+	cache: OverlayCache,
 	/// The overlay changed storage.
 	overlay: OverlayedChanges,
 	offchain_db: TestPersistentOffchainDB,
@@ -65,7 +67,7 @@ where
 	/// Get externalities implementation.
 	pub fn ext(&mut self) -> Ext<H, InMemoryBackend<H>> {
 		Ext::new(
-			None,
+			Some(&mut self.cache),
 			&mut self.overlay,
 			&mut self.storage_transaction_cache,
 			&self.backend,
@@ -109,6 +111,7 @@ where
 		let backend = (storage, state_version).into();
 
 		TestExternalities {
+			cache: OverlayCache::default(),
 			overlay: OverlayedChanges::default(),
 			offchain_db,
 			extensions: Default::default(),
