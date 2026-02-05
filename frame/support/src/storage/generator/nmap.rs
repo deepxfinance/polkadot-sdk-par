@@ -36,15 +36,14 @@ use crate::{
 			EncodeLikeTuple, HasKeyPrefix, HasReversibleKeyPrefix, KeyGenerator,
 			ReversibleKeyGenerator, TupleToEncodedIter,
 		},
-		unhashed, KeyPrefixIterator, PrefixIterator, StorageAppend, TStorage
+		unhashed, KeyPrefixIterator, PrefixIterator, StorageAppend
 	},
 	Never,
 };
 use codec::{Decode, Encode, EncodeLike, FullCodec};
 #[cfg(not(feature = "std"))]
 use sp_std::prelude::*;
-use typed_cache::{OptionQT, QueryTransfer};
-use crate::storage::{TypedAppend, RcT};
+use crate::storage::{QueryTransfer, TypedAppend, TStorage, OptionQT,  RcT};
 
 /// Generator for `StorageNMap` used by `decl_storage` and storage types.
 ///
@@ -113,7 +112,7 @@ where
 	V: FullCodec + TStorage,
 	G: StorageNMap<K, V>,
 {
-	type Query = G::Query;
+	type Query = G::Qry;
 
 	fn hashed_key_for<KArg: EncodeLikeTuple<K::KArg> + TupleToEncodedIter>(key: KArg) -> Vec<u8> {
 		Self::storage_n_map_final_key::<K, _>(key)
@@ -122,7 +121,7 @@ where
 	fn contains_key<KArg: EncodeLikeTuple<K::KArg> + TupleToEncodedIter>(key: KArg) -> bool {
 		let final_key = Self::storage_n_map_final_key::<K, _>(key);
 		#[cfg(feature = "std")]
-		{ unhashed::contains_key_cache::<V>(&final_key) }
+		{ unhashed::contains_key_cache::<G, V>(&final_key) }
 		#[cfg(not(feature = "std"))]
 		unhashed::exists(&final_key)
 	}
@@ -130,7 +129,7 @@ where
 	fn get<KArg: EncodeLikeTuple<K::KArg> + TupleToEncodedIter>(key: KArg) -> Self::Query {
 		#[cfg(feature = "std")]
 		{
-			G::from_optional_value_to_query(unhashed::get_cache(
+			G::from_optional_value_to_query(unhashed::get_cache::<G, _, _>(
 				&Self::storage_n_map_final_key::<K, _>(key),
 				|_| { Option::<V>::None }
 			))
@@ -139,17 +138,21 @@ where
 		G::from_optional_value_to_query(unhashed::get(&Self::storage_n_map_final_key::<K, _>(key)))
 	}
 
-	fn get_ref<KArg: EncodeLikeTuple<K::KArg> + TupleToEncodedIter>(key: KArg) -> RcT<Option<V>> {
-		unhashed::get_cache_ref(
-			&Self::storage_n_map_final_key::<K, _>(key),
-			#[cfg(feature = "std")] |_| { Option::<V>::None }
+	fn get_ref<KArg: EncodeLikeTuple<K::KArg> + TupleToEncodedIter>(key: KArg) -> RcT<G::Qry> {
+		let final_key = Self::storage_n_map_final_key::<K, _>(key);
+		unhashed::get_cache_ref::<G, _, _>(
+			&final_key,
+			#[cfg(feature = "std")] 
+			|_| { Option::<V>::None },
+			#[cfg(not(feature = "std"))]
+			|key| { unhashed::get(key) },
 		)
 	}
 
 	fn try_get<KArg: EncodeLikeTuple<K::KArg> + TupleToEncodedIter>(key: KArg) -> Result<V, ()> {
 		#[cfg(feature = "std")]
 		{
-			unhashed::get_cache(
+			unhashed::get_cache::<G, _, _>(
 				&Self::storage_n_map_final_key::<K, _>(key),
 				|_| { Option::<V>::None }
 			)
@@ -169,7 +172,7 @@ where
 	fn take<KArg: EncodeLikeTuple<K::KArg> + TupleToEncodedIter>(key: KArg) -> Self::Query {
 		let final_key = Self::storage_n_map_final_key::<K, _>(key);
 		#[cfg(feature = "std")]
-		let value = unhashed::take_cache(&final_key);
+		let value = unhashed::take_cache::<G, _>(&final_key);
 		#[cfg(not(feature = "std"))]
 		let value = unhashed::take(&final_key);
 		G::from_optional_value_to_query(value)
@@ -186,16 +189,16 @@ where
 
 		#[cfg(feature = "std")]
 		{
-			let v1 = unhashed::get_cache(&final_x_key, |_| { Option::<V>::None });
-			if let Some(val) = unhashed::get_cache(&final_y_key, |_| { Option::<V>::None }) {
-				unhashed::put_cache(&final_x_key, val);
+			let v1 = unhashed::get_cache::<G, _, _>(&final_x_key, |_| { Option::<V>::None });
+			if let Some(val) = unhashed::get_cache::<G, _, _>(&final_y_key, |_| { Option::<V>::None }) {
+				unhashed::put_cache::<G, _>(&final_x_key, val);
 			} else {
-				unhashed::kill_cache::<V>(&final_x_key);
+				unhashed::kill_cache::<G, V>(&final_x_key);
 			}
 			if let Some(val) = v1 {
-				unhashed::put_cache(&final_y_key, val);
+				unhashed::put_cache::<G, _>(&final_y_key, val);
 			} else {
-				unhashed::kill_cache::<V>(&final_y_key);
+				unhashed::kill_cache::<G, V>(&final_y_key);
 			}
 		}
 		#[cfg(not(feature = "std"))]
@@ -221,7 +224,7 @@ where
 		KArg: EncodeLikeTuple<K::KArg> + TupleToEncodedIter
 	{
 		#[cfg(feature = "std")]
-		unhashed::put_cache(&Self::storage_n_map_final_key::<K, _>(key), val);
+		unhashed::put_cache::<G, _>(&Self::storage_n_map_final_key::<K, _>(key), val);
 		#[cfg(not(feature = "std"))]
 		unhashed::put(&Self::storage_n_map_final_key::<K, _>(key), &val);
 	}
@@ -237,7 +240,7 @@ where
 
 	fn remove<KArg: EncodeLikeTuple<K::KArg> + TupleToEncodedIter>(key: KArg) {
 		#[cfg(feature = "std")]
-		unhashed::kill_cache::<V>(&Self::storage_n_map_final_key::<K, _>(key));
+		unhashed::kill_cache::<G, V>(&Self::storage_n_map_final_key::<K, _>(key));
 		#[cfg(not(feature = "std"))]
 		unhashed::kill(&Self::storage_n_map_final_key::<K, _>(key));
 	}
@@ -318,7 +321,7 @@ where
 	{
 		let final_key = Self::storage_n_map_final_key::<K, _>(key);
 		#[cfg(feature = "std")]
-		let mut val = G::from_optional_value_to_query(unhashed::get_cache(
+		let mut val = G::from_optional_value_to_query(unhashed::get_cache::<G, _, _>(
 			final_key.as_ref(),
 			|_| { Option::<V>::None }
 		));
@@ -330,13 +333,13 @@ where
 			match G::from_query_to_optional_value(val) {
 				Some(ref val) => {
 					#[cfg(feature = "std")]
-					unhashed::put_cache(final_key.as_ref(), val.clone());
+					unhashed::put_cache::<G, _>(final_key.as_ref(), val.clone());
 					#[cfg(not(feature = "std"))]
 					unhashed::put(final_key.as_ref(), val)
 				},
 				None => {
 					#[cfg(feature = "std")]
-					unhashed::kill_cache::<V>(final_key.as_ref());
+					unhashed::kill_cache::<G, V>(final_key.as_ref());
 					#[cfg(not(feature = "std"))]
 					unhashed::kill(final_key.as_ref())
 				},
@@ -395,7 +398,7 @@ where
 	{
 		let final_key = Self::storage_n_map_final_key::<K, _>(key);
 		#[cfg(feature = "std")]
-		let mut val = unhashed::get_cache(final_key.as_ref(), |_| { Option::<V>::None });
+		let mut val = unhashed::get_cache::<G, _, _>(final_key.as_ref(), |_| { Option::<V>::None });
 		#[cfg(not(feature = "std"))]
 		let mut val = unhashed::get(final_key.as_ref());
 
@@ -404,13 +407,13 @@ where
 			match val {
 				Some(ref val) => {
 					#[cfg(feature = "std")]
-					unhashed::put_cache(final_key.as_ref(), val.clone());
+					unhashed::put_cache::<G, _>(final_key.as_ref(), val.clone());
 					#[cfg(not(feature = "std"))]
 					unhashed::put(final_key.as_ref(), val)
 				},
 				None => {
 					#[cfg(feature = "std")]
-					unhashed::kill_cache::<V>(final_key.as_ref());
+					unhashed::kill_cache::<G, V>(final_key.as_ref());
 					#[cfg(not(feature = "std"))]
 					unhashed::kill(final_key.as_ref())
 				},
@@ -427,7 +430,7 @@ where
 		V: TypedAppend<Item> + TStorage
 	{
 		let final_key = Self::storage_n_map_final_key::<K, _>(key);
-		unhashed::append_cache::<V, Item>(&final_key, item);
+		unhashed::append_cache::<G, V, Item>(&final_key, item);
 	}
 
 	#[cfg(not(feature = "std"))]
@@ -479,8 +482,8 @@ where
 		};
 		#[cfg(feature = "std")]
 		{
-			unhashed::take_cache::<V>(&old_key).map(|value| {
-				unhashed::put_cache(Self::storage_n_map_final_key::<K, _>(key).as_ref(), value.clone());
+			unhashed::take_cache::<G, _>(&old_key).map(|value| {
+				unhashed::put_cache::<G, _>(Self::storage_n_map_final_key::<K, _>(key).as_ref(), value.clone());
 				value
 			})
 		}

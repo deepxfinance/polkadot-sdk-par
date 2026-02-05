@@ -22,15 +22,14 @@ use crate::{
 	storage::{
 		generator::StorageValue as StorageValueT,
 		types::{OptionQuery, QueryKindTrait, StorageEntryMetadataBuilder},
-		StorageAppend, StorageDecodeLength, StorageTryAppend, TStorage,
+		StorageAppend, StorageDecodeLength, StorageTryAppend,
 	},
 	traits::{GetDefault, StorageInfo, StorageInstance},
 };
 use codec::{Decode, Encode, EncodeLike, FullCodec, MaxEncodedLen};
 use sp_arithmetic::traits::SaturatedConversion;
 use sp_std::prelude::*;
-use typed_cache::QueryTransfer;
-use crate::storage::{TypedAppend, RcT};
+use crate::storage::{QueryTransfer, TypedAppend, TStorage,  RcT};
 
 /// A type that allow to store a value.
 ///
@@ -44,33 +43,44 @@ pub struct StorageValue<Prefix, Value, QueryKind = OptionQuery, OnEmpty = GetDef
 
 impl<Prefix, Value, QueryKind, OnEmpty> QueryTransfer<Value> for StorageValue<Prefix, Value, QueryKind, OnEmpty>
 where
-	Prefix: StorageInstance,
-	Value: FullCodec + TStorage,
+	Prefix: StorageInstance + 'static,
+	Value: FullCodec + TStorage + 'static,
 	QueryKind: QueryKindTrait<Value, OnEmpty>,
 	OnEmpty: crate::traits::Get<QueryKind::Query> + 'static,
 {
-	type Query = QueryKind::Query;
+	type Qry = QueryKind::Query;
 	fn from_optional_value_to_query(v: Option<Value>) -> QueryKind::Query {
 		QueryKind::from_optional_value_to_query(v)
 	}
 
-	fn mut_from_optional_value_to_query<M, R, E>(v: &mut Option<Value>, m: M) -> (Result<R, E>, Option<Value>)
-	where
-		M: FnOnce(&mut Self::Query) -> Result<R, E>
-	{
-		QueryKind::mut_from_optional_value_to_query(v, m)
-	}
-
 	fn from_query_to_optional_value(v: QueryKind::Query) -> Option<Value> {
 		QueryKind::from_query_to_optional_value(v)
+	}
+
+	fn mut_query<M, R, E>(v: &mut Self::Qry, m: M) -> Result<R, E>
+	where
+		M: FnOnce(&mut Self::Qry) -> Result<R, E>
+	{
+		QueryKind::mut_query(v, m)
+	}
+
+	fn append_query<QT: QueryTransfer<Value>, Item>(v: &mut Self::Qry, item: Item)
+	where
+		Value: TypedAppend<Item>,
+	{
+		QueryKind::append_query::<QT, Item>(v, item)
+	}
+
+	fn exists(v: &Self::Qry) -> bool {
+		QueryKind::exists(v)
 	}
 }
 
 impl<Prefix, Value, QueryKind, OnEmpty> crate::storage::generator::StorageValue<Value>
 	for StorageValue<Prefix, Value, QueryKind, OnEmpty>
 where
-	Prefix: StorageInstance,
-	Value: FullCodec + TStorage,
+	Prefix: StorageInstance + 'static,
+	Value: FullCodec + TStorage + 'static,
 	QueryKind: QueryKindTrait<Value, OnEmpty>,
 	OnEmpty: crate::traits::Get<QueryKind::Query> + 'static,
 {
@@ -84,8 +94,8 @@ where
 
 impl<Prefix, Value, QueryKind, OnEmpty> StorageValue<Prefix, Value, QueryKind, OnEmpty>
 where
-	Prefix: StorageInstance,
-	Value: FullCodec + TStorage,
+	Prefix: StorageInstance + 'static,
+	Value: FullCodec + TStorage + 'static,
 	QueryKind: QueryKindTrait<Value, OnEmpty>,
 	OnEmpty: crate::traits::Get<QueryKind::Query> + 'static,
 {
@@ -105,7 +115,7 @@ where
 	}
 
 	/// Load the value reference from the provided storage instance.
-	pub fn get_ref() -> RcT<Option<Value>> {
+	pub fn get_ref() -> RcT<QueryKind::Query> {
 		<Self as crate::storage::StorageValue<Value>>::get_ref()
 	}
 
@@ -272,8 +282,8 @@ where
 impl<Prefix, Value, QueryKind, OnEmpty> StorageEntryMetadataBuilder
 	for StorageValue<Prefix, Value, QueryKind, OnEmpty>
 where
-	Prefix: StorageInstance,
-	Value: FullCodec + TStorage + scale_info::StaticTypeInfo,
+	Prefix: StorageInstance + 'static,
+	Value: FullCodec + TStorage + 'static + scale_info::StaticTypeInfo,
 	QueryKind: QueryKindTrait<Value, OnEmpty>,
 	OnEmpty: crate::traits::Get<QueryKind::Query> + 'static,
 {
@@ -295,8 +305,8 @@ where
 impl<Prefix, Value, QueryKind, OnEmpty> crate::traits::StorageInfoTrait
 	for StorageValue<Prefix, Value, QueryKind, OnEmpty>
 where
-	Prefix: StorageInstance,
-	Value: FullCodec + TStorage + MaxEncodedLen,
+	Prefix: StorageInstance + 'static,
+	Value: FullCodec + TStorage + 'static + MaxEncodedLen,
 	QueryKind: QueryKindTrait<Value, OnEmpty>,
 	OnEmpty: crate::traits::Get<QueryKind::Query> + 'static,
 {
@@ -315,8 +325,8 @@ where
 impl<Prefix, Value, QueryKind, OnEmpty> crate::traits::PartialStorageInfoTrait
 	for StorageValue<Prefix, Value, QueryKind, OnEmpty>
 where
-	Prefix: StorageInstance,
-	Value: FullCodec + TStorage,
+	Prefix: StorageInstance + 'static,
+	Value: FullCodec + TStorage + 'static,
 	QueryKind: QueryKindTrait<Value, OnEmpty>,
 	OnEmpty: crate::traits::Get<QueryKind::Query> + 'static,
 {

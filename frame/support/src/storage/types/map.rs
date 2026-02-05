@@ -22,7 +22,7 @@ use crate::{
 	metadata_ir::{StorageEntryMetadataIR, StorageEntryTypeIR},
 	storage::{
 		types::{OptionQuery, QueryKindTrait, StorageEntryMetadataBuilder},
-		KeyLenOf, StorageAppend, StorageDecodeLength, StoragePrefixedMap, StorageTryAppend, TStorage,
+		KeyLenOf, StorageAppend, StorageDecodeLength, StoragePrefixedMap, StorageTryAppend,
 	},
 	traits::{Get, GetDefault, StorageInfo, StorageInstance},
 	StorageHasher, Twox128,
@@ -30,8 +30,7 @@ use crate::{
 use codec::{Decode, Encode, EncodeLike, FullCodec, MaxEncodedLen};
 use sp_arithmetic::traits::SaturatedConversion;
 use sp_std::prelude::*;
-use typed_cache::QueryTransfer;
-use crate::storage::{TypedAppend, RcT};
+use crate::storage::{QueryTransfer, TypedAppend, TStorage,  RcT};
 
 /// A type that allow to store value for given key. Allowing to insert/remove/iterate on values.
 ///
@@ -74,29 +73,40 @@ where
 impl<Prefix, Hasher, Key, Value, QueryKind, OnEmpty, MaxValues> QueryTransfer<Value>
 	for StorageMap<Prefix, Hasher, Key, Value, QueryKind, OnEmpty, MaxValues>
 where
-	Prefix: StorageInstance,
+	Prefix: StorageInstance + 'static,
 	Hasher: crate::hash::StorageHasher,
-	Key: FullCodec,
-	Value: FullCodec + TStorage,
+	Key: FullCodec + 'static,
+	Value: FullCodec + TStorage + 'static,
 	QueryKind: QueryKindTrait<Value, OnEmpty>,
 	OnEmpty: Get<QueryKind::Query> + 'static,
-	MaxValues: Get<Option<u32>>,
+	MaxValues: Get<Option<u32>> + 'static,
 {
-	type Query = QueryKind::Query;
+	type Qry = QueryKind::Query;
 
 	fn from_optional_value_to_query(v: Option<Value>) -> QueryKind::Query {
 		QueryKind::from_optional_value_to_query(v)
 	}
 
-	fn mut_from_optional_value_to_query<M, R, E>(v: &mut Option<Value>, m: M) -> (Result<R, E>, Option<Value>)
-	where
-		M: FnOnce(&mut Self::Query) -> Result<R, E>
-	{
-		QueryKind::mut_from_optional_value_to_query(v, m)
-	}
-
 	fn from_query_to_optional_value(v: QueryKind::Query) -> Option<Value> {
 		QueryKind::from_query_to_optional_value(v)
+	}
+
+	fn mut_query<M, R, E>(v: &mut Self::Qry, m: M) -> Result<R, E>
+	where
+		M: FnOnce(&mut Self::Qry) -> Result<R, E>
+	{
+		QueryKind::mut_query(v, m)
+	}
+
+	fn append_query<QT: QueryTransfer<Value>, Item>(v: &mut Self::Qry, item: Item)
+	where
+		Value: TypedAppend<Item>,
+	{
+		QueryKind::append_query::<QT, Item>(v, item)
+	}
+
+	fn exists(v: &Self::Qry) -> bool {
+		QueryKind::exists(v)
 	}
 }
 
@@ -104,13 +114,13 @@ impl<Prefix, Hasher, Key, Value, QueryKind, OnEmpty, MaxValues>
 	crate::storage::generator::StorageMap<Key, Value>
 	for StorageMap<Prefix, Hasher, Key, Value, QueryKind, OnEmpty, MaxValues>
 where
-	Prefix: StorageInstance,
+	Prefix: StorageInstance + 'static,
 	Hasher: crate::hash::StorageHasher,
-	Key: FullCodec,
-	Value: FullCodec + TStorage,
+	Key: FullCodec + 'static,
+	Value: FullCodec + TStorage + 'static,
 	QueryKind: QueryKindTrait<Value, OnEmpty>,
 	OnEmpty: Get<QueryKind::Query> + 'static,
-	MaxValues: Get<Option<u32>>,
+	MaxValues: Get<Option<u32>> + 'static,
 {
 	type Hasher = Hasher;
 	fn module_prefix() -> &'static [u8] {
@@ -124,13 +134,13 @@ where
 impl<Prefix, Hasher, Key, Value, QueryKind, OnEmpty, MaxValues> StoragePrefixedMap<Value>
 	for StorageMap<Prefix, Hasher, Key, Value, QueryKind, OnEmpty, MaxValues>
 where
-	Prefix: StorageInstance,
+	Prefix: StorageInstance + 'static,
 	Hasher: crate::hash::StorageHasher,
-	Key: FullCodec,
-	Value: FullCodec + TStorage,
+	Key: FullCodec + 'static,
+	Value: FullCodec + TStorage + 'static,
 	QueryKind: QueryKindTrait<Value, OnEmpty>,
 	OnEmpty: Get<QueryKind::Query> + 'static,
-	MaxValues: Get<Option<u32>>,
+	MaxValues: Get<Option<u32>> + 'static,
 {
 	fn module_prefix() -> &'static [u8] {
 		<Self as crate::storage::generator::StorageMap<Key, Value>>::module_prefix()
@@ -143,13 +153,13 @@ where
 impl<Prefix, Hasher, Key, Value, QueryKind, OnEmpty, MaxValues>
 	StorageMap<Prefix, Hasher, Key, Value, QueryKind, OnEmpty, MaxValues>
 where
-	Prefix: StorageInstance,
+	Prefix: StorageInstance + 'static,
 	Hasher: crate::hash::StorageHasher,
-	Key: FullCodec,
-	Value: FullCodec + TStorage,
+	Key: FullCodec + 'static,
+	Value: FullCodec + TStorage + 'static,
 	QueryKind: QueryKindTrait<Value, OnEmpty>,
 	OnEmpty: Get<QueryKind::Query> + 'static,
-	MaxValues: Get<Option<u32>>,
+	MaxValues: Get<Option<u32>> + 'static,
 {
 	/// Get the storage key used to fetch a value corresponding to a specific key.
 	pub fn hashed_key_for<KeyArg: EncodeLike<Key>>(key: KeyArg) -> Vec<u8> {
@@ -167,7 +177,7 @@ where
 	}
 
 	/// Load the value reference associated with the given key from the map.
-	pub fn get_ref<KeyArg: EncodeLike<Key>>(key: KeyArg) -> RcT<Option<Value>> {
+	pub fn get_ref<KeyArg: EncodeLike<Key>>(key: KeyArg) -> RcT<QueryKind::Query> {
 		<Self as crate::storage::StorageMap<Key, Value>>::get_ref(key)
 	}
 
@@ -413,13 +423,13 @@ where
 impl<Prefix, Hasher, Key, Value, QueryKind, OnEmpty, MaxValues>
 	StorageMap<Prefix, Hasher, Key, Value, QueryKind, OnEmpty, MaxValues>
 where
-	Prefix: StorageInstance,
+	Prefix: StorageInstance + 'static,
 	Hasher: crate::hash::StorageHasher + crate::ReversibleStorageHasher,
-	Key: FullCodec,
-	Value: FullCodec + TStorage,
+	Key: FullCodec + 'static,
+	Value: FullCodec + TStorage + 'static,
 	QueryKind: QueryKindTrait<Value, OnEmpty>,
 	OnEmpty: Get<QueryKind::Query> + 'static,
-	MaxValues: Get<Option<u32>>,
+	MaxValues: Get<Option<u32>> + 'static,
 {
 	/// Enumerate all elements in the map in no particular order.
 	///
@@ -501,13 +511,13 @@ where
 impl<Prefix, Hasher, Key, Value, QueryKind, OnEmpty, MaxValues> crate::traits::StorageInfoTrait
 	for StorageMap<Prefix, Hasher, Key, Value, QueryKind, OnEmpty, MaxValues>
 where
-	Prefix: StorageInstance,
+	Prefix: StorageInstance + 'static,
 	Hasher: crate::hash::StorageHasher,
-	Key: FullCodec + MaxEncodedLen,
-	Value: FullCodec + TStorage + MaxEncodedLen,
+	Key: FullCodec + MaxEncodedLen + 'static,
+	Value: FullCodec + TStorage + 'static + MaxEncodedLen,
 	QueryKind: QueryKindTrait<Value, OnEmpty>,
 	OnEmpty: Get<QueryKind::Query> + 'static,
-	MaxValues: Get<Option<u32>>,
+	MaxValues: Get<Option<u32>> + 'static,
 {
 	fn storage_info() -> Vec<StorageInfo> {
 		vec![StorageInfo {
@@ -529,13 +539,13 @@ impl<Prefix, Hasher, Key, Value, QueryKind, OnEmpty, MaxValues>
 	crate::traits::PartialStorageInfoTrait
 	for StorageMap<Prefix, Hasher, Key, Value, QueryKind, OnEmpty, MaxValues>
 where
-	Prefix: StorageInstance,
+	Prefix: StorageInstance + 'static,
 	Hasher: crate::hash::StorageHasher,
-	Key: FullCodec,
-	Value: FullCodec + TStorage,
+	Key: FullCodec + 'static,
+	Value: FullCodec + TStorage + 'static,
 	QueryKind: QueryKindTrait<Value, OnEmpty>,
 	OnEmpty: Get<QueryKind::Query> + 'static,
-	MaxValues: Get<Option<u32>>,
+	MaxValues: Get<Option<u32>> + 'static,
 {
 	fn partial_storage_info() -> Vec<StorageInfo> {
 		vec![StorageInfo {

@@ -109,7 +109,7 @@ pub use self::{
 		migration,
 		weak_bounded_vec::WeakBoundedVec,
 		IterableStorageDoubleMap, IterableStorageMap, IterableStorageNMap, StorageDoubleMap,
-		StorageMap, StorageNMap, StoragePrefixedMap, StorageValue,
+		StorageMap, StorageNMap, StoragePrefixedMap, StorageValue, OptionQT, ValueQT, RcT,
 	},
 };
 pub use sp_runtime::{

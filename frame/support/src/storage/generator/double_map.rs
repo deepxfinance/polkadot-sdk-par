@@ -17,14 +17,12 @@
 
 use crate::{
 	hash::{ReversibleStorageHasher, StorageHasher},
-	storage::{self, storage_prefix, unhashed, KeyPrefixIterator, PrefixIterator, StorageAppend, TStorage},
+	storage::{self, storage_prefix, unhashed, KeyPrefixIterator, PrefixIterator, StorageAppend},
 	Never,
 };
 use codec::{Decode, Encode, EncodeLike, FullCodec, FullEncode};
 use sp_std::prelude::*;
-use scale_info::prelude::string::String;
-use typed_cache::{OptionQT, QueryTransfer};
-use crate::storage::{TypedAppend, RcT};
+use crate::storage::{QueryTransfer, TypedAppend, TStorage, OptionQT,  RcT};
 
 /// Generator for `StorageDoubleMap` used by `decl_storage`.
 ///
@@ -111,7 +109,7 @@ where
 	V: FullCodec + TStorage,
 	G: StorageDoubleMap<K1, K2, V>,
 {
-	type Query = G::Query;
+	type Query = G::Qry;
 
 	fn hashed_key_for<KArg1, KArg2>(k1: KArg1, k2: KArg2) -> Vec<u8>
 	where
@@ -128,7 +126,7 @@ where
 	{
 		let key = Self::storage_double_map_final_key(k1, k2);
 		#[cfg(feature = "std")]
-		{ unhashed::contains_key_cache::<V>(&key) }
+		{ unhashed::contains_key_cache::<G, V>(&key) }
 		#[cfg(not(feature = "std"))]
 		unhashed::exists(&key)
 	}
@@ -140,7 +138,7 @@ where
 	{
 		#[cfg(feature = "std")]
 		{
-			G::from_optional_value_to_query(unhashed::get_cache(
+			G::from_optional_value_to_query(unhashed::get_cache::<G, _, _>(
 				&Self::storage_double_map_final_key(k1, k2),
 				|_| { Option::<V>::None }
 			))
@@ -149,14 +147,18 @@ where
 		G::from_optional_value_to_query(unhashed::get(&Self::storage_double_map_final_key(k1, k2)))
 	}
 
-	fn get_ref<KArg1, KArg2>(k1: KArg1, k2: KArg2) -> RcT<Option<V>>
+	fn get_ref<KArg1, KArg2>(k1: KArg1, k2: KArg2) -> RcT<Self::Query>
 	where
 		KArg1: EncodeLike<K1>,
 		KArg2: EncodeLike<K2>
 	{
-		unhashed::get_cache_ref(
-			&Self::storage_double_map_final_key(k1, k2),
-			#[cfg(feature = "std")] |_| { Option::<V>::None },
+		let final_key = Self::storage_double_map_final_key(k1, k2);
+		unhashed::get_cache_ref::<G, _, _>(
+			&final_key,
+			#[cfg(feature = "std")] 
+			|_| { Option::<V>::None },
+			#[cfg(not(feature = "std"))]
+			|key| { unhashed::get(key) },
 		)
 	}
 
@@ -167,7 +169,7 @@ where
 	{
 		#[cfg(feature = "std")]
 		{
-			unhashed::get_cache(
+			unhashed::get_cache::<G, _, _>(
 				&Self::storage_double_map_final_key(k1, k2),
 				|_| { Option::<V>::None }
 			)
@@ -191,7 +193,7 @@ where
 	{
 		let final_key = Self::storage_double_map_final_key(k1, k2);
 		#[cfg(feature = "std")]
-		let value = unhashed::take_cache(&final_key);
+		let value = unhashed::take_cache::<G, _>(&final_key);
 		#[cfg(not(feature = "std"))]
 		let value = unhashed::take(&final_key);
 		G::from_optional_value_to_query(value)
@@ -209,16 +211,16 @@ where
 
 		#[cfg(feature = "std")]
 		{
-			let v1 = unhashed::get_cache(&final_x_key, |_| { Option::<V>::None });
-			if let Some(val) = unhashed::get_cache(&final_y_key, |_| { Option::<V>::None }) {
-				unhashed::put_cache(&final_x_key, val);
+			let v1 = unhashed::get_cache::<G, _, _>(&final_x_key, |_| { Option::<V>::None });
+			if let Some(val) = unhashed::get_cache::<G, _, _>(&final_y_key, |_| { Option::<V>::None }) {
+				unhashed::put_cache::<G, _>(&final_x_key, val);
 			} else {
-				unhashed::kill_cache::<V>(&final_x_key);
+				unhashed::kill_cache::<G, V>(&final_x_key);
 			}
 			if let Some(val) = v1 {
-				unhashed::put_cache(&final_y_key, val);
+				unhashed::put_cache::<G, _>(&final_y_key, val);
 			} else {
-				unhashed::kill_cache::<V>(&final_y_key);
+				unhashed::kill_cache::<G, V>(&final_y_key);
 			}
 		}
 		#[cfg(not(feature = "std"))]
@@ -244,7 +246,7 @@ where
 		KArg2: EncodeLike<K2>
 	{
 		#[cfg(feature = "std")]
-		unhashed::put_cache(&Self::storage_double_map_final_key(k1, k2), val);
+		unhashed::put_cache::<G, _>(&Self::storage_double_map_final_key(k1, k2), val);
 		#[cfg(not(feature = "std"))]
 		unhashed::put(&Self::storage_double_map_final_key(k1, k2), &val)
 	}
@@ -265,7 +267,7 @@ where
 		KArg2: EncodeLike<K2>,
 	{
 		#[cfg(feature = "std")]
-		unhashed::kill_cache::<V>(&Self::storage_double_map_final_key(k1, k2));
+		unhashed::kill_cache::<G, V>(&Self::storage_double_map_final_key(k1, k2));
 		#[cfg(not(feature = "std"))]
 		unhashed::kill(&Self::storage_double_map_final_key(k1, k2))
 	}
@@ -382,7 +384,7 @@ where
 	{
 		let final_key = Self::storage_double_map_final_key(k1, k2);
 		#[cfg(feature = "std")]
-		let mut val = G::from_optional_value_to_query(unhashed::get_cache(
+		let mut val = G::from_optional_value_to_query(unhashed::get_cache::<G, _, _>(
 			final_key.as_ref(),
 			|_| { Option::<V>::None }
 		));
@@ -394,13 +396,13 @@ where
 			match G::from_query_to_optional_value(val) {
 				Some(ref val) => {
 					#[cfg(feature = "std")]
-					unhashed::put_cache(final_key.as_ref(), val.clone());
+					unhashed::put_cache::<G, _>(final_key.as_ref(), val.clone());
 					#[cfg(not(feature = "std"))]
 					unhashed::put(final_key.as_ref(), val)
 				},
 				None => {
 					#[cfg(feature = "std")]
-					unhashed::kill_cache::<V>(final_key.as_ref());
+					unhashed::kill_cache::<G, V>(final_key.as_ref());
 					#[cfg(not(feature = "std"))]
 					unhashed::kill(final_key.as_ref())
 				},
@@ -432,7 +434,7 @@ where
 	{
 		let final_key = Self::storage_double_map_final_key(k1, k2);
 		#[cfg(feature = "std")]
-		let mut val = unhashed::get_cache(final_key.as_ref(), |_| { Option::<V>::None });
+		let mut val = unhashed::get_cache::<G, _, _>(final_key.as_ref(), |_| { Option::<V>::None });
 		#[cfg(not(feature = "std"))]
 		let mut val = unhashed::get(final_key.as_ref());
 
@@ -441,13 +443,13 @@ where
 			match val {
 				Some(ref val) => {
 					#[cfg(feature = "std")]
-					unhashed::put_cache(final_key.as_ref(), val.clone());
+					unhashed::put_cache::<G, _>(final_key.as_ref(), val.clone());
 					#[cfg(not(feature = "std"))]
 					unhashed::put(final_key.as_ref(), val)
 				},
 				None => {
 					#[cfg(feature = "std")]
-					unhashed::kill_cache::<V>(final_key.as_ref());
+					unhashed::kill_cache::<G, V>(final_key.as_ref());
 					#[cfg(not(feature = "std"))]
 					unhashed::kill(final_key.as_ref())
 				},
@@ -464,7 +466,7 @@ where
 		V: TypedAppend<Item> + TStorage
 	{
 		let final_key = Self::storage_double_map_final_key(k1, k2);
-		unhashed::append_cache::<V, Item>(&final_key, item);
+		unhashed::append_cache::<G, V, Item>(&final_key, item);
 	}
 
 	#[cfg(not(feature = "std"))]
@@ -506,8 +508,8 @@ where
 		};
 		#[cfg(feature = "std")]
 		{
-			unhashed::take_cache::<V>(&old_key).map(|value| {
-				unhashed::put_cache(Self::storage_double_map_final_key(key1, key2).as_ref(), value.clone());
+			unhashed::take_cache::<G, _>(&old_key).map(|value| {
+				unhashed::put_cache::<G, _>(Self::storage_double_map_final_key(key1, key2).as_ref(), value.clone());
 				value
 			})
 		}

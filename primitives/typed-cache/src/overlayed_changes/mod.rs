@@ -1,6 +1,9 @@
+#[cfg(feature = "std")]
 pub mod changeset;
 #[cfg(feature = "std")]
 pub mod storage;
+#[cfg(feature = "std")]
+pub use storage::*;
 use sp_std::vec::Vec;
 use sp_std::collections::btree_set::BTreeSet;
 
@@ -27,4 +30,13 @@ impl Extrinsics {
     fn extend(&mut self, other: Self) {
         self.0.extend(other.0.into_iter());
     }
+}
+
+/// Describes in which mode the node is currently executing.
+#[derive(Debug, Clone, Copy)]
+pub enum ExecutionMode {
+    /// Executing in client mode: Removal of all transactions possible.
+    Client,
+    /// Executing in runtime mode: Transactions started by the client are protected.
+    Runtime,
 }

@@ -33,6 +33,7 @@ use crate::{
 	ConsensusEngineId,
 };
 use sp_core::RuntimeDebug;
+use typed_cache::TypedAppend;
 
 /// Generic header digest.
 #[derive(PartialEq, Eq, Clone, Encode, Decode, RuntimeDebug, TypeInfo, Default)]
@@ -40,6 +41,12 @@ use sp_core::RuntimeDebug;
 pub struct Digest {
 	/// A list of logs in the digest.
 	pub logs: Vec<DigestItem>,
+}
+
+impl TypedAppend<DigestItem> for Digest {
+	fn append(&mut self, item: DigestItem) {
+		self.logs.push(item);
+	}
 }
 
 impl Digest {

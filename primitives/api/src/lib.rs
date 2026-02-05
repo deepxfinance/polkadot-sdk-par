@@ -456,6 +456,7 @@ pub use sp_api_proc_macro::impl_runtime_apis;
 pub use sp_api_proc_macro::mock_impl_runtime_apis;
 #[cfg(feature = "std")]
 pub use sp_state_machine::{StorageValue, StorageKey};
+pub use typed_cache::QueryTransfer;
 
 /// A type that records all accessed trie nodes and generates a proof out of it.
 #[cfg(feature = "std")]
@@ -613,7 +614,7 @@ pub trait ApiExt<Block: BlockT> {
 	where
 		Self: Sized;
 
-	fn get_typed_change<T: Clone + codec::FullCodec + 'static>(&self, space: &[u8], key: &StorageKey) -> Option<Option<T>>
+	fn get_typed_change<QT: QueryTransfer<T>, T: Clone + codec::FullCodec + 'static>(&self, space: &[u8], key: &StorageKey) -> Option<Option<T>>
 	where
 		Self: Sized;
 	

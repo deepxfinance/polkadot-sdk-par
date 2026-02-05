@@ -82,12 +82,16 @@ impl<T> RcT<T> {
         RcT(self.0.clone())
     }
 
-    pub fn into_inner(self) -> Result<Option<T>, u32> {
+    pub fn into_inner(self) -> Result<T, u32> {
         let rc_count = Rc::strong_count(&self.0);
         if rc_count > 1 {
             Err(rc_count as u32)
         } else {
-            Ok(Rc::into_inner(self.0).map(|r| r.into_inner().inner))
+            Ok(
+                Rc::into_inner(self.0)
+                    .map(|r| r.into_inner().inner)
+                    .expect("Rc count 1 into_inner should success")
+            )
         }
     }
 }

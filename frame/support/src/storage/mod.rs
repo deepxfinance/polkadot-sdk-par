@@ -45,6 +45,7 @@ pub use sp_state_machine::TStorage;
 pub use typed_cache::RcT;
 #[cfg(not(feature = "std"))]
 pub use no_std_rct::RcT;
+pub use typed_cache::{OptionQT, ValueQT, TypedAppend, QueryTransfer};
 
 #[cfg(not(feature = "std"))]
 pub mod no_std_rct;
@@ -90,7 +91,7 @@ pub trait StorageValue<T: FullCodec + TStorage> {
 	fn get() -> Self::Query;
 
 	/// Load the value reference from the provided storage instance.
-	fn get_ref() -> RcT<Option<T>>;
+	fn get_ref() -> RcT<Self::Query>;
 
 	/// Try to get the underlying value from the provided storage instance.
 	///
@@ -216,7 +217,7 @@ pub trait StorageMap<K: FullEncode, V: FullCodec> {
 	fn get<KeyArg: EncodeLike<K>>(key: KeyArg) -> Self::Query;
 
 	/// Load the value reference associated with the given key from the map.
-	fn get_ref<KeyArg: EncodeLike<K>>(key: KeyArg) -> RcT<Option<V>>;
+	fn get_ref<KeyArg: EncodeLike<K>>(key: KeyArg) -> RcT<Self::Query>;
 
 	/// Store or remove the value to be associated with `key` so that `get` returns the `query`.
 	fn set<KeyArg: EncodeLike<K>>(key: KeyArg, query: Self::Query);
@@ -558,7 +559,7 @@ pub trait StorageDoubleMap<K1: FullEncode, K2: FullEncode, V: FullCodec> {
 		KArg2: EncodeLike<K2>;
 
 	/// Load the value reference associated with the given key from the double map.
-	fn get_ref<KArg1, KArg2>(k1: KArg1, k2: KArg2) -> RcT<Option<V>>
+	fn get_ref<KArg1, KArg2>(k1: KArg1, k2: KArg2) -> RcT<Self::Query>
 	where
 		KArg1: EncodeLike<K1>,
 		KArg2: EncodeLike<K2>;
@@ -790,7 +791,7 @@ pub trait StorageNMap<K: KeyGenerator, V: FullCodec> {
 	fn get<KArg: EncodeLikeTuple<K::KArg> + TupleToEncodedIter>(key: KArg) -> Self::Query;
 
 	/// Load the value reference associated with the given key from the map.
-	fn get_ref<KArg: EncodeLikeTuple<K::KArg> + TupleToEncodedIter>(key: KArg) -> RcT<Option<V>>;
+	fn get_ref<KArg: EncodeLikeTuple<K::KArg> + TupleToEncodedIter>(key: KArg) -> RcT<Self::Query>;
 
 	/// Try to get the value for the given key from the map.
 	///
@@ -1436,28 +1437,6 @@ pub trait StoragePrefixedMap<Value: FullCodec + TStorage> {
 	}
 }
 
-pub trait TypedAppend<Item>: Default {
-	fn append(&mut self, item: Item);
-}
-
-impl<T> TypedAppend<T> for Vec<T> {
-	fn append(&mut self, item: T) {
-		self.push(item);
-	}
-}
-
-impl<T: core::cmp::Ord> TypedAppend<T> for BTreeSet<T> {
-	fn append(&mut self, item: T) {
-		self.insert(item);
-	}
-}
-
-impl TypedAppend<DigestItem> for Digest {
-	fn append(&mut self, item: DigestItem) {
-		self.logs.push(item);
-	}
-}
-
 /// Marker trait that will be implemented for types that support the `storage::append` api.
 ///
 /// This trait is sealed.
@@ -1771,11 +1750,11 @@ mod test {
 					b"Storage"
 				}
 
-				fn from_optional_value_to_query(v: Option<Digest>) -> Self::Query {
+				fn from_optional_value_to_query(v: Option<Digest>) -> Self::Qry {
 					v.unwrap()
 				}
 
-				fn from_query_to_optional_value(v: Self::Query) -> Option<Digest> {
+				fn from_query_to_optional_value(v: Self::Qry) -> Option<Digest> {
 					Some(v)
 				}
 			}
@@ -1806,11 +1785,11 @@ mod test {
 					b"MyStorageMap"
 				}
 
-				fn from_optional_value_to_query(v: Option<u64>) -> Self::Query {
+				fn from_optional_value_to_query(v: Option<u64>) -> Self::Qry {
 					v.unwrap_or_default()
 				}
 
-				fn from_query_to_optional_value(v: Self::Query) -> Option<u64> {
+				fn from_query_to_optional_value(v: Self::Qry) -> Option<u64> {
 					Some(v)
 				}
 			}

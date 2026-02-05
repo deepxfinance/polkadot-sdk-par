@@ -22,7 +22,7 @@ use crate::{
 	metadata_ir::{StorageEntryMetadataIR, StorageEntryTypeIR},
 	storage::{
 		types::{OptionQuery, QueryKindTrait, StorageEntryMetadataBuilder},
-		KeyLenOf, StorageAppend, StorageDecodeLength, StoragePrefixedMap, StorageTryAppend, TStorage,
+		KeyLenOf, StorageAppend, StorageDecodeLength, StoragePrefixedMap, StorageTryAppend,
 	},
 	traits::{Get, GetDefault, StorageInfo, StorageInstance},
 	StorageHasher, Twox128,
@@ -30,8 +30,7 @@ use crate::{
 use codec::{Decode, Encode, EncodeLike, FullCodec, MaxEncodedLen};
 use sp_arithmetic::traits::SaturatedConversion;
 use sp_std::prelude::*;
-use typed_cache::QueryTransfer;
-use crate::storage::{TypedAppend,  RcT};
+use crate::storage::{QueryTransfer, TypedAppend, TStorage,  RcT};
 
 /// A type that allow to store values for `(key1, key2)` couple. Similar to `StorageMap` but allow
 /// to iterate and remove value associated to first key.
@@ -105,30 +104,41 @@ impl<Prefix, Hasher1, Key1, Hasher2, Key2, Value, QueryKind, OnEmpty, MaxValues>
 impl<Prefix, Hasher1, Key1, Hasher2, Key2, Value, QueryKind, OnEmpty, MaxValues> QueryTransfer<Value>
 for StorageDoubleMap<Prefix, Hasher1, Key1, Hasher2, Key2, Value, QueryKind, OnEmpty, MaxValues>
 where
-	Prefix: StorageInstance,
+	Prefix: StorageInstance + 'static,
 	Hasher1: crate::hash::StorageHasher,
 	Hasher2: crate::hash::StorageHasher,
-	Key1: FullCodec,
-	Key2: FullCodec,
-	Value: FullCodec + TStorage,
+	Key1: FullCodec + 'static,
+	Key2: FullCodec + 'static,
+	Value: FullCodec + TStorage + 'static,
 	QueryKind: QueryKindTrait<Value, OnEmpty>,
 	OnEmpty: Get<QueryKind::Query> + 'static,
-	MaxValues: Get<Option<u32>>,
+	MaxValues: Get<Option<u32>> + 'static,
 {
-	type Query = QueryKind::Query;
+	type Qry = QueryKind::Query;
 	fn from_optional_value_to_query(v: Option<Value>) -> QueryKind::Query {
 		QueryKind::from_optional_value_to_query(v)
 	}
 
-	fn mut_from_optional_value_to_query<M, R, E>(v: &mut Option<Value>, m: M) -> (Result<R, E>, Option<Value>)
-	where
-		M: FnOnce(&mut Self::Query) -> Result<R, E>
-	{
-		QueryKind::mut_from_optional_value_to_query(v, m)
-	}
-
 	fn from_query_to_optional_value(v: QueryKind::Query) -> Option<Value> {
 		QueryKind::from_query_to_optional_value(v)
+	}
+
+	fn mut_query<M, R, E>(v: &mut Self::Qry, m: M) -> Result<R, E>
+	where
+		M: FnOnce(&mut Self::Qry) -> Result<R, E>
+	{
+		QueryKind::mut_query(v, m)
+	}
+
+	fn append_query<QT: QueryTransfer<Value>, Item>(v: &mut Self::Qry, item: Item)
+	where
+		Value: TypedAppend<Item>,
+	{
+		QueryKind::append_query::<QT, Item>(v, item)
+	}
+
+	fn exists(v: &Self::Qry) -> bool {
+		QueryKind::exists(v)
 	}
 }
 
@@ -136,15 +146,15 @@ impl<Prefix, Hasher1, Key1, Hasher2, Key2, Value, QueryKind, OnEmpty, MaxValues>
 	crate::storage::generator::StorageDoubleMap<Key1, Key2, Value>
 	for StorageDoubleMap<Prefix, Hasher1, Key1, Hasher2, Key2, Value, QueryKind, OnEmpty, MaxValues>
 where
-	Prefix: StorageInstance,
+	Prefix: StorageInstance + 'static,
 	Hasher1: crate::hash::StorageHasher,
 	Hasher2: crate::hash::StorageHasher,
-	Key1: FullCodec,
-	Key2: FullCodec,
-	Value: FullCodec + TStorage,
+	Key1: FullCodec + 'static,
+	Key2: FullCodec + 'static,
+	Value: FullCodec + TStorage + 'static,
 	QueryKind: QueryKindTrait<Value, OnEmpty>,
 	OnEmpty: Get<QueryKind::Query> + 'static,
-	MaxValues: Get<Option<u32>>,
+	MaxValues: Get<Option<u32>> + 'static,
 {
 	type Hasher1 = Hasher1;
 	type Hasher2 = Hasher2;
@@ -160,15 +170,15 @@ impl<Prefix, Hasher1, Key1, Hasher2, Key2, Value, QueryKind, OnEmpty, MaxValues>
 	StoragePrefixedMap<Value>
 	for StorageDoubleMap<Prefix, Hasher1, Key1, Hasher2, Key2, Value, QueryKind, OnEmpty, MaxValues>
 where
-	Prefix: StorageInstance,
+	Prefix: StorageInstance + 'static,
 	Hasher1: crate::hash::StorageHasher,
 	Hasher2: crate::hash::StorageHasher,
-	Key1: FullCodec,
-	Key2: FullCodec,
-	Value: FullCodec + TStorage,
+	Key1: FullCodec + 'static,
+	Key2: FullCodec + 'static,
+	Value: FullCodec + TStorage + 'static,
 	QueryKind: QueryKindTrait<Value, OnEmpty>,
 	OnEmpty: Get<QueryKind::Query> + 'static,
-	MaxValues: Get<Option<u32>>,
+	MaxValues: Get<Option<u32>> + 'static,
 {
 	fn module_prefix() -> &'static [u8] {
 		<Self as crate::storage::generator::StorageDoubleMap<Key1, Key2, Value>>::module_prefix()
@@ -181,15 +191,15 @@ where
 impl<Prefix, Hasher1, Key1, Hasher2, Key2, Value, QueryKind, OnEmpty, MaxValues>
 	StorageDoubleMap<Prefix, Hasher1, Key1, Hasher2, Key2, Value, QueryKind, OnEmpty, MaxValues>
 where
-	Prefix: StorageInstance,
+	Prefix: StorageInstance + 'static,
 	Hasher1: crate::hash::StorageHasher,
 	Hasher2: crate::hash::StorageHasher,
-	Key1: FullCodec,
-	Key2: FullCodec,
-	Value: FullCodec + TStorage,
+	Key1: FullCodec + 'static,
+	Key2: FullCodec + 'static,
+	Value: FullCodec + TStorage + 'static,
 	QueryKind: QueryKindTrait<Value, OnEmpty>,
 	OnEmpty: Get<QueryKind::Query> + 'static,
-	MaxValues: Get<Option<u32>>,
+	MaxValues: Get<Option<u32>> + 'static,
 {
 	/// Get the storage key used to fetch a value corresponding to a specific key.
 	pub fn hashed_key_for<KArg1, KArg2>(k1: KArg1, k2: KArg2) -> Vec<u8>
@@ -219,7 +229,7 @@ where
 	}
 
 	/// Load the value reference associated with the given key from the double map.
-	pub fn get_ref<KArg1, KArg2>(k1: KArg1, k2: KArg2) -> RcT<Option<Value>>
+	pub fn get_ref<KArg1, KArg2>(k1: KArg1, k2: KArg2) -> RcT<QueryKind::Query>
 	where
 		KArg1: EncodeLike<Key1>,
 		KArg2: EncodeLike<Key2>,
@@ -604,15 +614,15 @@ where
 impl<Prefix, Hasher1, Key1, Hasher2, Key2, Value, QueryKind, OnEmpty, MaxValues>
 	StorageDoubleMap<Prefix, Hasher1, Key1, Hasher2, Key2, Value, QueryKind, OnEmpty, MaxValues>
 where
-	Prefix: StorageInstance,
+	Prefix: StorageInstance + 'static,
 	Hasher1: crate::hash::StorageHasher + crate::ReversibleStorageHasher,
 	Hasher2: crate::hash::StorageHasher + crate::ReversibleStorageHasher,
-	Key1: FullCodec,
-	Key2: FullCodec,
-	Value: FullCodec + TStorage,
+	Key1: FullCodec + 'static,
+	Key2: FullCodec + 'static,
+	Value: FullCodec + TStorage + 'static,
 	QueryKind: QueryKindTrait<Value, OnEmpty>,
 	OnEmpty: Get<QueryKind::Query> + 'static,
-	MaxValues: Get<Option<u32>>,
+	MaxValues: Get<Option<u32>> + 'static,
 {
 	/// Enumerate all elements in the map with first key `k1` in no particular order.
 	///
@@ -764,15 +774,15 @@ impl<Prefix, Hasher1, Hasher2, Key1, Key2, Value, QueryKind, OnEmpty, MaxValues>
 	crate::traits::StorageInfoTrait
 	for StorageDoubleMap<Prefix, Hasher1, Key1, Hasher2, Key2, Value, QueryKind, OnEmpty, MaxValues>
 where
-	Prefix: StorageInstance,
+	Prefix: StorageInstance + 'static,
 	Hasher1: crate::hash::StorageHasher,
 	Hasher2: crate::hash::StorageHasher,
-	Key1: FullCodec + MaxEncodedLen,
-	Key2: FullCodec + MaxEncodedLen,
-	Value: FullCodec + TStorage + MaxEncodedLen,
+	Key1: FullCodec + MaxEncodedLen + 'static,
+	Key2: FullCodec + MaxEncodedLen + 'static,
+	Value: FullCodec + TStorage + 'static + MaxEncodedLen,
 	QueryKind: QueryKindTrait<Value, OnEmpty>,
 	OnEmpty: Get<QueryKind::Query> + 'static,
-	MaxValues: Get<Option<u32>>,
+	MaxValues: Get<Option<u32>> + 'static,
 {
 	fn storage_info() -> Vec<StorageInfo> {
 		vec![StorageInfo {
@@ -795,15 +805,15 @@ impl<Prefix, Hasher1, Hasher2, Key1, Key2, Value, QueryKind, OnEmpty, MaxValues>
 	crate::traits::PartialStorageInfoTrait
 	for StorageDoubleMap<Prefix, Hasher1, Key1, Hasher2, Key2, Value, QueryKind, OnEmpty, MaxValues>
 where
-	Prefix: StorageInstance,
+	Prefix: StorageInstance + 'static,
 	Hasher1: crate::hash::StorageHasher,
 	Hasher2: crate::hash::StorageHasher,
-	Key1: FullCodec,
-	Key2: FullCodec,
-	Value: FullCodec + TStorage,
+	Key1: FullCodec + 'static,
+	Key2: FullCodec + 'static,
+	Value: FullCodec + TStorage + 'static,
 	QueryKind: QueryKindTrait<Value, OnEmpty>,
 	OnEmpty: Get<QueryKind::Query> + 'static,
-	MaxValues: Get<Option<u32>>,
+	MaxValues: Get<Option<u32>> + 'static,
 {
 	fn partial_storage_info() -> Vec<StorageInfo> {
 		vec![StorageInfo {

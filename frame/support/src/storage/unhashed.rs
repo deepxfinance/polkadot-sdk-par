@@ -19,12 +19,7 @@
 
 use codec::{Decode, Encode, FullCodec};
 use sp_std::prelude::*;
-use typed_cache::QueryTransfer;
-#[cfg(feature = "std")]
-use typed_cache::RcT;
-#[cfg(not(feature = "std"))]
-use super::no_std_rct::RcT;
-use crate::storage::{TStorage, TypedAppend};
+use crate::storage::{QueryTransfer, TypedAppend, TStorage,  RcT};
 
 #[cfg(all(feature = "std", feature = "dev-time"))]
 lazy_static::lazy_static! {
@@ -92,34 +87,34 @@ fn parse_type<T: Decode>(key: &[u8], val: Vec<u8>) -> Option<T> {
 }
 
 #[cfg(feature = "std")]
-pub fn contains_key_cache<T: FullCodec + TStorage>(key: &[u8]) -> bool {
-	sp_io::mut_typed_cache(|o| o.contains_key::<T>(key_prefix(key), &key))
+pub fn contains_key_cache<QT: QueryTransfer<T>, T: FullCodec + TStorage>(key: &[u8]) -> bool {
+	sp_io::mut_typed_cache(|o| o.contains_key::<QT, T>(key_prefix(key), &key))
 		.map(|v| v.unwrap_or(exists(key)))
 		.unwrap_or(exists(key))
 }
 
 #[cfg(feature = "std")]
-pub fn put_cache<T: FullCodec + TStorage>(key: &[u8], val: T) {
+pub fn put_cache<QT: QueryTransfer<T>, T: FullCodec + TStorage>(key: &[u8], val: T) {
 	if sp_io::mut_typed_cache(|_| ()).is_none() {
 		put(key, &val);
 	} else {
-		sp_io::mut_typed_cache(|o| o.put(key_prefix(key), &key, val));
+		sp_io::mut_typed_cache(|o| o.put::<QT, _>(key_prefix(key), &key, val));
 	}
 }
 
 #[cfg(feature = "std")]
-pub fn get_cache_ref<T: FullCodec + TStorage, F>(key: &[u8], _f: F) -> RcT<Option<T>>
+pub fn get_cache_ref<QT: QueryTransfer<T>, T: FullCodec + TStorage, F>(key: &[u8], _f: F) -> RcT<QT::Qry>
 where
 	F: Fn(&[u8]) -> Option<T>
 {
 	match sp_io::mut_typed_cache(
-		|o| o.get_ref::<T, F>(key_prefix(key), key, None),
+		|o| o.get_ref::<QT, T, F>(key_prefix(key), key, None),
 	) {
 		Some(Some(value)) => value,
 		Some(None) => {
 			let res = get::<T>(key);
-			sp_io::mut_typed_cache(|o| o.init(key_prefix(key), key, res));
-			sp_io::mut_typed_cache(|o| o.get_ref::<T, F>(key_prefix(key), key, None))
+			sp_io::mut_typed_cache(|o| o.init::<QT, _>(key_prefix(key), key, res));
+			sp_io::mut_typed_cache(|o| o.get_ref::<QT, T, F>(key_prefix(key), key, None))
 				.expect("get_cache_ref should enable typed_cache")
 				.expect("get_cache_ref should have initialized")
 		}
@@ -128,19 +123,22 @@ where
 }
 
 #[cfg(not(feature = "std"))]
-pub fn get_cache_ref<T: Decode + Sized>(key: &[u8]) -> RcT<Option<T>> {
-	RcT::new(key, get(key))
+pub fn get_cache_ref<QT: QueryTransfer<T>, T: Decode + Sized, F>(key: &[u8], f: F) -> RcT<QT::Qry>
+where
+	F: Fn(&[u8]) -> Option<T>
+{
+	RcT::new(key, QT::from_optional_value_to_query(f(key)))
 }
 
 #[cfg(feature = "std")]
-pub fn get_cache<T: FullCodec + TStorage, F>(key: &[u8], _f: F) -> Option<T> where F: Fn(&[u8]) -> Option<T> {
+pub fn get_cache<QT: QueryTransfer<T>, T: FullCodec + TStorage, F>(key: &[u8], _f: F) -> Option<T> where F: Fn(&[u8]) -> Option<T> {
 	match sp_io::mut_typed_cache(
-		|o| o.get::<T, F>(key_prefix(key), key, None),
+		|o| o.get::<QT, T, F>(key_prefix(key), key, None),
 	) {
 		Some(Some(value)) => value,
 		Some(None) => {
 			let res = get(key);
-			sp_io::mut_typed_cache(|o| o.init(key_prefix(key), key, res.clone()));
+			sp_io::mut_typed_cache(|o| o.init::<QT, _>(key_prefix(key), key, res.clone()));
 			res
 		}
 		None => get(key),
@@ -153,11 +151,11 @@ pub fn get_cache<T: FullCodec + TStorage, F>(key: &[u8], _f: F) -> Option<T> whe
 pub fn mutate_cache<QT: QueryTransfer<T>, T: FullCodec + TStorage, Ini, F, R, E>(key: &[u8], _ini: Ini, f: F) -> Result<R, E>
 where
 	Ini: FnOnce() -> Option<T>,
-	F: FnOnce(&mut QT::Query) -> Result<R, E>
+	F: FnOnce(&mut QT::Qry) -> Result<R, E>
 {
 	let key_prefix = key_prefix(key);
 	match sp_io::mut_typed_cache(
-		|o| o.cached::<T>(key_prefix, key),
+		|o| o.cached::<QT, T>(key_prefix, key),
 	) {
 		Some(cached) => if cached {
 			sp_io::mut_typed_cache(|o| o.mutate::<QT, T, Ini, F, _, _>(key_prefix, key, None, f))
@@ -184,17 +182,17 @@ where
 }
 
 #[cfg(feature = "std")]
-pub fn take_cache<T: FullCodec + TStorage>(key: &[u8]) -> Option<T> {
+pub fn take_cache<QT: QueryTransfer<T>, T: FullCodec + TStorage>(key: &[u8]) -> Option<T> {
 	match sp_io::mut_typed_cache(
-		|o| o.take::<T>(key_prefix(key), key),
+		|o| o.take::<QT, T>(key_prefix(key), key),
 	) {
-		Some(Some(value)) => value,
+		Some(Some(value)) => QT::from_query_to_optional_value(value),
 		Some(None) => {
 			let res = get(key);
 			if res.is_some() {
-				sp_io::mut_typed_cache(|o| o.kill::<T>(key_prefix(key), key));
+				sp_io::mut_typed_cache(|o| o.kill::<QT, T>(key_prefix(key), key));
 			} else {
-				sp_io::mut_typed_cache(|o| o.init(key_prefix(key), key, res.clone()));
+				sp_io::mut_typed_cache(|o| o.init::<QT, _>(key_prefix(key), key, res.clone()));
 			}
 			res
 		}
@@ -203,39 +201,34 @@ pub fn take_cache<T: FullCodec + TStorage>(key: &[u8]) -> Option<T> {
 }
 
 #[cfg(feature = "std")]
-pub fn kill_cache<T: FullCodec + TStorage>(key: &[u8]) {
+pub fn kill_cache<QT: QueryTransfer<T>, T: FullCodec + TStorage>(key: &[u8]) {
 	if sp_io::mut_typed_cache(|_| ()).is_none() {
 		kill(key);
 	} else {
-		sp_io::mut_typed_cache(|o| o.kill::<T>(key_prefix(key), key));
+		sp_io::mut_typed_cache(|o| o.kill::<QT, T>(key_prefix(key), key));
 	}
 }
 
 #[cfg(feature = "std")]
-pub fn append_cache<T: FullCodec + TStorage, Item: Encode + Clone>(key: &[u8], item: Item)
+pub fn append_cache<QT: QueryTransfer<T>, T, Item: Encode>(key: &[u8], item: Item)
 where
-	T: TypedAppend<Item> + TStorage
+	T: TypedAppend<Item> + FullCodec + TStorage
 {
 	sp_io::mut_externalities(|ext|  {
 		let mut raw_value = None;
 		if let Some(overlay) = ext.overlay_cache() {
-			if overlay.contains_key::<T>(key_prefix(key), key).is_none() {
+			if overlay.contains_key::<QT, T>(key_prefix(key), key).is_none() {
 				raw_value = ext.storage(&key);
 			};
 		};
 		if let Some(overlay) = ext.overlay_cache() {
-			let updated = overlay.append::<T, _, _>(
+			if !overlay.append::<QT, T, _, _>(
 				key_prefix(key),
 				&key,
 				|| { raw_value.clone().and_then(|val| parse_type(key, val)).unwrap_or_default() },
-				|t| {
-					t.as_mut().map(|t| t.append(item.clone()));
-				}
-			);
-			if !updated {
-				let mut new_value: T = get_cache(key, |_| { Option::<T>::None }).unwrap_or_default();
-				new_value.append(item);
-				sp_io::mut_typed_cache(|o| o.put(key_prefix(key), &key, new_value));
+				item
+			) {
+				panic!("append_cache should success");
 			}
 		} else {
 			append(key, item);

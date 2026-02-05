@@ -19,7 +19,7 @@
 //! StorageMap and others.
 
 use crate::metadata_ir::{StorageEntryMetadataIR, StorageEntryModifierIR};
-use codec::FullCodec;
+use codec::{Encode, FullCodec};
 use sp_std::prelude::*;
 
 mod counted_map;
@@ -37,8 +37,9 @@ pub use key::{
 };
 pub use map::StorageMap;
 pub use nmap::StorageNMap;
+use typed_cache::StdClone;
+use crate::storage::{QueryTransfer, TypedAppend, TStorage};
 pub use value::StorageValue;
-use crate::storage::TStorage;
 
 /// Trait implementing how the storage optional value is converted into the queried type.
 ///
@@ -49,25 +50,32 @@ use crate::storage::TStorage;
 ///   returns a result value.
 /// * `ValueQuery` which converts an optional value to a value, used when querying storage returns a
 ///   value.
-pub trait QueryKindTrait<Value, OnEmpty> {
+pub trait QueryKindTrait<Value, OnEmpty>: 'static {
 	/// Metadata for the storage kind.
 	const METADATA: StorageEntryModifierIR;
 
 	/// Type returned on query
-	type Query: FullCodec + 'static;
+	type Query: FullCodec + TStorage;
 
 	/// Convert an optional value (i.e. some if trie contains the value or none otherwise) to the
 	/// query.
 	fn from_optional_value_to_query(v: Option<Value>) -> Self::Query;
 
+	/// Convert a query to an optional value.
+	fn from_query_to_optional_value(v: Self::Query) -> Option<Value>;
+
 	/// Convert an optional value (i.e. some if trie contains the value or none otherwise) to the
 	/// query.
-	fn mut_from_optional_value_to_query<M, R, E>(v: &mut Option<Value>, m: M) -> (Result<R, E>, Option<Value>)
+	fn mut_query<M, R, E>(v: &mut Self::Query, m: M) -> Result<R, E>
 	where
 		M: FnOnce(&mut Self::Query) -> Result<R, E>;
 
-	/// Convert a query to an optional value.
-	fn from_query_to_optional_value(v: Self::Query) -> Option<Value>;
+	/// Append value for special list.
+	fn append_query<QT: QueryTransfer<Value>, Item>(v: &mut Self::Query, item: Item)
+	where
+		Value: TypedAppend<Item>;
+
+	fn exists(v: &Self::Query) -> bool;
 }
 
 /// Implement QueryKindTrait with query being `Option<Value>`
@@ -78,7 +86,7 @@ pub trait QueryKindTrait<Value, OnEmpty> {
 pub struct OptionQuery;
 impl<Value> QueryKindTrait<Value, crate::traits::GetDefault> for OptionQuery
 where
-	Value: FullCodec + TStorage + 'static,
+	Value: FullCodec + StdClone + 'static,
 {
 	const METADATA: StorageEntryModifierIR = StorageEntryModifierIR::Optional;
 
@@ -89,15 +97,33 @@ where
 		v
 	}
 
-	fn mut_from_optional_value_to_query<M, R, E>(v: &mut Option<Value>, m: M) -> (Result<R, E>, Option<Value>)
+	fn from_query_to_optional_value(v: Self::Query) -> Option<Value> {
+		v
+	}
+
+	fn mut_query<M, R, E>(v: &mut Self::Query, m: M) -> Result<R, E>
 	where
 		M: FnOnce(&mut Self::Query) -> Result<R, E>
 	{
-		(m(v), None)
+		m(v)
 	}
 
-	fn from_query_to_optional_value(v: Self::Query) -> Option<Value> {
-		v
+	fn append_query<QT: QueryTransfer<Value>, Item>(v: &mut Self::Query, item: Item)
+	where
+		Value: TypedAppend<Item>,
+	{
+		match v.as_mut() {
+			Some(v) => v.append(item),
+			None => {
+				let mut default = Value::default();
+				default.append(item);
+				*v = Some(default);
+			}
+		}
+	}
+
+	fn exists(v: &Self::Query) -> bool {
+		v.is_some()
 	}
 }
 
@@ -105,8 +131,8 @@ where
 pub struct ResultQuery<Error>(sp_std::marker::PhantomData<Error>);
 impl<Value, Error, OnEmpty> QueryKindTrait<Value, OnEmpty> for ResultQuery<Error>
 where
-	Value: FullCodec + TStorage + 'static,
-	Error: FullCodec + 'static,
+	Value: FullCodec + StdClone + 'static,
+	Error: FullCodec + StdClone + 'static,
 	OnEmpty: crate::traits::Get<Result<Value, Error>>,
 {
 	const METADATA: StorageEntryModifierIR = StorageEntryModifierIR::Optional;
@@ -120,15 +146,33 @@ where
 		}
 	}
 
-	fn mut_from_optional_value_to_query<M, R, E>(_v: &mut Option<Value>, _m: M) -> (Result<R, E>, Option<Value>)
+	fn from_query_to_optional_value(v: Self::Query) -> Option<Value> {
+		v.ok()
+	}
+
+	fn mut_query<M, R, E>(v: &mut Self::Query, m: M) -> Result<R, E>
 	where
 		M: FnOnce(&mut Self::Query) -> Result<R, E>
 	{
-		panic!("Not supported from `&mut Option` to `&mut Result`")
+		m(v)
 	}
 
-	fn from_query_to_optional_value(v: Self::Query) -> Option<Value> {
-		v.ok()
+	fn append_query<QT: QueryTransfer<Value>, Item>(v: &mut Self::Query, item: Item)
+	where
+		Value: TypedAppend<Item>,
+	{
+		match v.as_mut() {
+			Ok(v) => v.append(item),
+			Err(_) => {
+				let mut default = Value::default();
+				default.append(item);
+				*v = Ok(default);
+			}
+		}
+	}
+
+	fn exists(v: &Self::Query) -> bool {
+		v.is_ok()
 	}
 }
 
@@ -136,7 +180,7 @@ where
 pub struct ValueQuery;
 impl<Value, OnEmpty> QueryKindTrait<Value, OnEmpty> for ValueQuery
 where
-	Value: FullCodec + TStorage + 'static,
+	Value: FullCodec + StdClone + 'static,
 	OnEmpty: crate::traits::Get<Value>,
 {
 	const METADATA: StorageEntryModifierIR = StorageEntryModifierIR::Default;
@@ -147,21 +191,26 @@ where
 		v.unwrap_or_else(|| OnEmpty::get())
 	}
 
-	fn mut_from_optional_value_to_query<M, R, E>(v: &mut Option<Value>, m: M) -> (Result<R, E>, Option<Value>)
+	fn from_query_to_optional_value(v: Self::Query) -> Option<Value> {
+		Some(v)
+	}
+
+	fn mut_query<M, R, E>(v: &mut Self::Query, m: M) -> Result<R, E>
 	where
 		M: FnOnce(&mut Self::Query) -> Result<R, E>
 	{
-		match v {
-			Some(v) => (m(v), None),
-			None => {
-				let mut v = OnEmpty::get();
-				(m(&mut v), Some(v))
-			},
-		}
+		m(v)
 	}
 
-	fn from_query_to_optional_value(v: Self::Query) -> Option<Value> {
-		Some(v)
+	fn append_query<QT: QueryTransfer<Value>, Item>(v: &mut Self::Query, item: Item)
+	where
+		Value: TypedAppend<Item>,
+	{
+		v.append(item);
+	}
+
+	fn exists(_v: &Self::Query) -> bool {
+		true
 	}
 }
 

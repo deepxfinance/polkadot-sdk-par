@@ -5,6 +5,7 @@ use std::fmt::Debug;
 use std::marker::PhantomData;
 use std::sync::Arc;
 use codec::{Compact, CompactLen, Decode, Encode, EncodeAppend};
+use frame_support::ValueQT;
 use sp_api::{ApiExt, OverlayCache};
 use sp_core::H256;
 use sp_io::hashing::{blake2_128, twox_64};
@@ -463,24 +464,24 @@ impl<RE: Encode + Decode + Debug + Clone> Default for MergeSystem<RE> {
 
 impl<RE: Encode + Decode + Debug + Clone, B, Block: BlockT, Api: ApiExt<Block>> super::MultiThreadBlockBuilder<B, Block, Api> for MergeSystem<RE> {
     fn prepare(&mut self, _backend: &Arc<B>, _parent: &Block::Hash, api: &Api) {
-        self.init_index = api.get_typed_change(EXTRINSIC_INDEX.as_slice(), &EXTRINSIC_INDEX.to_vec())
+        self.init_index = api.get_typed_change::<ValueQT, _>(EXTRINSIC_INDEX.as_slice(), &EXTRINSIC_INDEX.to_vec())
             .unwrap_or_default()
             .unwrap_or(get_top_value(api, &EXTRINSIC_INDEX.to_vec()).unwrap_or_default());
         self.index_count = self.init_index;
         self.init_number_encoded = api.get_typed_change_encode(SYSTEM_NUMBER.as_slice(), &SYSTEM_NUMBER.to_vec())
             .unwrap_or_default()
             .unwrap_or(get_top_value::<_, _, NumberFor<Block>>(api, &SYSTEM_NUMBER.to_vec()).unwrap_or(0u32.into()).encode());
-        self.init_event_count = api.get_typed_change(SYSTEM_EVENT_COUNT.as_slice(), &SYSTEM_EVENT_COUNT.to_vec())
+        self.init_event_count = api.get_typed_change::<ValueQT, _>(SYSTEM_EVENT_COUNT.as_slice(), &SYSTEM_EVENT_COUNT.to_vec())
             .unwrap_or_default()
             .unwrap_or(get_top_value(api, &SYSTEM_EVENT_COUNT.to_vec()).unwrap_or_default());
         self.init_block_weight = api.get_typed_change_encode(SYSTEM_BLOCK_WEIGHT.as_slice(), &SYSTEM_BLOCK_WEIGHT.to_vec())
             .map(|r| r.map(|v| Decode::decode(&mut v.as_slice()).ok()))
             .unwrap_or_default()
             .unwrap_or(get_top_value(api, &SYSTEM_BLOCK_WEIGHT.to_vec()));
-        self.init_extrinsic_count = api.get_typed_change(SYSTEM_EXTRINSIC_COUNT.as_slice(), &SYSTEM_EXTRINSIC_COUNT.to_vec())
+        self.init_extrinsic_count = api.get_typed_change::<ValueQT, _>(SYSTEM_EXTRINSIC_COUNT.as_slice(), &SYSTEM_EXTRINSIC_COUNT.to_vec())
             .unwrap_or_default()
             .unwrap_or(get_top_value(api, &SYSTEM_EXTRINSIC_COUNT.to_vec()).unwrap_or_default());
-        self.init_all_extrinsics_len = api.get_typed_change(SYSTEM_ALL_EXTRINSICS_LEN.as_slice(), &SYSTEM_ALL_EXTRINSICS_LEN.to_vec())
+        self.init_all_extrinsics_len = api.get_typed_change::<ValueQT, _>(SYSTEM_ALL_EXTRINSICS_LEN.as_slice(), &SYSTEM_ALL_EXTRINSICS_LEN.to_vec())
             .unwrap_or_default()
             .unwrap_or(get_top_value(api, &SYSTEM_ALL_EXTRINSICS_LEN.to_vec()).unwrap_or_default());
     }
@@ -492,7 +493,7 @@ impl<RE: Encode + Decode + Debug + Clone, B, Block: BlockT, Api: ApiExt<Block>> 
         if thread > 1 {
             let execution_phase = Phase::ApplyExtrinsic(self.index_count);
             if typed_cache {
-                cache.put(&EXTRINSIC_INDEX, &EXTRINSIC_INDEX, self.index_count);
+                cache.put::<ValueQT, _>(&EXTRINSIC_INDEX, &EXTRINSIC_INDEX, self.index_count);
                 cache.try_update_raw(&SYSTEM_EXECUTION_PHASE, &SYSTEM_EXECUTION_PHASE, execution_phase.encode());
             } else {
                 changes.top.set(EXTRINSIC_INDEX.to_vec(), Some(self.index_count.encode()), None);

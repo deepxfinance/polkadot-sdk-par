@@ -82,7 +82,7 @@ type CounterFor<P> = StorageValue<<P as CountedStorageMapInstance>::CounterPrefi
 /// [`crate::storage::PrefixIterator`].
 pub struct OnRemovalCounterUpdate<Prefix>(core::marker::PhantomData<Prefix>);
 
-impl<Prefix: CountedStorageMapInstance> crate::storage::PrefixIteratorOnRemoval
+impl<Prefix: CountedStorageMapInstance + 'static> crate::storage::PrefixIteratorOnRemoval
 	for OnRemovalCounterUpdate<Prefix>
 {
 	fn on_removal(_key: &[u8], _value: &[u8]) {
@@ -93,13 +93,13 @@ impl<Prefix: CountedStorageMapInstance> crate::storage::PrefixIteratorOnRemoval
 impl<Prefix, Hasher, Key, Value, QueryKind, OnEmpty, MaxValues>
 	CountedStorageMap<Prefix, Hasher, Key, Value, QueryKind, OnEmpty, MaxValues>
 where
-	Prefix: CountedStorageMapInstance,
+	Prefix: CountedStorageMapInstance + 'static,
 	Hasher: crate::hash::StorageHasher,
-	Key: FullCodec,
-	Value: FullCodec + TStorage,
+	Key: FullCodec + 'static,
+	Value: FullCodec + TStorage + 'static,
 	QueryKind: QueryKindTrait<Value, OnEmpty>,
 	OnEmpty: Get<QueryKind::Query> + 'static,
-	MaxValues: Get<Option<u32>>,
+	MaxValues: Get<Option<u32>> + 'static,
 {
 	/// The key used to store the counter of the map.
 	pub fn counter_storage_final_key() -> [u8; 32] {
@@ -417,13 +417,13 @@ where
 impl<Prefix, Hasher, Key, Value, QueryKind, OnEmpty, MaxValues>
 	CountedStorageMap<Prefix, Hasher, Key, Value, QueryKind, OnEmpty, MaxValues>
 where
-	Prefix: CountedStorageMapInstance,
+	Prefix: CountedStorageMapInstance + 'static,
 	Hasher: crate::hash::StorageHasher + crate::ReversibleStorageHasher,
-	Key: FullCodec,
-	Value: FullCodec + TStorage,
+	Key: FullCodec + 'static,
+	Value: FullCodec + TStorage + 'static,
 	QueryKind: QueryKindTrait<Value, OnEmpty>,
 	OnEmpty: Get<QueryKind::Query> + 'static,
-	MaxValues: Get<Option<u32>>,
+	MaxValues: Get<Option<u32>> + 'static,
 {
 	/// Enumerate all elements in the map in no particular order.
 	///
@@ -475,13 +475,13 @@ where
 impl<Prefix, Hasher, Key, Value, QueryKind, OnEmpty, MaxValues> StorageEntryMetadataBuilder
 	for CountedStorageMap<Prefix, Hasher, Key, Value, QueryKind, OnEmpty, MaxValues>
 where
-	Prefix: CountedStorageMapInstance,
+	Prefix: CountedStorageMapInstance + 'static,
 	Hasher: crate::hash::StorageHasher,
-	Key: FullCodec + scale_info::StaticTypeInfo,
-	Value: FullCodec + TStorage + scale_info::StaticTypeInfo,
+	Key: FullCodec + scale_info::StaticTypeInfo + 'static,
+	Value: FullCodec + TStorage + 'static + scale_info::StaticTypeInfo,
 	QueryKind: QueryKindTrait<Value, OnEmpty>,
 	OnEmpty: Get<QueryKind::Query> + 'static,
-	MaxValues: Get<Option<u32>>,
+	MaxValues: Get<Option<u32>> + 'static,
 {
 	fn build_metadata(docs: Vec<&'static str>, entries: &mut Vec<StorageEntryMetadataIR>) {
 		<Self as MapWrapper>::Map::build_metadata(docs, entries);
@@ -499,13 +499,13 @@ where
 impl<Prefix, Hasher, Key, Value, QueryKind, OnEmpty, MaxValues> crate::traits::StorageInfoTrait
 	for CountedStorageMap<Prefix, Hasher, Key, Value, QueryKind, OnEmpty, MaxValues>
 where
-	Prefix: CountedStorageMapInstance,
+	Prefix: CountedStorageMapInstance + 'static,
 	Hasher: crate::hash::StorageHasher,
-	Key: FullCodec + MaxEncodedLen,
-	Value: FullCodec + TStorage + MaxEncodedLen,
+	Key: FullCodec + MaxEncodedLen + 'static,
+	Value: FullCodec + TStorage + 'static + MaxEncodedLen,
 	QueryKind: QueryKindTrait<Value, OnEmpty>,
 	OnEmpty: Get<QueryKind::Query> + 'static,
-	MaxValues: Get<Option<u32>>,
+	MaxValues: Get<Option<u32>> + 'static,
 {
 	fn storage_info() -> Vec<StorageInfo> {
 		[<Self as MapWrapper>::Map::storage_info(), CounterFor::<Prefix>::storage_info()].concat()
@@ -517,13 +517,13 @@ impl<Prefix, Hasher, Key, Value, QueryKind, OnEmpty, MaxValues>
 	crate::traits::PartialStorageInfoTrait
 	for CountedStorageMap<Prefix, Hasher, Key, Value, QueryKind, OnEmpty, MaxValues>
 where
-	Prefix: CountedStorageMapInstance,
+	Prefix: CountedStorageMapInstance + 'static,
 	Hasher: crate::hash::StorageHasher,
-	Key: FullCodec,
-	Value: FullCodec + TStorage,
+	Key: FullCodec + 'static,
+	Value: FullCodec + TStorage + 'static,
 	QueryKind: QueryKindTrait<Value, OnEmpty>,
 	OnEmpty: Get<QueryKind::Query> + 'static,
-	MaxValues: Get<Option<u32>>,
+	MaxValues: Get<Option<u32>> + 'static,
 {
 	fn partial_storage_info() -> Vec<StorageInfo> {
 		[<Self as MapWrapper>::Map::partial_storage_info(), CounterFor::<Prefix>::storage_info()]

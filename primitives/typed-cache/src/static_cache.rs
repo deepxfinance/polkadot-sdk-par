@@ -6,12 +6,12 @@ use sp_std::sync::Arc;
 #[cfg(feature = "std")]
 use sp_std::sync::RwLock;
 use sp_std::any::Any;
-use crate::{QueryTransfer, RcT, StorageIO, StorageKey};
+use crate::{QueryTransfer, RcT, StorageIO, StorageKey, TypedAppend};
 #[cfg(feature = "std")]
 use crate::StorageApi;
 #[cfg(feature = "std")]
 use crate::changeset::StorageOverlay;
-use crate::changeset::ExecutionMode;
+use crate::overlayed_changes::ExecutionMode;
 
 #[cfg(feature = "std")]
 pub type AnyStorage = Box<dyn StorageApi>;
@@ -39,14 +39,14 @@ pub struct OverlayCache {
 #[cfg(feature = "std")]
 impl OverlayCache {
     /// Handle with `f` for mutable reference with create default space if not exist.
-    pub fn handle_mut_or_default<V: Clone + FullCodec + 'static, F, O>(&mut self, space: &[u8], f: F) -> O
+    pub fn handle_mut_or_default<QT: QueryTransfer<V>, V: Clone + FullCodec + 'static, F, O>(&mut self, space: &[u8], f: F) -> O
     where
         F: FnOnce(&mut AnyStorage) -> O
     {
         match self.inner.entry(space.to_vec()) {
             std::collections::hash_map::Entry::Occupied(entry) => { return f(&mut entry.into_mut()) },
             std::collections::hash_map::Entry::Vacant(e) => {
-                e.insert(Box::new(StorageOverlay::<Vec<u8>, V>::new(space, self.client_transactions, self.runtime_transactions)));
+                e.insert(Box::new(StorageOverlay::<QT, Vec<u8>, V>::new(space, self.client_transactions, self.runtime_transactions)));
             }
         }
         f(&mut self.inner.get_mut(space).unwrap())
@@ -71,12 +71,12 @@ impl OverlayCache {
 
 #[cfg(feature = "std")]
 impl OverlayCache {
-    pub fn put<V: Clone + FullCodec + 'static>(&mut self, space: &[u8], key: &[u8], value: V) {
+    pub fn put<QT: QueryTransfer<V>, V: Clone + FullCodec + 'static>(&mut self, space: &[u8], key: &[u8], value: V) {
         let f = |storage: &mut AnyStorage| {
-            storage.downcast_mut::<StorageOverlay<Vec<u8>, V>>()
+            storage.downcast_mut::<StorageOverlay<QT, Vec<u8>, V>>()
                 .map(|overlay| overlay.put(space, key, value));
         };
-        self.handle_mut_or_default::<V, _, _>(space, f);
+        self.handle_mut_or_default::<QT, V, _, _>(space, f);
     }
 
     pub fn try_update_raw(&mut self, space: &[u8], key: &[u8], data: Vec<u8>) {
@@ -89,35 +89,35 @@ impl OverlayCache {
         self.handle_mut(space, f);
     }
 
-    pub fn contains_key<V: Clone + FullCodec + 'static>(&self, space: &[u8], key: &[u8]) -> Option<bool> {
+    pub fn contains_key<QT: QueryTransfer<V>, V: Clone + FullCodec + 'static>(&self, space: &[u8], key: &[u8]) -> Option<bool> {
         let f = |storage: &AnyStorage| {
-            storage.downcast_ref::<StorageOverlay<Vec<u8>, V>>()
+            storage.downcast_ref::<StorageOverlay<QT, Vec<u8>, V>>()
                 .map(|overlay| overlay.contains(space, key))
                 .unwrap_or(None)
         };
         self.handle_ref::<_, _>(space, f).unwrap_or(None)
     }
 
-    pub fn get<V: Clone + FullCodec + 'static, F>(&mut self, space: &[u8], key: &[u8], init: Option<F>) -> Option<Option<V>>
+    pub fn get<QT: QueryTransfer<V>, V: Clone + FullCodec + 'static, F>(&mut self, space: &[u8], key: &[u8], init: Option<F>) -> Option<Option<V>>
     where
         F: Fn(&[u8]) -> Option<V>
     {
         let f = |storage: &mut AnyStorage| {
-            storage.downcast_mut::<StorageOverlay<Vec<u8>, V>>()
+            storage.downcast_mut::<StorageOverlay<QT, Vec<u8>, V>>()
                 .map(|overlay| overlay.get(space, key, init))
         };
-        self.handle_mut_or_default::<V, _, _>(space, f).unwrap_or(None)
+        self.handle_mut_or_default::<QT, V, _, _>(space, f).unwrap_or(None)
     }
 
-    pub fn get_ref<V: Clone + FullCodec + 'static, F>(&mut self, space: &[u8], key: &[u8], init: Option<F>) -> Option<RcT<Option<V>>>
+    pub fn get_ref<QT: QueryTransfer<V>, V: Clone + FullCodec + 'static, F>(&mut self, space: &[u8], key: &[u8], init: Option<F>) -> Option<RcT<QT::Qry>>
     where
         F: Fn(&[u8]) -> Option<V>
     {
         let f = |storage: &mut AnyStorage| {
-            storage.downcast_mut::<StorageOverlay<Vec<u8>, V>>()
+            storage.downcast_mut::<StorageOverlay<QT, Vec<u8>, V>>()
                 .map(|overlay| overlay.get_ref(space, key, init))
         };
-        self.handle_mut_or_default::<V, _, _>(space, f).unwrap_or(None)
+        self.handle_mut_or_default::<QT, V, _, _>(space, f).unwrap_or(None)
     }
 
     pub fn get_change_encode(&self, space: &[u8], key: &[u8]) -> Option<Option<Vec<u8>>> {
@@ -125,82 +125,82 @@ impl OverlayCache {
         self.handle_ref::<_, _>(space, f)?
     }
 
-    pub fn get_change<V: Clone + FullCodec + 'static>(&self, space: &[u8], key: &[u8]) -> Option<Option<V>> {
+    pub fn get_change<QT: QueryTransfer<V>, V: Clone + FullCodec + 'static>(&self, space: &[u8], key: &[u8]) -> Option<QT::Qry> {
         let f = |storage: &AnyStorage| {
-            storage.downcast_ref::<StorageOverlay<Vec<u8>, V>>()
+            storage.downcast_ref::<StorageOverlay<QT, Vec<u8>, V>>()
                 .map(|overlay| overlay.get_change(space, key))
         };
         self.handle_ref::<_, _>(space, f)?.unwrap_or(None)
     }
 
-    pub fn get_change_ref<V: Clone + FullCodec + 'static>(&self, space: &[u8], key: &[u8]) -> Option<RcT<Option<V>>> {
+    pub fn get_change_ref<QT: QueryTransfer<V>, V: Clone + FullCodec + 'static>(&self, space: &[u8], key: &[u8]) -> Option<RcT<QT::Qry>> {
         let f = |storage: &AnyStorage| {
-            storage.downcast_ref::<StorageOverlay<Vec<u8>, V>>()
+            storage.downcast_ref::<StorageOverlay<QT, Vec<u8>, V>>()
                 .map(|overlay| overlay.get_change_ref(space, key))
         };
         self.handle_ref::<_, _>(space, f)?.unwrap_or(None)
     }
 
-    pub fn take<V: Clone + FullCodec + 'static>(&mut self, space: &[u8], key: &[u8]) -> Option<Option<V>> {
+    pub fn take<QT: QueryTransfer<V>, V: Clone + FullCodec + 'static>(&mut self, space: &[u8], key: &[u8]) -> Option<QT::Qry> {
         let f = |storage: &mut AnyStorage| {
-            storage.downcast_mut::<StorageOverlay<Vec<u8>, V>>()
+            storage.downcast_mut::<StorageOverlay<QT, Vec<u8>, V>>()
                 .map(|overlay| overlay.take(space, key))
         };
-        self.handle_mut_or_default::<V, _, _>(space, f).unwrap_or(None)
+        self.handle_mut_or_default::<QT, V, _, _>(space, f).unwrap_or(None)
     }
 
-    pub fn pop_ref<V: Clone + FullCodec + 'static>(&mut self, space: &[u8], key: &[u8]) -> Option<RcT<Option<V>>> {
+    pub fn pop_ref<QT: QueryTransfer<V>, V: Clone + FullCodec + 'static>(&mut self, space: &[u8], key: &[u8]) -> Option<RcT<QT::Qry>> {
         let f = |storage: &mut AnyStorage| {
-            storage.downcast_mut::<StorageOverlay<Vec<u8>, V>>()
+            storage.downcast_mut::<StorageOverlay<QT, Vec<u8>, V>>()
                 .map(|overlay| overlay.pop_ref(space, key))
                 .unwrap_or(None)
         };
         self.handle_mut::<_, _>(space, f).unwrap_or(None)
     }
 
-    pub fn kill<V: Clone + FullCodec + 'static>(&mut self, space: &[u8], key: &[u8]) {
+    pub fn kill<QT: QueryTransfer<V>, V: Clone + FullCodec + 'static>(&mut self, space: &[u8], key: &[u8]) {
         let f = |storage: &mut AnyStorage| {
-            storage.downcast_mut::<StorageOverlay<Vec<u8>, V>>()
+            storage.downcast_mut::<StorageOverlay<QT, Vec<u8>, V>>()
                 .map(|overlay| overlay.kill(space, key));
         };
-        self.handle_mut_or_default::<V, _, _>(space, f);
+        self.handle_mut_or_default::<QT, V, _, _>(space, f);
     }
 
     pub fn mutate<QT: QueryTransfer<V>, V: Clone + FullCodec + 'static, F, M, R, E>(&mut self, space: &[u8], key: &[u8], init: Option<F>, mutate: M) -> Option<Result<R, E>>
     where
         F: FnOnce() -> Option<V>,
-        M: FnOnce(&mut QT::Query) -> Result<R, E>,
+        M: FnOnce(&mut QT::Qry) -> Result<R, E>,
     {
         let f = |storage: &mut AnyStorage| {
-            storage.downcast_mut::<StorageOverlay<Vec<u8>, V>>()
-                .map(|overlay| overlay.mutate::<QT, _, _, _, _>(space, key, init, mutate))
+            storage.downcast_mut::<StorageOverlay<QT, Vec<u8>, V>>()
+                .map(|overlay| overlay.mutate::<_, _, _, _>(space, key, init, mutate))
         };
-        self.handle_mut_or_default::<V, _, _>(space, f).unwrap_or(None)
+        self.handle_mut_or_default::<QT, V, _, _>(space, f).unwrap_or(None)
     }
 
-    pub fn append<V: Clone + FullCodec + 'static, F, M>(&mut self, space: &[u8], key: &[u8], init: F, mutate: M) -> bool
+    pub fn append<QT: QueryTransfer<V>, V: Clone + FullCodec + 'static, F, Item>(&mut self, space: &[u8], key: &[u8], init: F, item: Item) -> bool
     where
         F: FnOnce() -> V,
-        M: FnOnce(&mut Option<V>)
+        V: TypedAppend<Item>,
     {
         let f = |storage: &mut AnyStorage| {
-            storage.downcast_mut::<StorageOverlay<Vec<u8>, V>>()
-                .map(|overlay| overlay.append(space, key, init, mutate))
+            storage.downcast_mut::<StorageOverlay<QT, Vec<u8>, V>>()
+                .map(|overlay| overlay.append(space, key, init, item))
         };
-        self.handle_mut_or_default::<V, _, _>(space, f).unwrap_or(false)
+        self.handle_mut_or_default::<QT, V, _, _>(space, f).unwrap_or(false)
     }
 
-    pub fn init<V: Clone + FullCodec + 'static>(&mut self, space: &[u8], key: &[u8], value: Option<V>) {
+    pub fn init<QT: QueryTransfer<V>, V: Clone + FullCodec + 'static>(&mut self, space: &[u8], key: &[u8], value: Option<V>) {
         let f = |storage: &mut AnyStorage| {
-            storage.downcast_mut::<StorageOverlay<Vec<u8>, V>>()
+            storage.downcast_mut::<StorageOverlay<QT, Vec<u8>, V>>()
                 .map(|overlay| overlay.init(space, key, value));
         };
-        self.handle_mut_or_default::<V, _, _>(space, f);
+        self.handle_mut_or_default::<QT, V, _, _>(space, f);
     }
 
-    pub fn cached<V: Clone + FullCodec + 'static>(&self, space: &[u8], key: &[u8]) -> bool {
+    pub fn cached<QT: QueryTransfer<V>, V: Clone + FullCodec + 'static>(&self, space: &[u8], key: &[u8]) -> bool {
         let f = |storage: &AnyStorage| {
-            storage.downcast_ref::<StorageOverlay<Vec<u8>, V>>()
+            storage.downcast_ref::<StorageOverlay<QT, Vec<u8>, V>>()
                 .map(|overlay| overlay.cached(space, key))
                 .unwrap_or(false)
         };
@@ -285,11 +285,11 @@ impl OverlayCache {
 #[cfg(test)]
 pub mod test {
     use codec::{Decode, Encode};
-    use crate::{OverlayCache, StorageIO};
+    use crate::{OptionQT, OverlayCache, StorageIO};
 
     pub mod a {
         use codec::{Decode, Encode};
-        use crate::{OverlayCache, StorageIO};
+        use crate::{OptionQT, OverlayCache, StorageIO};
 
         #[derive(Clone, Default, Eq, PartialEq, Encode, Decode, Debug)]
         pub struct Account {
@@ -305,17 +305,17 @@ pub mod test {
         }
 
         pub fn write_values(cache: &mut OverlayCache) {
-            cache.put(b"Account", b"alice", Account::new(b"alice", 0, 1000));
-            cache.put(b"Account", b"bob", Account::new(b"bob", 0, 500));
+            cache.put::<OptionQT, _>(b"Account", b"alice", Account::new(b"alice", 0, 1000));
+            cache.put::<OptionQT, _>(b"Account", b"bob", Account::new(b"bob", 0, 500));
         }
     }
 
     pub mod b {
-        use crate::{OverlayCache, StorageIO};
+        use crate::{OptionQT, OverlayCache, StorageIO};
 
         pub fn write_values(cache: &mut OverlayCache) {
-            cache.put(b"u32", b"alice_extend", 100u32);
-            cache.put(b"u32", b"bob_extend", 50u32);
+            cache.put::<OptionQT, _>(b"u32", b"alice_extend", 100u32);
+            cache.put::<OptionQT, _>(b"u32", b"bob_extend", 50u32);
         }
     }
 
@@ -324,23 +324,23 @@ pub mod test {
         let mut cache = OverlayCache::default();
         a::write_values(&mut cache);
         b::write_values(&mut cache);
-        assert_eq!(cache.get(b"Account", b"alice", Some(|_: &_| { None })), Some(Some(a::Account::new(b"alice", 0, 1000))));
-        assert_eq!(cache.get(b"Account", b"bob", Some(|_: &_| { None })), Some(Some(a::Account::new(b"bob", 0, 500))));
-        assert_eq!(cache.get(b"u32", b"alice_extend", Some(|_: &_| { None })), Some(Some(100u32)));
-        assert_eq!(cache.get(b"u32", b"bob_extend", Some(|_: &_| { None })), Some(Some(50u32)));
+        assert_eq!(cache.get::<OptionQT, _, _>(b"Account", b"alice", Some(|_: &_| { None })), Some(Some(a::Account::new(b"alice", 0, 1000))));
+        assert_eq!(cache.get::<OptionQT, _, _>(b"Account", b"bob", Some(|_: &_| { None })), Some(Some(a::Account::new(b"bob", 0, 500))));
+        assert_eq!(cache.get::<OptionQT, _, _>(b"u32", b"alice_extend", Some(|_: &_| { None })), Some(Some(100u32)));
+        assert_eq!(cache.get::<OptionQT, _, _>(b"u32", b"bob_extend", Some(|_: &_| { None })), Some(Some(50u32)));
     }
 
     #[test]
     fn test_multi_threads_write() {
         let mut cache1 = OverlayCache::default();
-        cache1.init(b"u128", b"thread1", Some(128u128));
+        cache1.init::<OptionQT, _>(b"u128", b"thread1", Some(128u128));
         let mut cache2 = cache1.copy_data();
 
         let mut cache1 = std::thread::spawn(move || {
             // this extra will insert `1u32` with key `thread1` at space `u32`. This is shared between threads.
-            assert_eq!(cache1.get(b"u32", b"thread1", Some(|_: &_| { Some(1u32) })), Some(Some(1u32)));
-            cache1.put(b"u32", b"thread1", 132u32);
-            cache1.put(b"u64", b"thread1", 100u64);
+            assert_eq!(cache1.get::<OptionQT, _, _>(b"u32", b"thread1", Some(|_: &_| { Some(1u32) })), Some(Some(1u32)));
+            cache1.put::<OptionQT, _>(b"u32", b"thread1", 132u32);
+            cache1.put::<OptionQT, _>(b"u64", b"thread1", 100u64);
             cache1
         }).join().unwrap();
 
@@ -349,50 +349,50 @@ pub mod test {
         let mut none_f_u128 = Some(|_: &_| { Some(1u128) });
         none_f_u128.take();
         let mut cache2 = std::thread::spawn(move || {
-            assert_eq!(cache2.get(b"u32", b"thread1", none_f_u32), Option::<Option<u32>>::None);
-            cache2.put(b"u64", b"thread2", 200u64);
-            assert_eq!(cache2.get(b"u128", b"thread1", none_f_u128), Some(Some(128u128)));
+            assert_eq!(cache2.get::<OptionQT, _, _>(b"u32", b"thread1", none_f_u32), Option::<Option<u32>>::None);
+            cache2.put::<OptionQT, _>(b"u64", b"thread2", 200u64);
+            assert_eq!(cache2.get::<OptionQT, _, _>(b"u128", b"thread1", none_f_u128), Some(Some(128u128)));
             cache2
         }).join().unwrap();
 
         let mut none_f_u64 = Some(|_: &_| { None });
         none_f_u64.take();
         // get values
-        assert_eq!(cache1.get(b"u32", b"thread1", Some(|_: &_| { Some(1u32) })), Some(Some(132u32)));
-        assert_eq!(cache1.get(b"u64", b"thread1", none_f_u64), Some(Some(100u64)));
-        assert_eq!(cache2.get(b"u32", b"thread1", Some(|_: &_| { None })), Some(Option::<u32>::None));
-        assert_eq!(cache2.get(b"u64", b"thread2", none_f_u64), Some(Some(200u64)));
+        assert_eq!(cache1.get::<OptionQT, _, _>(b"u32", b"thread1", Some(|_: &_| { Some(1u32) })), Some(Some(132u32)));
+        assert_eq!(cache1.get::<OptionQT, _, _>(b"u64", b"thread1", none_f_u64), Some(Some(100u64)));
+        assert_eq!(cache2.get::<OptionQT, _, _>(b"u32", b"thread1", Some(|_: &_| { None })), Some(Option::<u32>::None));
+        assert_eq!(cache2.get::<OptionQT, _, _>(b"u64", b"thread2", none_f_u64), Some(Some(200u64)));
         let _ = cache1.drain_commited();
         let _ = cache2.drain_commited();
         // get values from cached values
-        assert_eq!(cache1.get(b"u32", b"thread1", Some(|_: &_| { Some(1u32) })), Some(Some(1u32)));
-        assert_eq!(cache1.get(b"u64", b"thread1", none_f_u64), Option::<Option<u64>>::None);
-        assert_eq!(cache2.get(b"u32", b"thread2", none_f_u32), Option::<Option<u32>>::None);
-        assert_eq!(cache2.get(b"u64", b"thread2", none_f_u64), Option::<Option<u64>>::None);
+        assert_eq!(cache1.get::<OptionQT, _, _>(b"u32", b"thread1", Some(|_: &_| { Some(1u32) })), Some(Some(1u32)));
+        assert_eq!(cache1.get::<OptionQT, _, _>(b"u64", b"thread1", none_f_u64), Option::<Option<u64>>::None);
+        assert_eq!(cache2.get::<OptionQT, _, _>(b"u32", b"thread2", none_f_u32), Option::<Option<u32>>::None);
+        assert_eq!(cache2.get::<OptionQT, _, _>(b"u64", b"thread2", none_f_u64), Option::<Option<u64>>::None);
     }
 
     #[test]
     fn test_storage_api() {
         let mut cache = OverlayCache::default();
         cache.enter_runtime();
-        cache.put(b"u32", b"11", 11u32);
-        cache.put(b"u32", b"12", 12u32);
-        cache.put(b"u64", b"22", 22u64);
+        cache.put::<OptionQT, _>(b"u32", b"11", 11u32);
+        cache.put::<OptionQT, _>(b"u32", b"12", 12u32);
+        cache.put::<OptionQT, _>(b"u64", b"22", 22u64);
     }
 
     #[test]
     fn test_copy_data() {
         let mut cache = OverlayCache::default();
-        cache.init(b"u32", b"11", Some(0u32));
+        cache.init::<OptionQT, _>(b"u32", b"11", Some(0u32));
         cache.start_transaction();
-        cache.put(b"u32", b"11", 11u32);
+        cache.put::<OptionQT, _>(b"u32", b"11", 11u32);
 
         let mut none_f_u32 = Some(|_: &_| { None });
         none_f_u32.take();
         let mut cache1 = cache.copy_data();
-        assert_eq!(cache1.get(b"u32", b"11", none_f_u32), Some(Some(11u32)));
+        assert_eq!(cache1.get::<OptionQT, _, _>(b"u32", b"11", none_f_u32), Some(Some(11u32)));
         cache1.rollback_transaction();
-        assert_eq!(cache1.get(b"u32", b"11", none_f_u32), Some(Some(0u32)));
+        assert_eq!(cache1.get::<OptionQT, _, _>(b"u32", b"11", none_f_u32), Some(Some(0u32)));
     }
 
     #[test]
@@ -402,16 +402,16 @@ pub mod test {
             v: u32,
         }
         let mut cache = OverlayCache::default();
-        cache.put(b"u32", b"11", A { v: 1 });
+        cache.put::<OptionQT, _>(b"u32", b"11", A { v: 1 });
 
         {
             #[derive(Clone, Encode, PartialEq, Eq, Decode, Debug)]
             struct A {
                 v: u32,
             }
-            assert_eq!(cache.get_change::<A>(b"u32", b"11"), None);
+            assert_eq!(cache.get_change::<OptionQT, A>(b"u32", b"11"), None);
         }
-        assert_eq!(cache.get_change(b"u32", b"11"), Some(Some(A { v: 1 })));
+        assert_eq!(cache.get_change::<OptionQT, _>(b"u32", b"11"), Some(Some(A { v: 1 })));
     }
 
     #[test]
@@ -421,35 +421,35 @@ pub mod test {
             v: u32,
         }
         let mut cache = OverlayCache::default();
-        cache.init::<A>(b"not_change", b"11", None);
-        cache.put(b"u32", b"11", A { v: 1 });
+        cache.init::<OptionQT, A>(b"not_change", b"11", None);
+        cache.put::<OptionQT, _>(b"u32", b"11", A { v: 1 });
 
         {
             #[derive(Clone, Encode, PartialEq, Eq, Decode, Debug)]
             struct A {
                 v: u32,
             }
-            assert_eq!(cache.get_change_ref::<A>(b"u32", b"11").map(|r| r.clone_inner()), None);
+            assert_eq!(cache.get_change_ref::<OptionQT, A>(b"u32", b"11").map(|r| r.clone_inner()), None);
         }
-        assert_eq!(cache.get_change_ref(b"u32", b"11").unwrap().clone_inner(), Some(A { v: 1 }));
+        assert_eq!(cache.get_change_ref::<OptionQT, _>(b"u32", b"11").unwrap().clone_inner(), Some(A { v: 1 }));
 
-        let mut value_ref = cache.get_change_ref::<A>(b"u32", b"11").unwrap();
+        let mut value_ref = cache.get_change_ref::<OptionQT, A>(b"u32", b"11").unwrap();
         value_ref.mutate(|a| a.as_mut().map(|v| v.v += 1));
-        assert_eq!(cache.get_change_ref(b"u32", b"11").unwrap().clone_inner(), Some(A { v: 2 }));
+        assert_eq!(cache.get_change_ref::<OptionQT, _>(b"u32", b"11").unwrap().clone_inner(), Some(A { v: 2 }));
 
-        cache.init(b"another", b"11", Some(A { v: 10 }));
-        let mut value_ref = cache.get_ref::<A, _>(b"another", b"11", Some(|_: &_| { Some(A { v: 10 }) })).unwrap();
+        cache.init::<OptionQT, _>(b"another", b"11", Some(A { v: 10 }));
+        let mut value_ref = cache.get_ref::<OptionQT, A, _>(b"another", b"11", Some(|_: &_| { Some(A { v: 10 }) })).unwrap();
         assert_eq!(value_ref.muted(), false);
         value_ref.mutate(|a| a.as_mut().map(|v| v.v += 1));
         assert_eq!(value_ref.muted(), true);
-        assert_eq!(cache.get_change_ref(b"another", b"11").unwrap().clone_inner(), Some(A { v: 11 }));
-        assert_eq!(cache.get_change_ref::<A>(b"another", b"11").unwrap().muted(), true);
-        assert_eq!(cache.get_change_ref::<A>(b"another", b"11").unwrap().into_inner(), Err(3));
+        assert_eq!(cache.get_change_ref::<OptionQT, _>(b"another", b"11").unwrap().clone_inner(), Some(A { v: 11 }));
+        assert_eq!(cache.get_change_ref::<OptionQT, A>(b"another", b"11").unwrap().muted(), true);
+        assert_eq!(cache.get_change_ref::<OptionQT, A>(b"another", b"11").unwrap().into_inner(), Err(3));
         let a = value_ref.muted();
-        let popped_ref = cache.pop_ref::<A>(b"another", b"11");
+        let popped_ref = cache.pop_ref::<OptionQT, A>(b"another", b"11");
         assert_eq!(popped_ref.as_ref().map(|c| c.clone_ref()).unwrap().into_inner(), Err(3));
         drop(value_ref);
-        assert_eq!(popped_ref.unwrap().into_inner(), Ok(Some(Some(A { v: 11 }))));
+        assert_eq!(popped_ref.unwrap().into_inner(), Ok(Some(A { v: 11 })));
 
         assert_eq!(cache.drain_commited().len(), 1);
     }
@@ -459,13 +459,13 @@ pub mod test {
         env_logger::init();
         let mut cache = OverlayCache::default();
         cache.enter_runtime();
-        cache.put(b"u32", b"3211", 1u32);
+        cache.put::<OptionQT, _>(b"u32", b"3211", 1u32);
         cache.start_transaction();
-        cache.put(b"u32", b"3211", 2u32);
-        cache.put(b"u64", b"6411", 2u64);
+        cache.put::<OptionQT, _>(b"u32", b"3211", 2u32);
+        cache.put::<OptionQT, _>(b"u64", b"6411", 2u64);
         cache.rollback_transaction();
         cache.exit_runtime();
-        assert_eq!(cache.get_change(b"u32", b"3211"), Some(Some(1u32)));
-        assert_eq!(cache.get_change(b"u64", b"6411"), Option::<Option<u64>>::None);
+        assert_eq!(cache.get_change::<OptionQT, _>(b"u32", b"3211"), Some(Some(1u32)));
+        assert_eq!(cache.get_change::<OptionQT, _>(b"u64", b"6411"), Option::<Option<u64>>::None);
     }
 }

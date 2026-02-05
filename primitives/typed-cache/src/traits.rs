@@ -1,8 +1,9 @@
 #[cfg(feature = "std")]
 use downcast_rs::{impl_downcast, DowncastSync};
 use sp_std::collections::btree_map::BTreeMap;
+use sp_std::collections::btree_set::BTreeSet;
 use sp_std::vec::Vec;
-use crate::changeset::ExecutionMode;
+use crate::overlayed_changes::ExecutionMode;
 use crate::{RcT, StorageKey};
 
 #[cfg(not(feature = "std"))]
@@ -54,82 +55,147 @@ impl_downcast!(sync StorageApi);
 /// `key` should be calculated full key
 /// `space` define specific workspace for same `V`.
 /// `init` is another data source
-pub trait StorageIO<V> {
+pub trait StorageIO<QT: QueryTransfer<V>, V> {
     fn contains(&self, space: &[u8], key: &[u8]) -> Option<bool>;
     fn put(&mut self, space: &[u8], key: &[u8], value: V);
     fn get<F>(&mut self, space: &[u8], key: &[u8], init: Option<F>) -> Option<Option<V>> where F: Fn(&[u8]) -> Option<V>;
-    fn get_change(&self, space: &[u8], key: &[u8]) -> Option<Option<V>>;
-    fn take(&mut self, space: &[u8], key: &[u8]) -> Option<Option<V>>;
+    fn get_change(&self, space: &[u8], key: &[u8]) -> Option<QT::Qry>;
+    fn take(&mut self, space: &[u8], key: &[u8]) -> Option<QT::Qry>;
     fn kill(&mut self, space: &[u8], key: &[u8]);
-    fn get_ref<F>(&mut self, space: &[u8], key: &[u8], init: Option<F>) -> Option<RcT<Option<V>>> where F: Fn(&[u8]) -> Option<V>;
-    fn get_change_ref(&self, space: &[u8], key: &[u8]) -> Option<RcT<Option<V>>>;
-    fn pop_ref(&mut self, space: &[u8], key: &[u8]) -> Option<RcT<Option<V>>>;
-    fn mutate<QT: QueryTransfer<V>, F, R, E, M>(&mut self, space: &[u8], key: &[u8], init: Option<F>, mutate: M) -> Option<Result<R, E>>
+    fn get_ref<F>(&mut self, space: &[u8], key: &[u8], init: Option<F>) -> Option<RcT<QT::Qry>> where F: Fn(&[u8]) -> Option<V>;
+    fn get_change_ref(&self, space: &[u8], key: &[u8]) -> Option<RcT<QT::Qry>>;
+    fn pop_ref(&mut self, space: &[u8], key: &[u8]) -> Option<RcT<QT::Qry>>;
+    fn mutate<F, R, E, M>(&mut self, space: &[u8], key: &[u8], init: Option<F>, mutate: M) -> Option<Result<R, E>>
     where
         F: FnOnce() -> Option<V>,
-        M: FnOnce(&mut QT::Query) -> Result<R, E>;
-    fn append<F, M>(&mut self, space: &[u8], key: &[u8], init: F, mutate: M) -> bool
+        M: FnOnce(&mut QT::Qry) -> Result<R, E>;
+    fn append<F, Item>(&mut self, space: &[u8], key: &[u8], init: F, item: Item) -> bool
     where
         F: FnOnce() -> V,
-        M: FnOnce(&mut Option<V>);
+        V: TypedAppend<Item>;
     fn init(&mut self, space: &[u8], key: &[u8], value: Option<V>) -> bool;
     fn cached(&self, space: &[u8], key: &[u8]) -> bool;
 }
 
 /// Trait for value transfer.
-pub trait QueryTransfer<V> {
-    type Query;
+pub trait QueryTransfer<V>: 'static {
+    #[cfg(feature = "std")]
+    type Qry: Clone;
+    #[cfg(not(feature = "std"))]
+    type Qry;
 
     /// Convert an optional value retrieved from storage to the type queried.
-    fn from_optional_value_to_query(v: Option<V>) -> Self::Query;
-
-    /// Convert an optional value retrieved from storage to the type queried.
-    fn mut_from_optional_value_to_query<M, R, E>(v: &mut Option<V>, m: M) -> (Result<R, E>, Option<V>)
-    where
-        M: FnOnce(&mut Self::Query) -> Result<R, E>;
+    fn from_optional_value_to_query(v: Option<V>) -> Self::Qry;
 
     /// Convert a query to an optional value into storage.
-    fn from_query_to_optional_value(v: Self::Query) -> Option<V>;
+    fn from_query_to_optional_value(v: Self::Qry) -> Option<V>;
+
+    /// Convert an optional value retrieved from storage to the type queried.
+    fn mut_query<M, R, E>(v: &mut Self::Qry, m: M) -> Result<R, E>
+    where
+        M: FnOnce(&mut Self::Qry) -> Result<R, E>;
+
+    fn append_query<QT: QueryTransfer<V>, Item>(v: &mut Self::Qry, item: Item)
+    where
+        V: TypedAppend<Item>;
+
+    fn exists(v: &Self::Qry) -> bool;
+}
+
+#[cfg(not(feature = "std"))]
+/// Default no requirements for `no_std`
+pub trait StdClone {}
+
+#[cfg(not(feature = "std"))]
+impl<S> StdClone for S {}
+
+#[cfg(feature = "std")]
+pub trait StdClone: Clone {}
+
+#[cfg(feature = "std")]
+impl<S: Clone> StdClone for S {}
+
+pub struct ValueQT;
+
+impl<V: Default + StdClone> QueryTransfer<V> for ValueQT {
+    type Qry = V;
+    fn from_optional_value_to_query(v: Option<V>) -> Self::Qry {
+        v.unwrap_or_default()
+    }
+
+    fn from_query_to_optional_value(v: Self::Qry) -> Option<V> {
+        Some(v)
+    }
+
+    fn mut_query<M, R, E>(v: &mut Self::Qry, m: M) -> Result<R, E>
+    where
+        M: FnOnce(&mut Self::Qry) -> Result<R, E>
+    {
+        m(v)
+    }
+
+    fn append_query<QT: QueryTransfer<V>, Item>(v: &mut Self::Qry, item: Item)
+    where
+        V: TypedAppend<Item>,
+    {
+        v.append(item)
+    }
+
+    fn exists(_v: &Self::Qry) -> bool {
+        true
+    }
 }
 
 pub struct OptionQT;
 
-impl<V> QueryTransfer<V> for OptionQT {
-    type Query = Option<V>;
-    fn from_optional_value_to_query(v: Option<V>) -> Self::Query {
+impl<V: StdClone> QueryTransfer<V> for OptionQT {
+    type Qry = Option<V>;
+    fn from_optional_value_to_query(v: Option<V>) -> Self::Qry {
         v
     }
 
-    fn mut_from_optional_value_to_query<M, R, E>(v: &mut Option<V>, m: M) -> (Result<R, E>, Option<V>)
-    where
-        M: FnOnce(&mut Self::Query) -> Result<R, E>
-    {
-        (m(v), None)
-    }
-
-    fn from_query_to_optional_value(v: Self::Query) -> Option<V> {
+    fn from_query_to_optional_value(v: Self::Qry) -> Option<V> {
         v
     }
-}
 
-impl<V> QueryTransfer<V> for () {
-    type Query = V;
-
-    fn from_optional_value_to_query(v: Option<V>) -> Self::Query {
-        v.expect("Default QueryTransfer should not be None")
+    fn mut_query<M, R, E>(v: &mut Self::Qry, m: M) -> Result<R, E>
+    where
+        M: FnOnce(&mut Self::Qry) -> Result<R, E>
+    {
+        m(v)
     }
 
-    fn mut_from_optional_value_to_query<M, R, E>(v: &mut Option<V>, m: M) -> (Result<R, E>, Option<V>)
+    fn append_query<QT: QueryTransfer<V>, Item>(v: &mut Self::Qry, item: Item)
     where
-        M: FnOnce(&mut Self::Query) -> Result<R, E>
+        V: TypedAppend<Item>,
     {
-        match v {
-            Some(v) => (m(v), None),
-            None => panic!("Default QueryTransfer should not be None"),
+        if let Some(v) = v.as_mut() {
+            v.append(item);
+        } else {
+            let mut default = V::default();
+            default.append(item);
+            *v = Some(default);
         }
     }
 
-    fn from_query_to_optional_value(v: Self::Query) -> Option<V> {
-        Some(v)
+    fn exists(v: &Self::Qry) -> bool {
+        v.is_some()
     }
 }
+
+pub trait TypedAppend<Item>: Default {
+    fn append(&mut self, item: Item);
+}
+
+impl<T> TypedAppend<T> for Vec<T> {
+    fn append(&mut self, item: T) {
+        self.push(item);
+    }
+}
+
+impl<T: core::cmp::Ord> TypedAppend<T> for BTreeSet<T> {
+    fn append(&mut self, item: T) {
+        self.insert(item);
+    }
+}
+

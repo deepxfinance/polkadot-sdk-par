@@ -23,11 +23,11 @@ use super::{Extrinsics, StorageKey};
 use sp_std::collections::btree_set::BTreeSet as Set;
 #[cfg(feature = "std")]
 use std::collections::HashSet as Set;
-use crate::{warn, RcT};
+use crate::{warn, QueryTransfer, RcT, overlayed_changes::ExecutionMode};
 use smallvec::SmallVec;
 use sp_std::{
 	collections::{btree_map::BTreeMap, btree_set::BTreeSet},
-	hash::Hash, vec::Vec,
+	hash::Hash, vec::Vec, ops::Deref,
 };
 
 const PROOF_OVERLAY_NON_EMPTY: &str = "\
@@ -48,19 +48,10 @@ pub struct NoOpenTransaction;
 #[cfg_attr(test, derive(PartialEq))]
 pub struct AlreadyInRuntime;
 
-/// Error when calling `exit_runtime` when not being in runtime exection mdde.
+/// Error when calling `exit_runtime` when not being in runtime execution mode.
 #[derive(Debug)]
 #[cfg_attr(test, derive(PartialEq))]
 pub struct NotInRuntime;
-
-/// Describes in which mode the node is currently executing.
-#[derive(Debug, Clone, Copy)]
-pub enum ExecutionMode {
-	/// Executing in client mode: Removal of all transactions possible.
-	Client,
-	/// Executing in runtime mode: Transactions started by the client are protected.
-	Runtime,
-}
 
 #[derive(Debug, Default, Clone)]
 #[cfg_attr(test, derive(PartialEq))]
@@ -76,7 +67,7 @@ struct InnerValue<V> {
 pub struct OverlayedEntry<V> {
 	/// The individual versions of that value.
 	/// One entry per transactions during that the value was actually written.
-	transactions: Transactions<RcT<Option<V>>>,
+	transactions: Transactions<RcT<V>>,
 }
 
 impl<V> Default for OverlayedEntry<V> {
@@ -91,17 +82,12 @@ impl<V> OverlayedEntry<V> {
 	}
 }
 
-// pub type Cache<T> = Arc<OnceCell<T>>;
-
 /// Holds a set of changes with the ability modify them using nested transactions.
 #[derive(Clone)]
-pub struct StorageOverlay<K: Ord + Hash + Clone, V: Clone> {
+pub struct StorageOverlay<QT: QueryTransfer<V>, K: Ord + Hash + Clone, V: Clone> {
 	pub space: Vec<u8>,
-	// /// Cached best value.
-	// /// For cache, any value will only insert once(data should not change).
-	// pub cache: BTreeMap<K, Cache<Option<V>>>,
 	/// Stores the changes that this overlay constitutes.
-	pub changes: BTreeMap<K, OverlayedEntry<V>>,
+	pub changes: BTreeMap<K, OverlayedEntry<QT::Qry>>,
 	/// Stores which keys are dirty per transaction. Needed in order to determine which
 	/// values to merge into the parent transaction on commit. The length of this vector
 	/// therefore determines how many nested transactions are currently open (depth).
@@ -119,17 +105,17 @@ impl Default for ExecutionMode {
 }
 
 impl<V> OverlayedEntry<V> {
-	pub fn take_ref(&mut self) -> RcT<Option<V>> {
+	pub fn take_ref(&mut self) -> RcT<V> {
 		self.transactions.pop().expect(PROOF_OVERLAY_NON_EMPTY).value
 	}
 
 	/// The value as seen by the current transaction.
-	pub fn value_ref(&self) -> &RcT<Option<V>> {
+	pub fn value_ref(&self) -> &RcT<V> {
 		&self.transactions.last().expect(PROOF_OVERLAY_NON_EMPTY).value
 	}
 
 	/// The value as seen by the current transaction.
-	pub fn into_value(mut self) -> RcT<Option<V>> {
+	pub fn into_value(mut self) -> RcT<V> {
 		self.transactions.pop().expect(PROOF_OVERLAY_NON_EMPTY).value
 	}
 
@@ -143,16 +129,16 @@ impl<V> OverlayedEntry<V> {
 	}
 
 	/// Mutable reference to the most recent version.
-	pub fn value_mut(&mut self) -> &mut RcT<Option<V>> {
+	pub fn value_mut(&mut self) -> &mut RcT<V> {
 		&mut self.transactions.last_mut().expect(PROOF_OVERLAY_NON_EMPTY).value
 	}
 
-	pub fn pop_value(&mut self) -> RcT<Option<V>> {
+	pub fn pop_value(&mut self) -> RcT<V> {
 		self.pop_transaction().value
 	}
 
 	/// Remove the last version and return it.
-	fn pop_transaction(&mut self) -> InnerValue<RcT<Option<V>>> {
+	fn pop_transaction(&mut self) -> InnerValue<RcT<V>> {
 		self.transactions.pop().expect(PROOF_OVERLAY_NON_EMPTY)
 	}
 
@@ -162,7 +148,7 @@ impl<V> OverlayedEntry<V> {
 	}
 
 	/// Writes a new version of a cache value.
-	pub fn init_cache(&mut self, value: Option<V>) -> bool {
+	pub fn init_cache(&mut self, value: V) -> bool {
 		if self.transactions.is_empty() {
 			self.transactions.push(InnerValue { value: RcT::new(value, false), extrinsics: Default::default() });
 			true
@@ -175,7 +161,7 @@ impl<V> OverlayedEntry<V> {
 	///
 	/// This makes sure that the old version is not overwritten and can be properly
 	/// rolled back when required.
-	pub fn set(&mut self, value: Option<V>, first_write_in_tx: bool, muted: bool, at_extrinsic: Option<u32>) {
+	pub fn set(&mut self, value: V, first_write_in_tx: bool, muted: bool, at_extrinsic: Option<u32>) {
 		if first_write_in_tx || self.transactions.is_empty() {
 			self.transactions.push(InnerValue { value: RcT::new(value, muted), extrinsics: Default::default() });
 		} else {
@@ -188,7 +174,7 @@ impl<V> OverlayedEntry<V> {
 	}
 
 	/// Insert a new transaction layer value.
-	pub fn new_transaction(&mut self, value: RcT<Option<V>>) {
+	pub fn new_transaction(&mut self, value: RcT<V>) {
 		self.transactions.push(InnerValue { value, extrinsics: Default::default() });
 	}
 }
@@ -201,7 +187,7 @@ fn insert_dirty<K: Ord + Hash>(set: &mut DirtyKeysSets<K>, key: K) -> bool {
 	set.last_mut().map(|dk| dk.insert(key)).unwrap_or_default()
 }
 
-impl<K: Ord + Hash + Clone, V: Clone> StorageOverlay<K, V> {
+impl<QT: QueryTransfer<V>, K: Ord + Hash + Clone, V: Clone> StorageOverlay<QT, K, V> {
 	pub fn new(space: &[u8], client_transactions: usize, runtime_transactions: usize) -> Self {
 		Self {
 			space: space.to_vec(),
@@ -211,6 +197,7 @@ impl<K: Ord + Hash + Clone, V: Clone> StorageOverlay<K, V> {
 		}
 	}
 
+	#[cfg(feature = "std")]
 	pub fn clone_with_changes(&self) -> Self {
 		Self {
 			space: self.space.clone(),
@@ -241,7 +228,7 @@ impl<K: Ord + Hash + Clone, V: Clone> StorageOverlay<K, V> {
 	}
 
 	/// Get an optional reference to the value stored for the specified key.
-	pub fn get_ref<Q>(&self, key: &Q) -> Option<&OverlayedEntry<V>>
+	pub fn get_ref<Q>(&self, key: &Q) -> Option<&OverlayedEntry<QT::Qry>>
 	where
 		K: sp_std::borrow::Borrow<Q>,
 		Q: Ord + ?Sized,
@@ -250,30 +237,30 @@ impl<K: Ord + Hash + Clone, V: Clone> StorageOverlay<K, V> {
 	}
 
 	/// Cache a new value for the specified key.
-	pub fn init_cache(&mut self, key: K, value: Option<V>) -> bool {
+	pub fn init_cache(&mut self, key: K, value: QT::Qry) -> bool {
 		 self.changes.entry(key.clone()).or_default().init_cache(value)
 	}
 
 	/// Set a new value for the specified key.
 	///
 	/// Can be rolled back or committed when called inside a transaction.
-	pub fn set(&mut self, key: K, value: Option<V>, at_extrinsic: Option<u32>) {
+	pub fn set(&mut self, key: K, value: QT::Qry, at_extrinsic: Option<u32>) {
 		let overlayed = self.changes.entry(key.clone()).or_default();
 		overlayed.set(value, insert_dirty(&mut self.dirty_keys, key), true, at_extrinsic);
 	}
 
 	/// Get a list of all changes as seen by current transaction.
-	pub fn changes(&self) -> impl Iterator<Item = (&K, &OverlayedEntry<V>)> {
+	pub fn changes(&self) -> impl Iterator<Item = (&K, &OverlayedEntry<QT::Qry>)> {
 		self.changes.iter()
 	}
 
 	/// Get a list of all changes as seen by current transaction, consumes
 	/// the overlay.
-	pub fn into_changes(self) -> impl Iterator<Item = (K, OverlayedEntry<V>)> {
+	pub fn into_changes(self) -> impl Iterator<Item = (K, OverlayedEntry<QT::Qry>)> {
 		self.changes.into_iter()
 	}
 
-	pub fn drain_changes(&mut self) -> BTreeMap<K, OverlayedEntry<V>> {
+	pub fn drain_changes(&mut self) -> BTreeMap<K, OverlayedEntry<QT::Qry>> {
 		sp_std::mem::take(&mut self.changes)
 	}
 
@@ -281,7 +268,7 @@ impl<K: Ord + Hash + Clone, V: Clone> StorageOverlay<K, V> {
 	///
 	/// Panics:
 	/// Panics if there are open transactions: `transaction_depth() > 0`
-	pub fn drain_commited(self) -> impl Iterator<Item = (K, RcT<Option<V>>)> {
+	pub fn drain_commited(self) -> impl Iterator<Item = (K, RcT<QT::Qry>)> {
 		assert!(self.transaction_depth() == 0, "Drain is not allowed with open transactions.");
 		self.changes.into_iter().map(|(k, mut v)| (k, v.pop_transaction().value))
 	}
@@ -401,7 +388,7 @@ impl<K: Ord + Hash + Clone, V: Clone> StorageOverlay<K, V> {
 	}
 }
 
-impl<V: Clone> StorageOverlay<StorageKey, V> {
+impl<QT: QueryTransfer<V>, V: Clone> StorageOverlay<QT, StorageKey, V> {
 	/// Get a mutable reference for a value.
 	///
 	/// Can be rolled back or committed when called inside a transaction.
@@ -409,9 +396,9 @@ impl<V: Clone> StorageOverlay<StorageKey, V> {
 	pub fn modify(
 		&mut self,
 		key: StorageKey,
-		init: Option<impl FnOnce() -> Option<V>>,
+		init: Option<impl FnOnce() -> QT::Qry>,
 		at_extrinsic: Option<u32>,
-	) -> Option<&mut RcT<Option<V>>> {
+	) -> Option<&mut RcT<QT::Qry>> {
 		let overlayed = self.changes.entry(key.clone()).or_default();
 		let first_write_in_tx = insert_dirty(&mut self.dirty_keys, key.clone());
 		let mut muted = false;
@@ -439,25 +426,21 @@ impl<V: Clone> StorageOverlay<StorageKey, V> {
 	pub fn modify_append(
 		&mut self,
 		key: StorageKey,
-		init: impl FnOnce() -> V,
+		init: impl FnOnce() -> QT::Qry,
 		at_extrinsic: Option<u32>,
-	) -> Option<&mut RcT<Option<V>>> {
+	) -> Option<&mut RcT<QT::Qry>> {
 		let overlayed = self.changes.entry(key.clone()).or_default();
 		let first_write_in_tx = insert_dirty(&mut self.dirty_keys, key.clone());
 		let mut muted = false;
 		let clone_into_new_tx = if let Some(tx) = overlayed.transactions.last() {
-			if tx.value.borrow().is_some() {
-				if first_write_in_tx {
-					muted = tx.value.muted();
-					Some(tx.value.clone_inner())
-				} else {
-					None
-				}
+			if first_write_in_tx {
+				muted = tx.value.muted();
+				Some(tx.value.clone_inner())
 			} else {
-				Some(Some(init()))
+				None
 			}
 		} else {
-			Some(Some(init()))
+			Some(init())
 		};
 
 		if let Some(cloned) = clone_into_new_tx {
@@ -471,21 +454,21 @@ impl<V: Clone> StorageOverlay<StorageKey, V> {
 	/// Can be rolled back or committed when called inside a transaction.
 	pub fn clear_where(
 		&mut self,
-		predicate: impl Fn(&[u8], &OverlayedEntry<V>) -> bool,
+		predicate: impl Fn(&[u8], &OverlayedEntry<QT::Qry>) -> bool,
 		at_extrinsic: Option<u32>,
 	) -> u32 {
 		let mut count = 0;
 		for (key, val) in self.changes.iter_mut().filter(|(k, v)| predicate(k, v)) {
-			if val.value_ref().borrow().is_some() {
+			if <QT as QueryTransfer<V>>::exists(val.value_ref().borrow().deref()) {
 				count += 1;
 			}
-			val.set(None, insert_dirty(&mut self.dirty_keys, key.clone()), true, at_extrinsic);
+			val.set(QT::from_optional_value_to_query(None), insert_dirty(&mut self.dirty_keys, key.clone()), true, at_extrinsic);
 		}
 		count
 	}
 
 	/// Get the iterator over all changes that follow the supplied `key`.
-	pub fn changes_after(&self, key: &[u8]) -> impl Iterator<Item = (&[u8], &OverlayedEntry<V>)> {
+	pub fn changes_after(&self, key: &[u8]) -> impl Iterator<Item = (&[u8], &OverlayedEntry<QT::Qry>)> {
 		use sp_std::ops::Bound;
 		let range = (Bound::Excluded(key), Bound::Unbounded);
 		self.changes.range::<[u8], _>(range).map(|(k, v)| (k.as_slice(), v))
