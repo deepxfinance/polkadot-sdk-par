@@ -55,7 +55,7 @@ impl<T: FullCodec + TStorage, G: StorageValue<T>> storage::StorageValue<T> for G
 		if sp_io::mut_typed_cache(|_| ()).is_none() {
 			unhashed::exists(&Self::storage_value_final_key())
 		} else {
-			unhashed::get_cache(&Self::storage_value_final_key(), |_| { Option::<T>::None }).is_some()
+			unhashed::get_cache(&Self::storage_value_final_key(), unhashed::non_f::<T>).is_some()
 		}
 		#[cfg(not(feature = "std"))]
 		unhashed::exists(&Self::storage_value_final_key())
@@ -63,19 +63,19 @@ impl<T: FullCodec + TStorage, G: StorageValue<T>> storage::StorageValue<T> for G
 
 	fn get() -> Self::Query {
 		#[cfg(feature = "std")]
-		let value = unhashed::get_cache(&Self::storage_value_final_key(), |_| { Option::<T>::None });
+		let value = unhashed::get_cache(&Self::storage_value_final_key(), unhashed::non_f::<T>);
 		#[cfg(not(feature = "std"))]
 		let value = unhashed::get(&Self::storage_value_final_key());
 		G::from_optional_value_to_query(value)
 	}
 
 	fn get_ref() -> RcT<T> {
-		unhashed::get_cache_ref(&Self::storage_value_final_key(), #[cfg(feature = "std")] |_| { Option::<T>::None })
+		unhashed::get_cache_ref(&Self::storage_value_final_key(), #[cfg(feature = "std")] unhashed::non_f::<T>)
 	}
 
 	fn try_get() -> Result<T, ()> {
 		#[cfg(feature = "std")]
-		{ unhashed::get_cache(&Self::storage_value_final_key(), |_| { Option::<T>::None }).ok_or(()) }
+		{ unhashed::get_cache(&Self::storage_value_final_key(), unhashed::non_f::<T>).ok_or(()) }
 		#[cfg(not(feature = "std"))]
 		unhashed::get(&Self::storage_value_final_key()).ok_or(())
 	}
@@ -217,7 +217,7 @@ impl<T: FullCodec + TStorage, G: StorageValue<T>> storage::StorageValue<T> for G
 
 	fn take() -> G::Query {
 		#[cfg(feature = "std")]
-		let value = unhashed::get_cache(&Self::storage_value_final_key(), |_| { Option::<T>::None });
+		let value = unhashed::get_cache(&Self::storage_value_final_key(), unhashed::non_f::<T>);
 
 		#[cfg(not(feature = "std"))]
 		let value = unhashed::get(&Self::storage_value_final_key());

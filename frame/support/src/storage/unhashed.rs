@@ -103,6 +103,8 @@ pub fn put_cache<T: FullCodec + TStorage>(key: &[u8], val: T) {
 	}
 }
 
+pub fn non_f<T>(_k: &[u8]) -> Option<T> { None }
+
 #[cfg(feature = "std")]
 pub fn get_cache_ref<T: FullCodec + TStorage, F>(key: &[u8], _f: F) -> RcT<T>
 where

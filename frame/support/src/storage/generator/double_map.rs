@@ -142,7 +142,7 @@ where
 		{
 			G::from_optional_value_to_query(unhashed::get_cache(
 				&Self::storage_double_map_final_key(k1, k2),
-				|_| { Option::<V>::None }
+				unhashed::non_f::<V>
 			))
 		}
 		#[cfg(not(feature = "std"))]
@@ -156,7 +156,7 @@ where
 	{
 		unhashed::get_cache_ref(
 			&Self::storage_double_map_final_key(k1, k2),
-			#[cfg(feature = "std")] |_| { Option::<V>::None },
+			#[cfg(feature = "std")] unhashed::non_f::<V>,
 		)
 	}
 
@@ -169,7 +169,7 @@ where
 		{
 			unhashed::get_cache(
 				&Self::storage_double_map_final_key(k1, k2),
-				|_| { Option::<V>::None }
+				unhashed::non_f::<V>
 			)
 				.ok_or(())
 		}
@@ -209,8 +209,8 @@ where
 
 		#[cfg(feature = "std")]
 		{
-			let v1 = unhashed::get_cache(&final_x_key, |_| { Option::<V>::None });
-			if let Some(val) = unhashed::get_cache(&final_y_key, |_| { Option::<V>::None }) {
+			let v1 = unhashed::get_cache(&final_x_key, unhashed::non_f::<V>);
+			if let Some(val) = unhashed::get_cache(&final_y_key, unhashed::non_f::<V>) {
 				unhashed::put_cache(&final_x_key, val);
 			} else {
 				unhashed::kill_cache::<V>(&final_x_key);
@@ -384,7 +384,7 @@ where
 		#[cfg(feature = "std")]
 		let mut val = G::from_optional_value_to_query(unhashed::get_cache(
 			final_key.as_ref(),
-			|_| { Option::<V>::None }
+			unhashed::non_f::<V>
 		));
 		#[cfg(not(feature = "std"))]
 		let mut val = G::from_optional_value_to_query(unhashed::get(final_key.as_ref()));
@@ -432,7 +432,7 @@ where
 	{
 		let final_key = Self::storage_double_map_final_key(k1, k2);
 		#[cfg(feature = "std")]
-		let mut val = unhashed::get_cache(final_key.as_ref(), |_| { Option::<V>::None });
+		let mut val = unhashed::get_cache(final_key.as_ref(), unhashed::non_f::<V>);
 		#[cfg(not(feature = "std"))]
 		let mut val = unhashed::get(final_key.as_ref());
 

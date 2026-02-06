@@ -229,8 +229,8 @@ impl<K: FullEncode, V: FullCodec + TStorage, G: StorageMap<K, V>> storage::Stora
 
 		#[cfg(feature = "std")]
 		{
-			let v1 = unhashed::get_cache(&k1, |_| { Option::<V>::None });
-			if let Some(val) = unhashed::get_cache(&k2, |_| { Option::<V>::None }) {
+			let v1 = unhashed::get_cache(&k1, unhashed::non_f::<V>);
+			if let Some(val) = unhashed::get_cache(&k2, unhashed::non_f::<V>) {
 				unhashed::put_cache(&k1, val);
 			} else {
 				unhashed::kill_cache::<V>(&k1);
@@ -271,7 +271,7 @@ impl<K: FullEncode, V: FullCodec + TStorage, G: StorageMap<K, V>> storage::Stora
 		{
 			G::from_optional_value_to_query(unhashed::get_cache(
 				Self::storage_map_final_key(key).as_ref(),
-				|_| { Option::<V>::None }
+				unhashed::non_f::<V>,
 			))
 		}
 
@@ -282,7 +282,7 @@ impl<K: FullEncode, V: FullCodec + TStorage, G: StorageMap<K, V>> storage::Stora
 	fn get_ref<KeyArg: EncodeLike<K>>(key: KeyArg) -> RcT<V> {
 		unhashed::get_cache_ref(
 			Self::storage_map_final_key(key).as_ref(),
-			#[cfg(feature = "std")] |_| { Option::<V>::None }
+			#[cfg(feature = "std")] unhashed::non_f::<V>,
 		)
 	}
 
@@ -291,7 +291,7 @@ impl<K: FullEncode, V: FullCodec + TStorage, G: StorageMap<K, V>> storage::Stora
 		{
 			unhashed::get_cache(
 				Self::storage_map_final_key(key).as_ref(),
-				|_| { Option::<V>::None }
+				unhashed::non_f::<V>,
 			)
 				.ok_or(())
 		}
@@ -364,7 +364,7 @@ impl<K: FullEncode, V: FullCodec + TStorage, G: StorageMap<K, V>> storage::Stora
 		#[cfg(feature = "std")]
 		let mut val = G::from_optional_value_to_query(unhashed::get_cache(
 			final_key.as_ref(),
-			|_| { Option::<V>::None }
+			unhashed::non_f::<V>,
 		));
 		#[cfg(not(feature = "std"))]
 		let mut val = G::from_optional_value_to_query(unhashed::get(final_key.as_ref()));
@@ -408,7 +408,7 @@ impl<K: FullEncode, V: FullCodec + TStorage, G: StorageMap<K, V>> storage::Stora
 	) -> Result<R, E> {
 		let final_key = Self::storage_map_final_key(key);
 		#[cfg(feature = "std")]
-		let mut val = unhashed::get_cache(final_key.as_ref(), |_| { Option::<V>::None });
+		let mut val = unhashed::get_cache(final_key.as_ref(), unhashed::non_f::<V>);
 		#[cfg(not(feature = "std"))]
 		let mut val = unhashed::get(final_key.as_ref());
 
