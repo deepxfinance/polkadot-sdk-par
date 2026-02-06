@@ -26,5 +26,5 @@ sp-arithmetic = { version = "6.0.0", path = "../../primitives/arithmetic" }
 
 [dev-dependencies]
 sp-tracing = { version = "6.0.0", path = "../../primitives/tracing" }
-mockall = "0.11.3"
+mockall = "0.13.1"
 rand = "0.8.5"
