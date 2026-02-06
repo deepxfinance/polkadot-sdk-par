@@ -59,6 +59,11 @@ impl<T> RcT<T> {
         RcT(Rc::new(RefCell::new(MutT { inner: t, key: key.to_vec() })))
     }
 
+    /// Apply a closure for inner value reference.
+    pub fn map<O>(&self, f: impl FnOnce(&T) -> O) -> O {
+        f(&self.0.borrow().deref().inner)
+    }
+
     pub fn clone_ref(&self) -> Self {
         RcT(self.0.clone())
     }
@@ -73,7 +78,7 @@ impl<T> RcT<T> {
     }
 }
 
-impl<T: Encode + Debug> RcT<Option<T>> {
+impl<T: Encode> RcT<Option<T>> {
     /// Mutate inner `Value` withing input closure.
     /// The inner value `SHOULD` be changed in your closure.
     pub fn mutate<O>(&mut self, f: impl FnOnce(&mut Option<T>) -> O) -> O {

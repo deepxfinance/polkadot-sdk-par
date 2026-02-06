@@ -22,6 +22,12 @@ impl<T> Deref for MutT<T> {
     }
 }
 
+impl<T> DerefMut for MutT<T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.inner
+    }
+}
+
 /// A value reference wrapper.
 ///
 /// ERROR: `DO NOT` use this reference cross `Transactional`.
@@ -61,6 +67,11 @@ impl<T> RcT<T> {
     /// The inner value `SHOULD` be changed in your closure.
     pub fn muted(&self) -> bool {
         self.0.borrow().muted
+    }
+
+    /// Apply a closure for inner value reference.
+    pub fn map<O>(&self, f: impl FnOnce(&T) -> O) -> O {
+        f(&self.0.borrow().deref().inner)
     }
 
     /// Mutate inner `Value` withing input closure.
