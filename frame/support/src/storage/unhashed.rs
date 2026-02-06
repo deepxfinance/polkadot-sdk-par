@@ -20,11 +20,7 @@
 use codec::{Decode, Encode, FullCodec};
 use sp_std::prelude::*;
 use typed_cache::QueryTransfer;
-#[cfg(feature = "std")]
-use typed_cache::RcT;
-#[cfg(not(feature = "std"))]
-use super::no_std_rct::RcT;
-use crate::storage::{TStorage, TypedAppend};
+use crate::storage::{TStorage, TypedAppend, RcT};
 
 #[cfg(all(feature = "std", feature = "dev-time"))]
 lazy_static::lazy_static! {
@@ -108,7 +104,7 @@ pub fn put_cache<T: FullCodec + TStorage>(key: &[u8], val: T) {
 }
 
 #[cfg(feature = "std")]
-pub fn get_cache_ref<T: FullCodec + TStorage, F>(key: &[u8], _f: F) -> RcT<Option<T>>
+pub fn get_cache_ref<T: FullCodec + TStorage, F>(key: &[u8], _f: F) -> RcT<T>
 where
 	F: Fn(&[u8]) -> Option<T>
 {
@@ -128,7 +124,7 @@ where
 }
 
 #[cfg(not(feature = "std"))]
-pub fn get_cache_ref<T: Decode + Sized>(key: &[u8]) -> RcT<Option<T>> {
+pub fn get_cache_ref<T: Decode + Sized>(key: &[u8]) -> RcT<T> {
 	RcT::new(key, get(key))
 }
 

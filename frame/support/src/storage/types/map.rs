@@ -167,7 +167,7 @@ where
 	}
 
 	/// Load the value reference associated with the given key from the map.
-	pub fn get_ref<KeyArg: EncodeLike<Key>>(key: KeyArg) -> RcT<Option<Value>> {
+	pub fn get_ref<KeyArg: EncodeLike<Key>>(key: KeyArg) -> RcT<Value> {
 		<Self as crate::storage::StorageMap<Key, Value>>::get_ref(key)
 	}
 

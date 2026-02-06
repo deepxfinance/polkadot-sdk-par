@@ -279,7 +279,7 @@ impl<K: FullEncode, V: FullCodec + TStorage, G: StorageMap<K, V>> storage::Stora
 		G::from_optional_value_to_query(unhashed::get(Self::storage_map_final_key(key).as_ref()))
 	}
 
-	fn get_ref<KeyArg: EncodeLike<K>>(key: KeyArg) -> RcT<Option<V>> {
+	fn get_ref<KeyArg: EncodeLike<K>>(key: KeyArg) -> RcT<V> {
 		unhashed::get_cache_ref(
 			Self::storage_map_final_key(key).as_ref(),
 			#[cfg(feature = "std")] |_| { Option::<V>::None }

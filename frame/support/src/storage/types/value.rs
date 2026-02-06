@@ -105,7 +105,7 @@ where
 	}
 
 	/// Load the value reference from the provided storage instance.
-	pub fn get_ref() -> RcT<Option<Value>> {
+	pub fn get_ref() -> RcT<Value> {
 		<Self as crate::storage::StorageValue<Value>>::get_ref()
 	}
 

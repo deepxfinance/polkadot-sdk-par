@@ -61,9 +61,9 @@ pub trait StorageIO<V> {
     fn get_change(&self, space: &[u8], key: &[u8]) -> Option<Option<V>>;
     fn take(&mut self, space: &[u8], key: &[u8]) -> Option<Option<V>>;
     fn kill(&mut self, space: &[u8], key: &[u8]);
-    fn get_ref<F>(&mut self, space: &[u8], key: &[u8], init: Option<F>) -> Option<RcT<Option<V>>> where F: Fn(&[u8]) -> Option<V>;
-    fn get_change_ref(&self, space: &[u8], key: &[u8]) -> Option<RcT<Option<V>>>;
-    fn pop_ref(&mut self, space: &[u8], key: &[u8]) -> Option<RcT<Option<V>>>;
+    fn get_ref<F>(&mut self, space: &[u8], key: &[u8], init: Option<F>) -> Option<RcT<V>> where F: Fn(&[u8]) -> Option<V>;
+    fn get_change_ref(&self, space: &[u8], key: &[u8]) -> Option<RcT<V>>;
+    fn pop_ref(&mut self, space: &[u8], key: &[u8]) -> Option<RcT<V>>;
     fn mutate<QT: QueryTransfer<V>, F, R, E, M>(&mut self, space: &[u8], key: &[u8], init: Option<F>, mutate: M) -> Option<Result<R, E>>
     where
         F: FnOnce() -> Option<V>,

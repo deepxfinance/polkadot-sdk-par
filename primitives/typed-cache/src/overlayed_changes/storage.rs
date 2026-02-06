@@ -144,7 +144,7 @@ impl<V: Clone> StorageIO<V> for StorageOverlay<StorageKey, V> {
         }
     }
 
-    fn get_ref<F>(&mut self, space: &[u8], key: &[u8], init: Option<F>) -> Option<RcT<Option<V>>>
+    fn get_ref<F>(&mut self, space: &[u8], key: &[u8], init: Option<F>) -> Option<RcT<V>>
     where
         F: Fn(&[u8]) -> Option<V>
     {
@@ -161,7 +161,7 @@ impl<V: Clone> StorageIO<V> for StorageOverlay<StorageKey, V> {
         }
     }
 
-    fn get_change_ref(&self, space: &[u8], key: &[u8]) -> Option<RcT<Option<V>>> {
+    fn get_change_ref(&self, space: &[u8], key: &[u8]) -> Option<RcT<V>> {
         if space != &self.space { return None; }
         match self.changes.get(key) {
             Some(entry) => if entry.value_ref().muted() {
@@ -180,7 +180,7 @@ impl<V: Clone> StorageIO<V> for StorageOverlay<StorageKey, V> {
             .map(|entry| entry.value_mut().mutate(|v| std::mem::take(v)))
     }
 
-    fn pop_ref(&mut self, space: &[u8], key: &[u8]) -> Option<RcT<Option<V>>> {
+    fn pop_ref(&mut self, space: &[u8], key: &[u8]) -> Option<RcT<V>> {
         if space != &self.space { return None; }
         if let Some(mut entry) = self.changes.remove(key) {
             let rct = entry.pop_value();

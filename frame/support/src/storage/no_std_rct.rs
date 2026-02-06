@@ -8,7 +8,7 @@ use crate::Never;
 
 #[derive(Clone)]
 pub struct MutT<T> {
-    inner: T,
+    inner: Option<T>,
     key: Vec<u8>,
 }
 
@@ -19,7 +19,7 @@ impl<T: Debug> Debug for MutT<T> {
 }
 
 impl<T> Deref for MutT<T> {
-    type Target = T;
+    type Target = Option<T>;
     fn deref(&self) -> &Self::Target {
         &self.inner
     }
@@ -49,18 +49,18 @@ impl<T: Clone> Clone for RcT<T> {
 }
 
 impl<T: Clone> RcT<T> {
-    pub fn clone_inner(&self) -> T {
+    pub fn clone_inner(&self) -> Option<T> {
         self.0.borrow().inner.clone()
     }
 }
 
 impl<T> RcT<T> {
-    pub fn new(key: &[u8], t: T) -> Self {
+    pub fn new(key: &[u8], t: Option<T>) -> Self {
         RcT(Rc::new(RefCell::new(MutT { inner: t, key: key.to_vec() })))
     }
 
     /// Apply a closure for inner value reference.
-    pub fn map<O>(&self, f: impl FnOnce(&T) -> O) -> O {
+    pub fn map<O>(&self, f: impl FnOnce(&Option<T>) -> O) -> O {
         f(&self.0.borrow().deref().inner)
     }
 
@@ -73,12 +73,12 @@ impl<T> RcT<T> {
         if rc_count > 1 {
             Err(rc_count as u32)
         } else {
-            Ok(Rc::into_inner(self.0).map(|r| r.into_inner().inner))
+            Ok(Rc::into_inner(self.0).map(|r| r.into_inner().inner).unwrap_or(None))
         }
     }
 }
 
-impl<T: Encode> RcT<Option<T>> {
+impl<T: Encode> RcT<T> {
     /// Mutate inner `Value` withing input closure.
     /// The inner value `SHOULD` be changed in your closure.
     pub fn mutate<O>(&mut self, f: impl FnOnce(&mut Option<T>) -> O) -> O {

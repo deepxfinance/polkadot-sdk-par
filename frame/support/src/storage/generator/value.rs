@@ -69,7 +69,7 @@ impl<T: FullCodec + TStorage, G: StorageValue<T>> storage::StorageValue<T> for G
 		G::from_optional_value_to_query(value)
 	}
 
-	fn get_ref() -> RcT<Option<T>> {
+	fn get_ref() -> RcT<T> {
 		unhashed::get_cache_ref(&Self::storage_value_final_key(), #[cfg(feature = "std")] |_| { Option::<T>::None })
 	}
 

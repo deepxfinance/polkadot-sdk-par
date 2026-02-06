@@ -109,7 +109,7 @@ impl OverlayCache {
         self.handle_mut_or_default::<V, _, _>(space, f).unwrap_or(None)
     }
 
-    pub fn get_ref<V: Clone + FullCodec + 'static, F>(&mut self, space: &[u8], key: &[u8], init: Option<F>) -> Option<RcT<Option<V>>>
+    pub fn get_ref<V: Clone + FullCodec + 'static, F>(&mut self, space: &[u8], key: &[u8], init: Option<F>) -> Option<RcT<V>>
     where
         F: Fn(&[u8]) -> Option<V>
     {
@@ -133,7 +133,7 @@ impl OverlayCache {
         self.handle_ref::<_, _>(space, f)?.unwrap_or(None)
     }
 
-    pub fn get_change_ref<V: Clone + FullCodec + 'static>(&self, space: &[u8], key: &[u8]) -> Option<RcT<Option<V>>> {
+    pub fn get_change_ref<V: Clone + FullCodec + 'static>(&self, space: &[u8], key: &[u8]) -> Option<RcT<V>> {
         let f = |storage: &AnyStorage| {
             storage.downcast_ref::<StorageOverlay<Vec<u8>, V>>()
                 .map(|overlay| overlay.get_change_ref(space, key))
@@ -149,7 +149,7 @@ impl OverlayCache {
         self.handle_mut_or_default::<V, _, _>(space, f).unwrap_or(None)
     }
 
-    pub fn pop_ref<V: Clone + FullCodec + 'static>(&mut self, space: &[u8], key: &[u8]) -> Option<RcT<Option<V>>> {
+    pub fn pop_ref<V: Clone + FullCodec + 'static>(&mut self, space: &[u8], key: &[u8]) -> Option<RcT<V>> {
         let f = |storage: &mut AnyStorage| {
             storage.downcast_mut::<StorageOverlay<Vec<u8>, V>>()
                 .map(|overlay| overlay.pop_ref(space, key))
@@ -449,7 +449,7 @@ pub mod test {
         let popped_ref = cache.pop_ref::<A>(b"another", b"11");
         assert_eq!(popped_ref.as_ref().map(|c| c.clone_ref()).unwrap().into_inner(), Err(3));
         drop(value_ref);
-        assert_eq!(popped_ref.unwrap().into_inner(), Ok(Some(Some(A { v: 11 }))));
+        assert_eq!(popped_ref.unwrap().into_inner(), Ok(Some(A { v: 11 })));
 
         assert_eq!(cache.drain_commited().len(), 1);
     }

@@ -219,7 +219,7 @@ where
 	}
 
 	/// Load the value reference associated with the given key from the double map.
-	pub fn get_ref<KArg1, KArg2>(k1: KArg1, k2: KArg2) -> RcT<Option<Value>>
+	pub fn get_ref<KArg1, KArg2>(k1: KArg1, k2: KArg2) -> RcT<Value>
 	where
 		KArg1: EncodeLike<Key1>,
 		KArg2: EncodeLike<Key2>,

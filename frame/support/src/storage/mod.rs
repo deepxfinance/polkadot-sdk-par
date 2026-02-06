@@ -90,7 +90,7 @@ pub trait StorageValue<T: FullCodec + TStorage> {
 	fn get() -> Self::Query;
 
 	/// Load the value reference from the provided storage instance.
-	fn get_ref() -> RcT<Option<T>>;
+	fn get_ref() -> RcT<T>;
 
 	/// Try to get the underlying value from the provided storage instance.
 	///
@@ -216,7 +216,7 @@ pub trait StorageMap<K: FullEncode, V: FullCodec> {
 	fn get<KeyArg: EncodeLike<K>>(key: KeyArg) -> Self::Query;
 
 	/// Load the value reference associated with the given key from the map.
-	fn get_ref<KeyArg: EncodeLike<K>>(key: KeyArg) -> RcT<Option<V>>;
+	fn get_ref<KeyArg: EncodeLike<K>>(key: KeyArg) -> RcT<V>;
 
 	/// Store or remove the value to be associated with `key` so that `get` returns the `query`.
 	fn set<KeyArg: EncodeLike<K>>(key: KeyArg, query: Self::Query);
@@ -558,7 +558,7 @@ pub trait StorageDoubleMap<K1: FullEncode, K2: FullEncode, V: FullCodec> {
 		KArg2: EncodeLike<K2>;
 
 	/// Load the value reference associated with the given key from the double map.
-	fn get_ref<KArg1, KArg2>(k1: KArg1, k2: KArg2) -> RcT<Option<V>>
+	fn get_ref<KArg1, KArg2>(k1: KArg1, k2: KArg2) -> RcT<V>
 	where
 		KArg1: EncodeLike<K1>,
 		KArg2: EncodeLike<K2>;
@@ -790,7 +790,7 @@ pub trait StorageNMap<K: KeyGenerator, V: FullCodec> {
 	fn get<KArg: EncodeLikeTuple<K::KArg> + TupleToEncodedIter>(key: KArg) -> Self::Query;
 
 	/// Load the value reference associated with the given key from the map.
-	fn get_ref<KArg: EncodeLikeTuple<K::KArg> + TupleToEncodedIter>(key: KArg) -> RcT<Option<V>>;
+	fn get_ref<KArg: EncodeLikeTuple<K::KArg> + TupleToEncodedIter>(key: KArg) -> RcT<V>;
 
 	/// Try to get the value for the given key from the map.
 	///

@@ -158,7 +158,7 @@ where
 	/// Load the value associated with the given key from the map.
 	pub fn get_ref<KArg: EncodeLikeTuple<Key::KArg> + TupleToEncodedIter>(
 		key: KArg,
-	) -> RcT<Option<Value>> {
+	) -> RcT<Value> {
 		<Self as crate::storage::StorageNMap<Key, Value>>::get_ref(key)
 	}
 

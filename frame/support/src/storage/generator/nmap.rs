@@ -139,7 +139,7 @@ where
 		G::from_optional_value_to_query(unhashed::get(&Self::storage_n_map_final_key::<K, _>(key)))
 	}
 
-	fn get_ref<KArg: EncodeLikeTuple<K::KArg> + TupleToEncodedIter>(key: KArg) -> RcT<Option<V>> {
+	fn get_ref<KArg: EncodeLikeTuple<K::KArg> + TupleToEncodedIter>(key: KArg) -> RcT<V> {
 		unhashed::get_cache_ref(
 			&Self::storage_n_map_final_key::<K, _>(key),
 			#[cfg(feature = "std")] |_| { Option::<V>::None }

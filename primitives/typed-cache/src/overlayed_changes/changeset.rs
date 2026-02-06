@@ -76,7 +76,7 @@ struct InnerValue<V> {
 pub struct OverlayedEntry<V> {
 	/// The individual versions of that value.
 	/// One entry per transactions during that the value was actually written.
-	transactions: Transactions<RcT<Option<V>>>,
+	transactions: Transactions<RcT<V>>,
 }
 
 impl<V> Default for OverlayedEntry<V> {
@@ -119,17 +119,17 @@ impl Default for ExecutionMode {
 }
 
 impl<V> OverlayedEntry<V> {
-	pub fn take_ref(&mut self) -> RcT<Option<V>> {
+	pub fn take_ref(&mut self) -> RcT<V> {
 		self.transactions.pop().expect(PROOF_OVERLAY_NON_EMPTY).value
 	}
 
 	/// The value as seen by the current transaction.
-	pub fn value_ref(&self) -> &RcT<Option<V>> {
+	pub fn value_ref(&self) -> &RcT<V> {
 		&self.transactions.last().expect(PROOF_OVERLAY_NON_EMPTY).value
 	}
 
 	/// The value as seen by the current transaction.
-	pub fn into_value(mut self) -> RcT<Option<V>> {
+	pub fn into_value(mut self) -> RcT<V> {
 		self.transactions.pop().expect(PROOF_OVERLAY_NON_EMPTY).value
 	}
 
@@ -143,16 +143,16 @@ impl<V> OverlayedEntry<V> {
 	}
 
 	/// Mutable reference to the most recent version.
-	pub fn value_mut(&mut self) -> &mut RcT<Option<V>> {
+	pub fn value_mut(&mut self) -> &mut RcT<V> {
 		&mut self.transactions.last_mut().expect(PROOF_OVERLAY_NON_EMPTY).value
 	}
 
-	pub fn pop_value(&mut self) -> RcT<Option<V>> {
+	pub fn pop_value(&mut self) -> RcT<V> {
 		self.pop_transaction().value
 	}
 
 	/// Remove the last version and return it.
-	fn pop_transaction(&mut self) -> InnerValue<RcT<Option<V>>> {
+	fn pop_transaction(&mut self) -> InnerValue<RcT<V>> {
 		self.transactions.pop().expect(PROOF_OVERLAY_NON_EMPTY)
 	}
 
@@ -188,7 +188,7 @@ impl<V> OverlayedEntry<V> {
 	}
 
 	/// Insert a new transaction layer value.
-	pub fn new_transaction(&mut self, value: RcT<Option<V>>) {
+	pub fn new_transaction(&mut self, value: RcT<V>) {
 		self.transactions.push(InnerValue { value, extrinsics: Default::default() });
 	}
 }
@@ -281,7 +281,7 @@ impl<K: Ord + Hash + Clone, V: Clone> StorageOverlay<K, V> {
 	///
 	/// Panics:
 	/// Panics if there are open transactions: `transaction_depth() > 0`
-	pub fn drain_commited(self) -> impl Iterator<Item = (K, RcT<Option<V>>)> {
+	pub fn drain_commited(self) -> impl Iterator<Item = (K, RcT<V>)> {
 		assert!(self.transaction_depth() == 0, "Drain is not allowed with open transactions.");
 		self.changes.into_iter().map(|(k, mut v)| (k, v.pop_transaction().value))
 	}
@@ -411,7 +411,7 @@ impl<V: Clone> StorageOverlay<StorageKey, V> {
 		key: StorageKey,
 		init: Option<impl FnOnce() -> Option<V>>,
 		at_extrinsic: Option<u32>,
-	) -> Option<&mut RcT<Option<V>>> {
+	) -> Option<&mut RcT<V>> {
 		let overlayed = self.changes.entry(key.clone()).or_default();
 		let first_write_in_tx = insert_dirty(&mut self.dirty_keys, key.clone());
 		let mut muted = false;
@@ -441,7 +441,7 @@ impl<V: Clone> StorageOverlay<StorageKey, V> {
 		key: StorageKey,
 		init: impl FnOnce() -> V,
 		at_extrinsic: Option<u32>,
-	) -> Option<&mut RcT<Option<V>>> {
+	) -> Option<&mut RcT<V>> {
 		let overlayed = self.changes.entry(key.clone()).or_default();
 		let first_write_in_tx = insert_dirty(&mut self.dirty_keys, key.clone());
 		let mut muted = false;

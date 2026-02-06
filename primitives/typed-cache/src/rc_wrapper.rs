@@ -5,7 +5,7 @@ use sp_std::rc::Rc;
 
 #[derive(Clone)]
 pub struct MutT<T> {
-    inner: T,
+    inner: Option<T>,
     muted: bool,
 }
 
@@ -16,7 +16,7 @@ impl<T: Debug> Debug for MutT<T> {
 }
 
 impl<T> Deref for MutT<T> {
-    type Target = T;
+    type Target = Option<T>;
     fn deref(&self) -> &Self::Target {
         &self.inner
     }
@@ -59,7 +59,7 @@ impl<T: Clone> Clone for RcT<T> {
 pub struct Never;
 
 impl<T> RcT<T> {
-    pub fn new(t: T, muted: bool) -> Self {
+    pub fn new(t: Option<T>, muted: bool) -> Self {
         RcT(Rc::new(RefCell::new(MutT { inner: t, muted })))
     }
 
@@ -70,19 +70,19 @@ impl<T> RcT<T> {
     }
 
     /// Apply a closure for inner value reference.
-    pub fn map<O>(&self, f: impl FnOnce(&T) -> O) -> O {
+    pub fn map<O>(&self, f: impl FnOnce(&Option<T>) -> O) -> O {
         f(&self.0.borrow().deref().inner)
     }
 
     /// Mutate inner `Value` withing input closure.
     /// Notice!!! The result correctness is not ensured!
     /// `DO NOT` change inner `Value` if your closure return `Error`
-    pub fn mutate<O>(&mut self, f: impl FnOnce(&mut T) -> O) -> O {
+    pub fn mutate<O>(&mut self, f: impl FnOnce(&mut Option<T>) -> O) -> O {
         self.try_mutate(|inner| Result::<O, Never>::Ok(f(inner)))
             .expect("Typed RcT mutate is not expected to return Error")
     }
 
-    pub fn try_mutate<R, E>(&mut self, f: impl FnOnce(&mut T) -> Result<R, E>) -> Result<R, E> {
+    pub fn try_mutate<R, E>(&mut self, f: impl FnOnce(&mut Option<T>) -> Result<R, E>) -> Result<R, E> {
         let mut mut_inner = self.0.borrow_mut();
         let res = f(&mut mut_inner.deref_mut().inner);
         mut_inner.muted = res.is_ok();
@@ -98,13 +98,13 @@ impl<T> RcT<T> {
         if rc_count > 1 {
             Err(rc_count as u32)
         } else {
-            Ok(Rc::into_inner(self.0).map(|r| r.into_inner().inner))
+            Ok(Rc::into_inner(self.0).map(|r| r.into_inner().inner).unwrap_or_default())
         }
     }
 }
 
 impl<T: Clone> RcT<T> {
-    pub fn clone_inner(&self) -> T {
+    pub fn clone_inner(&self) -> Option<T> {
         self.0.borrow().inner.clone()
     }
 }
