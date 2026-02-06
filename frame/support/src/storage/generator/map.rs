@@ -17,7 +17,7 @@
 
 use crate::{
 	hash::{ReversibleStorageHasher, StorageHasher},
-	storage::{self, storage_prefix, unhashed, KeyPrefixIterator, PrefixIterator, StorageAppend, TStorage},
+	storage::{self, storage_prefix_with_const, unhashed, KeyPrefixIterator, PrefixIterator, StorageAppend, TStorage},
 	Never,
 };
 use codec::{Decode, Encode, EncodeLike, FullCodec, FullEncode};
@@ -49,10 +49,13 @@ pub trait StorageMap<K: FullEncode, V: FullCodec + TStorage>: QueryTransfer<V> {
 	/// Storage prefix. Used for generating final key.
 	fn storage_prefix() -> &'static [u8];
 
+	/// Storage prefix hash. Used for generating final key.
+	fn storage_prefix_hash() -> &'static [u8; 16];
+
 	/// The full prefix; just the hash of `module_prefix` concatenated to the hash of
 	/// `storage_prefix`.
 	fn prefix_hash() -> Vec<u8> {
-		let result = storage_prefix(Self::module_prefix(), Self::storage_prefix());
+		let result = storage_prefix_with_const(Self::module_prefix(), Self::storage_prefix_hash());
 		result.to_vec()
 	}
 
@@ -61,7 +64,7 @@ pub trait StorageMap<K: FullEncode, V: FullCodec + TStorage>: QueryTransfer<V> {
 	where
 		KeyArg: EncodeLike<K>,
 	{
-		let storage_prefix = storage_prefix(Self::module_prefix(), Self::storage_prefix());
+		let storage_prefix = storage_prefix_with_const(Self::module_prefix(), Self::storage_prefix_hash());
 		let key_hashed = key.using_encoded(Self::Hasher::hash);
 
 		let mut final_key = Vec::with_capacity(storage_prefix.len() + key_hashed.as_ref().len());
@@ -463,7 +466,7 @@ impl<K: FullEncode, V: FullCodec + TStorage, G: StorageMap<K, V>> storage::Stora
 
 	fn migrate_key<OldHasher: StorageHasher, KeyArg: EncodeLike<K>>(key: KeyArg) -> Option<V> {
 		let old_key = {
-			let storage_prefix = storage_prefix(Self::module_prefix(), Self::storage_prefix());
+			let storage_prefix = storage_prefix_with_const(Self::module_prefix(), Self::storage_prefix_hash());
 			let key_hashed = key.using_encoded(OldHasher::hash);
 
 			let mut final_key =

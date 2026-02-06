@@ -37,9 +37,12 @@ pub trait StorageValue<T: FullCodec + TStorage>: QueryTransfer<T> {
 	/// Storage prefix. Used for generating final key.
 	fn storage_prefix() -> &'static [u8];
 
+	/// Storage prefix hash. Used for generating final key.
+	fn storage_prefix_hash() -> &'static [u8; 16];
+
 	/// Generate the full key used in top storage.
 	fn storage_value_final_key() -> [u8; 32] {
-		crate::storage::storage_prefix(Self::module_prefix(), Self::storage_prefix())
+		crate::storage::storage_prefix_with_const(Self::module_prefix(), Self::storage_prefix_hash())
 	}
 }
 

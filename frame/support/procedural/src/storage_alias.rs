@@ -17,7 +17,7 @@
 
 //! Implementation of the `storage_alias` attribute macro.
 
-use crate::counter_prefix;
+use crate::{counter_prefix, counter_prefix_hash};
 use frame_support_procedural_tools::generate_crate_access_2018;
 use proc_macro2::{Span, TokenStream};
 use quote::{quote, ToTokens};
@@ -33,6 +33,13 @@ use syn::{
 struct SimplePath {
 	leading_colon: Option<Token![::]>,
 	segments: Punctuated<Ident, Token![::]>,
+}
+
+
+/// Help transfer limited slice to token.
+fn array_to_tokens<const N: usize>(arr: &[u8; N]) -> proc_macro2::TokenStream {
+	let elements = arr.iter().map(|b| quote::quote! { #b });
+	quote::quote! { [#(#elements),*] }
 }
 
 impl SimplePath {
@@ -596,16 +603,22 @@ fn generate_storage_instance(
 	let name_str = format!("{}_Storage_Instance", storage_name);
 	let name = Ident::new(&name_str, Span::call_site());
 	let storage_name_str = storage_name.to_string();
+	let storage_name_str_hash = array_to_tokens(&sp_core_hashing::twox_128(storage_name_str.as_bytes()));
 
 	let counter_code = is_counted_map.then(|| {
 		let counter_name = Ident::new(&counter_prefix(&name_str), Span::call_site());
 		let counter_storage_name_str = counter_prefix(&storage_name_str);
+		let counter_storage_name_str_hash = array_to_tokens(&counter_prefix_hash(&storage_name_str));
 
 		quote! {
 			#visibility struct #counter_name< #impl_generics >(
 				#crate_::sp_std::marker::PhantomData<(#type_generics)>
 			) #where_clause;
-
+			impl<#impl_generics> #crate_::traits::StoragePrefixHash
+				for #counter_name< #type_generics > #where_clause
+			{
+				const STORAGE_PREFIX_HASH: [u8; 16] = #counter_storage_name_str_hash;
+			}
 			impl<#impl_generics> #crate_::traits::StorageInstance
 				for #counter_name< #type_generics > #where_clause
 			{
@@ -630,6 +643,12 @@ fn generate_storage_instance(
 		#visibility struct #name< #impl_generics >(
 			#crate_::sp_std::marker::PhantomData<(#type_generics)>
 		) #where_clause;
+
+		impl<#impl_generics> #crate_::traits::StoragePrefixHash
+			for #name< #type_generics > #where_clause
+		{
+			const STORAGE_PREFIX_HASH: [u8; 16] = #storage_name_str_hash;
+		}
 
 		impl<#impl_generics> #crate_::traits::StorageInstance
 			for #name< #type_generics > #where_clause

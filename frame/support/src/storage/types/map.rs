@@ -119,6 +119,10 @@ where
 	fn storage_prefix() -> &'static [u8] {
 		Prefix::STORAGE_PREFIX.as_bytes()
 	}
+
+	fn storage_prefix_hash() -> &'static [u8; 16] {
+		&Prefix::STORAGE_PREFIX_HASH
+	}
 }
 
 impl<Prefix, Hasher, Key, Value, QueryKind, OnEmpty, MaxValues> StoragePrefixedMap<Value>

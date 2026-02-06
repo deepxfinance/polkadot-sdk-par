@@ -26,6 +26,9 @@ impl<T: RemoveLastTimestamp> frame_support::traits::StorageInstance for __LastTi
 	}
 	const STORAGE_PREFIX: &'static str = "LastTimestamp";
 }
+impl<T: RemoveLastTimestamp> frame_support::traits::StoragePrefixHash for __LastTimestamp<T> {
+	const STORAGE_PREFIX_HASH: [u8; 16] = [123, 211, 69, 102, 186, 64, 106, 183, 195, 185, 0, 13, 242, 185, 0, 168];
+}
 
 type LastTimestamp<T> = StorageValue<__LastTimestamp<T>, (), ValueQuery>;
 
