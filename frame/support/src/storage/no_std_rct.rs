@@ -78,17 +78,69 @@ impl<T> RcT<T> {
     }
 }
 
-impl<T: Encode> RcT<T> {
+impl<T: Default> RcT<T> {
+    /// Apply a closure for inner value reference.
+    pub fn map_value_query<O>(&self, f: impl FnOnce(&T) -> O) -> O {
+        if let Some(value) = self.0.borrow().deref().inner.as_ref() {
+            f(value)
+        } else {
+            f(&T::default())
+        }
+    }
+
+}
+
+impl<T: Encode + Default> RcT<T> {
     /// Mutate inner `Value` withing input closure.
-    /// The inner value `SHOULD` be changed in your closure.
+    ///
+    /// Notice!!!
+    /// The inner `Value` is considered as changed no matter if you actually changed it.
+    /// `DO NOT` use this function if the storage type is not `ValueQuery`
+    pub fn mutate_value_query<O>(&mut self, f: impl FnOnce(&mut T) -> O) -> O {
+        self.try_mutate_value_query(|inner| Result::<O, Never>::Ok(f(inner)))
+            .expect("Typed RcT mutate_value_query is not expected to return Error")
+    }
+
+    /// Mutate inner `Value` withing input closure.
+    ///
+    /// Notice!!!
+    /// The result correctness is not ensured!
+    /// `DO NOT` use this function if the storage type is not `ValueQuery`
+    /// `DO NOT` change inner `Value` if your closure return `Error`
+    pub fn try_mutate_value_query<R, E>(&mut self, f: impl FnOnce(&mut T) -> Result<R, E>) -> Result<R, E> {
+        let mut mut_inner = self.0.borrow_mut();
+        if mut_inner.inner.is_some() {
+            let res = f(mut_inner.inner.as_mut().unwrap());
+            if res.is_ok() {
+                super::unhashed::put_raw(&mut_inner.key, &mut_inner.inner.as_ref().map(|v| v.encode()).unwrap());
+            }
+            res
+        } else {
+            let mut tmp = T::default();
+            let res = f(&mut tmp);
+            if res.is_ok() {
+                super::unhashed::put_raw(&mut_inner.key, &tmp.encode());
+            }
+            res
+        }
+    }
+}
+
+impl<T: Encode> RcT<T> {
+    /// Mutate inner optional `Value` withing input closure.
+    ///
+    /// Notice!!!
+    /// The inner `Value` is considered as changed no matter if you actually changed it.
     pub fn mutate<O>(&mut self, f: impl FnOnce(&mut Option<T>) -> O) -> O {
         self.try_mutate(|inner| Result::<O, Never>::Ok(f(inner)))
             .expect("RcT mutate is not expected to return Error")
     }
 
-    /// Mutate inner `Value` withing input closure.
-    /// Notice!!! The result correctness is not ensured!
-    /// `DO NOT` change `Value` if your closure return `Error`
+    /// Mutate inner optional `Value` withing input closure.
+    ///
+    /// Notice!!!
+    /// The result correctness is not ensured!
+    /// `DO NOT` change inner `Value` if your closure return `Error`
     pub fn try_mutate<R, E>(&mut self, f: impl FnOnce(&mut Option<T>) -> Result<R, E>) -> Result<R, E> {
         let mut mut_inner = self.0.borrow_mut();
         let res = f(&mut mut_inner.deref_mut().inner);

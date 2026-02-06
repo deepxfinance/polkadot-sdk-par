@@ -121,7 +121,7 @@ where
 				.expect("get_cache_ref should enable typed_cache")
 				.expect("get_cache_ref should have initialized")
 		}
-		None => panic!("get_cache_ref should enable typed_cache"),
+		None => panic!("get_cache_ref should enable typed_cache(Don't call `get_ref`/`get_cache_ref` in `GenesisBuild` with `std` environment)"),
 	}
 }
 
