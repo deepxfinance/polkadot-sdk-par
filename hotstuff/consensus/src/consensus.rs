@@ -976,6 +976,7 @@ where
         let proposer = self.proposer_factory.write().await.init(&parent_header).await.expect("proposer init");
         let (mut multi, single, mut group_info) = match GroupTransaction::<B>::extrinsic(
             &proposer,
+            block_number,
             *parent_header.number(),
             // time wait for pool response. (slot_duration * 3 / 20)
             std::time::Duration::from_millis(self.slot_duration.as_millis() * 3 / 20),
