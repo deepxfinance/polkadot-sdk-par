@@ -120,6 +120,10 @@ where
 		Prefix::STORAGE_PREFIX.as_bytes()
 	}
 
+	fn module_prefix_hash() -> [u8; 16] {
+		Prefix::module_name_hash()
+	}
+
 	fn storage_prefix_hash() -> &'static [u8; 16] {
 		&Prefix::STORAGE_PREFIX_HASH
 	}

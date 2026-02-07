@@ -526,6 +526,7 @@ fn decl_pallet_runtime_setup(
 ) -> TokenStream2 {
 	let names = pallet_declarations.iter().map(|d| &d.name).collect::<Vec<_>>();
 	let name_strings = pallet_declarations.iter().map(|d| d.name.to_string());
+	let name_hashes = pallet_declarations.iter().map(|d| array_to_tokens(&d.name_hash()));
 	let module_names = pallet_declarations.iter().map(|d| d.path.module_name());
 	let indices = pallet_declarations.iter().map(|pallet| pallet.index as usize);
 	let pallet_structs = pallet_declarations
@@ -582,6 +583,18 @@ fn decl_pallet_runtime_setup(
 				None
 			}
 
+			fn name_hash<P: 'static>() -> Option<[u8; 16]> {
+				let type_id = #scrate::sp_std::any::TypeId::of::<P>();
+				#(
+					#pallet_attrs
+					if type_id == #scrate::sp_std::any::TypeId::of::<#names>() {
+						return Some(#name_hashes)
+					}
+				)*
+
+				None
+			}
+
 			fn module_name<P: 'static>() -> Option<&'static str> {
 				let type_id = #scrate::sp_std::any::TypeId::of::<P>();
 				#(
@@ -609,6 +622,12 @@ fn decl_pallet_runtime_setup(
 			}
 		}
 	)
+}
+
+/// Help transfer limited slice to token.
+fn array_to_tokens<const N: usize>(arr: &[u8; N]) -> proc_macro2::TokenStream {
+	let elements = arr.iter().map(|b| quote::quote! { #b });
+	quote::quote! { [#(#elements),*] }
 }
 
 fn decl_integrity_test(scrate: &TokenStream2) -> TokenStream2 {

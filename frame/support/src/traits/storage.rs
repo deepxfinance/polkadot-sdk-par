@@ -55,6 +55,7 @@ pub trait StorageInstance: StoragePrefixHash {
 pub trait StoragePrefixHash {
 	/// Prefix Hash given to a storage to isolate from other storages in the pallet.
 	const STORAGE_PREFIX_HASH: [u8; 16];
+	fn module_name_hash() -> [u8; 16];
 }
 
 /// Metadata about storage from the runtime.

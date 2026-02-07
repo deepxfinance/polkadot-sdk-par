@@ -551,6 +551,13 @@ pub fn expand_storages(def: &mut Def) -> proc_macro2::TokenStream {
 					#config_where_clause
 				{
 					const STORAGE_PREFIX_HASH: [u8; 16] = #counter_prefix_struct_const_hash;
+					fn module_name_hash() -> [u8; 16] {
+						<
+							<T as #frame_system::Config>::PalletInfo
+							as #frame_support::traits::PalletInfo
+						>::name_hash::<Pallet<#type_use_gen>>()
+							.expect("No name hash found for the pallet in the runtime! This usually means that the pallet wasn't added to `construct_runtime!`.")
+					}
 				}
 				#(#cfg_attrs)*
 				impl<#type_impl_gen> #frame_support::traits::StorageInstance
@@ -592,6 +599,13 @@ pub fn expand_storages(def: &mut Def) -> proc_macro2::TokenStream {
 				#config_where_clause
 			{
 				const STORAGE_PREFIX_HASH: [u8; 16] = #prefix_struct_const_hash;
+				fn module_name_hash() -> [u8; 16] {
+					<
+						<T as #frame_system::Config>::PalletInfo
+						as #frame_support::traits::PalletInfo
+					>::name_hash::<Pallet<#type_use_gen>>()
+						.expect("No name hash found for the pallet in the runtime! This usually means that the pallet wasn't added to `construct_runtime!`.")
+				}
 			}
 			#(#cfg_attrs)*
 			impl<#type_impl_gen> #frame_support::traits::StorageInstance

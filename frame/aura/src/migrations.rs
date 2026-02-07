@@ -26,8 +26,14 @@ impl<T: RemoveLastTimestamp> frame_support::traits::StorageInstance for __LastTi
 	}
 	const STORAGE_PREFIX: &'static str = "LastTimestamp";
 }
+
+const AURA_HASH: [u8; 16] = [87, 248, 220, 47, 90, 176, 148, 103, 137, 111, 71, 48, 15, 4, 36, 56];
 impl<T: RemoveLastTimestamp> frame_support::traits::StoragePrefixHash for __LastTimestamp<T> {
 	const STORAGE_PREFIX_HASH: [u8; 16] = [123, 211, 69, 102, 186, 64, 106, 183, 195, 185, 0, 13, 242, 185, 0, 168];
+
+	fn module_name_hash() -> [u8; 16] {
+		AURA_HASH
+	}
 }
 
 type LastTimestamp<T> = StorageValue<__LastTimestamp<T>, (), ValueQuery>;

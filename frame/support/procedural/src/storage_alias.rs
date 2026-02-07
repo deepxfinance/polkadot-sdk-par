@@ -570,12 +570,13 @@ fn generate_storage_instance(
 		return Err(Error::new(ident.span(), "`_` is not allowed as prefix by `storage_alias`."))
 	}
 
-	let (pallet_prefix, impl_generics, type_generics) =
+	let (pallet_prefix, pallet_prefix_hash, impl_generics, type_generics) =
 		if let Some((prefix_generics, storage_generics)) =
 			prefix_generics.and_then(|p| storage_generics.map(|s| (p, s)))
 		{
 			let type_generics = prefix_generics.iter();
 			let type_generics2 = prefix_generics.iter();
+			let type_generics3 = prefix_generics.iter();
 			let impl_generics = storage_generics
 				.impl_generics()
 				.filter(|g| prefix_generics.params.iter().any(|pg| *pg == g.ident));
@@ -584,13 +585,16 @@ fn generate_storage_instance(
 				quote! {
 					<#prefix < #( #type_generics2 ),* > as #crate_::traits::PalletInfoAccess>::name()
 				},
+				quote! {
+					<#prefix < #( #type_generics3 ),* > as #crate_::traits::PalletInfoAccess>::name_hash()
+				},
 				quote!( #( #impl_generics ),* ),
 				quote!( #( #type_generics ),* ),
 			)
 		} else if let Some(prefix) = prefix.get_ident() {
 			let prefix_str = prefix.to_string();
-
-			(quote!(#prefix_str), quote!(), quote!())
+			let prefix_str_hash = array_to_tokens(&sp_core_hashing::twox_128(prefix_str.as_bytes()));
+			(quote!(#prefix_str), quote!(#prefix_str_hash), quote!(), quote!())
 		} else {
 			return Err(Error::new_spanned(
 				prefix,
@@ -618,6 +622,9 @@ fn generate_storage_instance(
 				for #counter_name< #type_generics > #where_clause
 			{
 				const STORAGE_PREFIX_HASH: [u8; 16] = #counter_storage_name_str_hash;
+				fn module_name_hash() -> [u8; 16] {
+					#pallet_prefix_hash
+				}
 			}
 			impl<#impl_generics> #crate_::traits::StorageInstance
 				for #counter_name< #type_generics > #where_clause
@@ -648,6 +655,9 @@ fn generate_storage_instance(
 			for #name< #type_generics > #where_clause
 		{
 			const STORAGE_PREFIX_HASH: [u8; 16] = #storage_name_str_hash;
+			fn module_name_hash() -> [u8; 16] {
+				#pallet_prefix_hash
+			}
 		}
 
 		impl<#impl_generics> #crate_::traits::StorageInstance

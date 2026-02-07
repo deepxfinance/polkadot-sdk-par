@@ -31,6 +31,8 @@ pub trait PalletInfo {
 	fn index<P: 'static>() -> Option<usize>;
 	/// Convert the given pallet `P` into its name as configured in the runtime.
 	fn name<P: 'static>() -> Option<&'static str>;
+	/// Convert the given pallet `P` into its name hash as configured in the runtime.
+	fn name_hash<P: 'static>() -> Option<[u8; 16]>;
 	/// Convert the given pallet `P` into its Rust module name as used in `construct_runtime!`.
 	fn module_name<P: 'static>() -> Option<&'static str>;
 	/// Convert the given pallet `P` into its containing crate version.
@@ -59,6 +61,8 @@ pub trait PalletInfoAccess {
 	fn index() -> usize;
 	/// Name of the pallet as configured in the runtime.
 	fn name() -> &'static str;
+	/// Name hash of the pallet as configured in the runtime.
+	fn name_hash() -> [u8; 16];
 	/// Name of the Rust module containing the pallet.
 	fn module_name() -> &'static str;
 	/// Version of the crate containing the pallet.
