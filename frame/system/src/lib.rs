@@ -1325,8 +1325,13 @@ impl<T: Config> Pallet<T> {
 		};
 		let phase = ExecutionPhase::<T>::get().unwrap_or_default();
 		let event = EventRecord { phase, event, topics: topics.to_vec() };
+		#[cfg(feature = "std")]
+		Events::<T>::get_ref()
+			.mutate_value_query(|events| {
+				events.push(Box::new(event));
+			});
+		#[cfg(not(feature = "std"))]
 		storage::unhashed::append(&Events::<T>::hashed_key(), event);
-
 		if !topics.is_empty() {
 			let block_number = <Number<T>>::get();
 			for topic in topics {
@@ -1399,10 +1404,25 @@ impl<T: Config> Pallet<T> {
 	pub fn finish_thread(thread: u8) -> T::Hash {
 		let number = <Number<T>>::get();
 		// We have to store events by block number since `Events` keep change.
+		#[cfg(feature = "std")]
+		{
+			let mut events_ref = Events::<T>::get_ref();
+			if events_ref.try_mutate(|e| if let Some(events) = e {
+				let _ = EventsMap::<T>::get_ref(number, thread)
+					.mutate_value_query(|map_events| {
+						sp_std::mem::swap(events, map_events);
+					});
+				Ok(())
+			} else {
+				Err(())
+			}).is_ok() {
+				events_ref.clear_muted();
+			};
+		}
+		#[cfg(not(feature = "std"))]
 		if let Some(events_raw) = storage::unhashed::take_raw(&Events::<T>::hashed_key()) {
 			storage::unhashed::put_raw(&EventsMap::<T>::hashed_key_for(number, thread), &events_raw);
 		}
-
 		let version = T::Version::get().state_version();
 		let storage_root = T::Hash::decode(&mut &sp_io::storage::root(version)[..])
 			.expect("Node is configured to use the same hash; qed");
@@ -1468,6 +1488,20 @@ impl<T: Config> Pallet<T> {
 		let parent_hash = <ParentHash<T>>::get();
 		let digest = <Digest<T>>::get();
 		// We have to store events by block number since `Events` keep change.
+		#[cfg(feature = "std")]
+		{
+			let mut events_ref = Events::<T>::get_ref();
+			if events_ref.try_mutate(|e| if let Some(events) = e {
+				let thread = <Threads<T>>::get(number);
+				storage::unhashed::put_raw(&EventsMap::<T>::hashed_key_for(number, thread), &events.encode());
+				Ok(())
+			} else {
+				Err(())
+			}).is_ok() {
+				events_ref.clear_muted();
+			};
+		}
+		#[cfg(not(feature = "std"))]
 		if let Some(events_raw) = storage::unhashed::take_raw(&Events::<T>::hashed_key()) {
 			let thread = <Threads<T>>::get(number);
 			storage::unhashed::put_raw(&EventsMap::<T>::hashed_key_for(number, thread), &events_raw);

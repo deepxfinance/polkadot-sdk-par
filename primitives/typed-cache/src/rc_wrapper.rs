@@ -63,6 +63,13 @@ impl<T> RcT<T> {
         RcT(Rc::new(RefCell::new(MutT { inner: t, muted })))
     }
 
+    /// Mark storage as not changed.
+    ///
+    /// `Invalid` for `no_std` environment.
+    pub fn clear_muted(&mut self) {
+        self.0.borrow_mut().muted = false;
+    }
+
     /// Return inner state if the value is changed.
     /// Only valid at this crate for inner value change detect.
     pub(crate) fn muted(&self) -> bool {
