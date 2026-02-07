@@ -1669,7 +1669,7 @@ impl<T: Config> Pallet<T> {
 		let next_extrinsic_index = {
 			let mut extrinsic_index_ref = unhashed::get_cache_ref(
 				well_known_keys::EXTRINSIC_INDEX,
-				unhashed::non_f::<u32>
+				unhashed::non_t::<u32>
 			);
 			extrinsic_index_ref.mutate(|index|
 				if let Some(index) = index {

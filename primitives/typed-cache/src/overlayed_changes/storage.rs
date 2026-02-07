@@ -146,19 +146,10 @@ impl<V: Clone> StorageIO<V> for StorageOverlay<StorageKey, V> {
 
     fn get_ref<F>(&mut self, space: &[u8], key: &[u8], init: Option<F>) -> Option<RcT<V>>
     where
-        F: Fn(&[u8]) -> Option<V>
+        F: FnOnce() -> Option<V>
     {
         if space != &self.space { return None; }
-        if let Some(x) = self.changes.get(key) {
-            Some(x.value_ref().clone_ref())
-        } else {
-            init.map(|f| {
-                let value = f(key);
-                self.init_cache(key.to_vec(), value.clone());
-                self.changes.get(key).map(|e| e.value_ref().clone_ref())
-            })
-                .unwrap_or(None)
-        }
+        self.modify(key.to_vec(), init, None).map(|rc| rc.clone_ref())
     }
 
     fn get_change_ref(&self, space: &[u8], key: &[u8]) -> Option<RcT<V>> {

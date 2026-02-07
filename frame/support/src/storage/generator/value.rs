@@ -73,7 +73,7 @@ impl<T: FullCodec + TStorage, G: StorageValue<T>> storage::StorageValue<T> for G
 	}
 
 	fn get_ref() -> RcT<T> {
-		unhashed::get_cache_ref(&Self::storage_value_final_key(), #[cfg(feature = "std")] unhashed::non_f::<T>)
+		unhashed::get_cache_ref(&Self::storage_value_final_key(), #[cfg(feature = "std")] unhashed::non_t::<T>)
 	}
 
 	fn try_get() -> Result<T, ()> {

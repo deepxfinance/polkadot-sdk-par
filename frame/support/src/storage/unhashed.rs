@@ -105,10 +105,12 @@ pub fn put_cache<T: FullCodec + TStorage>(key: &[u8], val: T) {
 
 pub fn non_f<T>(_k: &[u8]) -> Option<T> { None }
 
+pub fn non_t<T>() -> Option<T> { None }
+
 #[cfg(feature = "std")]
 pub fn get_cache_ref<T: FullCodec + TStorage, F>(key: &[u8], _f: F) -> RcT<T>
 where
-	F: Fn(&[u8]) -> Option<T>
+	F: FnOnce() -> Option<T>
 {
 	match sp_io::mut_typed_cache(
 		|o| o.get_ref::<T, F>(key_prefix(key), key, None),
@@ -116,8 +118,7 @@ where
 		Some(Some(value)) => value,
 		Some(None) => {
 			let res = get::<T>(key);
-			sp_io::mut_typed_cache(|o| o.init(key_prefix(key), key, res));
-			sp_io::mut_typed_cache(|o| o.get_ref::<T, F>(key_prefix(key), key, None))
+			sp_io::mut_typed_cache(|o| o.get_ref::<T, _>(key_prefix(key), key, Some(|| { res })))
 				.expect("get_cache_ref should enable typed_cache")
 				.expect("get_cache_ref should have initialized")
 		}

@@ -285,7 +285,7 @@ impl<K: FullEncode, V: FullCodec + TStorage, G: StorageMap<K, V>> storage::Stora
 	fn get_ref<KeyArg: EncodeLike<K>>(key: KeyArg) -> RcT<V> {
 		unhashed::get_cache_ref(
 			Self::storage_map_final_key(key).as_ref(),
-			#[cfg(feature = "std")] unhashed::non_f::<V>,
+			#[cfg(feature = "std")] unhashed::non_t::<V>,
 		)
 	}
 

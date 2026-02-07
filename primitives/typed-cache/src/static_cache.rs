@@ -111,7 +111,7 @@ impl OverlayCache {
 
     pub fn get_ref<V: Clone + FullCodec + 'static, F>(&mut self, space: &[u8], key: &[u8], init: Option<F>) -> Option<RcT<V>>
     where
-        F: Fn(&[u8]) -> Option<V>
+        F: FnOnce() -> Option<V>,
     {
         let f = |storage: &mut AnyStorage| {
             storage.downcast_mut::<StorageOverlay<Vec<u8>, V>>()
@@ -438,7 +438,7 @@ pub mod test {
         assert_eq!(cache.get_change_ref(b"u32", b"11").unwrap().clone_inner(), Some(A { v: 2 }));
 
         cache.init(b"another", b"11", Some(A { v: 10 }));
-        let mut value_ref = cache.get_ref::<A, _>(b"another", b"11", Some(|_: &_| { Some(A { v: 10 }) })).unwrap();
+        let mut value_ref = cache.get_ref::<A, _>(b"another", b"11", Some(|| { Some(A { v: 10 }) })).unwrap();
         assert_eq!(value_ref.muted(), false);
         value_ref.mutate(|a| a.as_mut().map(|v| v.v += 1));
         assert_eq!(value_ref.muted(), true);
