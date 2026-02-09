@@ -97,13 +97,23 @@ where
 		info: &DispatchInfoOf<T::RuntimeCall>,
 		len: usize,
 	) -> Result<(), TransactionValidityError> {
-		let next_len = Self::check_block_length(info, len)?;
-		let next_weight = Self::check_block_weight(info)?;
-		Self::check_extrinsic_weight(info)?;
-
-		crate::AllExtrinsicsLen::<T>::put(next_len);
-		crate::BlockWeight::<T>::put(next_weight);
-		Ok(())
+		crate::AllExtrinsicsLen::<T>::get_ref().mutate_value_query(|current_len| {
+			let length_limit = T::BlockLength::get();
+			let added_len = len as u32;
+			let next_len = current_len.saturating_add(added_len);
+			if next_len > *length_limit.max.get(info.class) {
+				return Err(InvalidTransaction::ExhaustsResources.into());
+			}
+			crate::BlockWeight::<T>::get_ref().mutate_value_query(|all_weight| {
+				let maximum_weight = T::BlockWeights::get();
+				let next_weight = calculate_consumed_weight::<T::RuntimeCall>(maximum_weight, all_weight.clone(), info)?;
+				Self::check_extrinsic_weight(info)?;
+				*all_weight = next_weight;
+				Result::<(), TransactionValidityError>::Ok(())
+			})?;
+			*current_len = next_len;
+			Ok(())
+		})
 	}
 
 	/// Do the validate checks. This can be applied to both signed and unsigned.
