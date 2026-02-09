@@ -89,9 +89,17 @@ fn parse_type<T: Decode>(key: &[u8], val: Vec<u8>) -> Option<T> {
 
 #[cfg(feature = "std")]
 pub fn contains_key_cache<T: FullCodec + TStorage>(key: &[u8]) -> bool {
-	sp_io::mut_typed_cache(|o| o.contains_key::<T>(key_prefix(key), &key))
-		.map(|v| v.unwrap_or(exists(key)))
-		.unwrap_or(exists(key))
+	match sp_io::mut_typed_cache(|o| o.contains_key::<T>(key_prefix(key), &key)) {
+		Some(Some(contains)) => contains,
+		Some(None) => {
+			let res = get::<T>(key);
+			sp_io::mut_typed_cache(|o| o.init(key_prefix(key), key, res.clone()));
+			res.is_some()
+		},
+		None => {
+			exists(key)
+		},
+	}
 }
 
 #[cfg(feature = "std")]
