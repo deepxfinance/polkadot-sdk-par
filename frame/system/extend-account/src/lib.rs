@@ -9,11 +9,12 @@ use frame_support::sp_runtime::{traits::One, Saturating, transaction_validity::I
 use scale_info::TypeInfo;
 use frame_support::sp_runtime::traits::{UniqueSaturatedInto, Zero};
 use sp_std::vec::Vec;
+use sp_std::collections::vec_deque::VecDeque;
 
 /// Special TimeNonce with latest used list.
 /// Its length is limited by upper layer.
 #[derive(Clone, Eq, PartialEq, Default, Encode, Decode, RuntimeDebug, TypeInfo)]
-pub struct TimeNonce<Index>(Vec<Index>);
+pub struct TimeNonce<Index>(VecDeque<Index>);
 
 impl<Index: Encode> MaxEncodedLen for TimeNonce<Index> {
 	fn max_encoded_len() -> usize {
@@ -28,7 +29,7 @@ impl<Index> TimeNonce<Index> {
 		Index: Zero,
 	{
 		if self.0.is_empty() {
-			self.0.push(Zero::zero());
+			self.0.push_front(Zero::zero());
 		}
 	}
 
@@ -36,7 +37,7 @@ impl<Index> TimeNonce<Index> {
 	where
 		Index: Ord + Debug,
 	{
-		if let Some(first_nonce) = self.0.first() {
+		if let Some(first_nonce) = self.0.front() {
 			if nonce <= first_nonce {
 				log::trace!(target: "account", "TimeStale for smaller than first_nonce {nonce:?}/{first_nonce:?}");
 				return Err(InvalidTransaction::TimeStale);
@@ -69,7 +70,7 @@ impl<Index> TimeNonce<Index> {
 	pub fn update<Limit: CallLimits>(&mut self, index: usize, nonce: Index) -> bool {
 		self.0.insert(index, nonce);
 		if self.0.len() > Limit::window_size() as usize {
-			self.0.remove(0);
+			self.0.pop_front();
 			return true;
 		}
 		index == 0
@@ -199,21 +200,13 @@ impl<Index, AccountData> AccountInfo<Index, AccountData> {
 			let index = self.time_nonce.find_index(&nonce)?;
 			self.update = now;
 			self.quota -= 1;
-			if self.time_nonce.update::<Limit>(index, nonce) {
-				log::trace!(target: "account", "Charge time_nonce {:?} update_first_nonce {:?}", self.time_nonce.0[index.saturating_sub(1)], self.time_nonce.0[0]);
-			} else {
-				log::trace!(target: "account", "Charge time_nonce {:?}", self.time_nonce.0[index]);
-			}
+			self.time_nonce.update::<Limit>(index, nonce);
 			Ok(())
 		} else if self.update + Limit::free_interval() <= now {
 			self.check_time_nonce_range::<Limit>(now, &nonce)?;
 			let index = self.time_nonce.find_index(&nonce)?;
 			self.update = now;
-			if self.time_nonce.update::<Limit>(index, nonce) {
-				log::trace!(target: "account", "Free time_nonce {:?} update_first_nonce {:?}", self.time_nonce.0[index.saturating_sub(1)], self.time_nonce.0[0]);
-			} else {
-				log::trace!(target: "account", "Free time_nonce {:?}", self.time_nonce.0[index]);
-			}
+			self.time_nonce.update::<Limit>(index, nonce);
 			Ok(())
 		} else {
 			Err(InvalidTransaction::Payment)
@@ -309,7 +302,6 @@ impl<Index, AccountData> AccountInfo<Index, AccountData> {
 	{
 		let time_nonce: u64 = nonce.clone().saturated_into();
 		if time_nonce < now && time_nonce.saturating_add(Limit::time_range().0) <= now {
-			log::trace!(target: "account", "TimeStale for now {now} time_nonce {time_nonce} limit: {}", Limit::time_range().0);
 			Err(InvalidTransaction::TimeStale)
 		} else if time_nonce > now && time_nonce.saturating_sub(Limit::time_range().1) >= now {
 			Err(InvalidTransaction::Future)
