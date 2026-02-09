@@ -1,5 +1,6 @@
 #![allow(unused)]
 use codec::{FullCodec, Output};
+use log::warn;
 use sp_std::boxed::Box;
 use sp_std::collections::btree_map::{BTreeMap, Entry::{Vacant, Occupied}};
 use sp_std::sync::Arc;
@@ -11,22 +12,35 @@ use crate::{QueryTransfer, RcT, StorageIO, StorageKey};
 use crate::StorageApi;
 #[cfg(feature = "std")]
 use crate::changeset::StorageOverlay;
-use crate::changeset::ExecutionMode;
+use crate::changeset::{ExecutionMode, NoOpenTransaction};
 
 #[cfg(feature = "std")]
 pub type AnyStorage = Box<dyn StorageApi>;
 #[cfg(feature = "std")]
 pub type Overlay = std::collections::HashMap<Vec<u8>, AnyStorage>;
+use sp_std::vec::Vec;
 
 #[cfg(not(feature = "std"))]
 #[derive(Clone, Default)]
 pub struct OverlayCache;
+
+#[cfg(not(feature = "std"))]
+pub use sp_std::collections::{btree_set::BTreeSet as Set, btree_map::BTreeMap as Map};
+#[cfg(feature = "std")]
+pub use std::collections::{HashSet as Set, HashMap as Map};
+use smallvec::SmallVec;
+
+pub type DirtyKeysSets<K> = SmallVec<[Map<Vec<u8>, Set<K>>; 5]>;
 
 #[cfg(feature = "std")]
 #[derive(Default)]
 pub struct OverlayCache {
     // pub cache: SharedCache,
     pub inner: Overlay,
+    /// Stores which keys are dirty per transaction. Needed in order to determine which
+    /// values to merge into the parent transaction on commit. The length of this vector
+    /// therefore determines how many nested transactions are currently open (depth).
+    dirty_keys: DirtyKeysSets<StorageKey>,
     /// transactions layer when in ExecutionMode::Runtime.
     pub runtime_transactions: usize,
     /// transactions layer when in ExecutionMode::Client.
@@ -46,7 +60,7 @@ impl OverlayCache {
         match self.inner.entry(space.to_vec()) {
             std::collections::hash_map::Entry::Occupied(entry) => { return f(&mut entry.into_mut()) },
             std::collections::hash_map::Entry::Vacant(e) => {
-                e.insert(Box::new(StorageOverlay::<Vec<u8>, V>::new(space, self.client_transactions, self.runtime_transactions)));
+                e.insert(Box::new(StorageOverlay::<Vec<u8>, V>::new()));
             }
         }
         f(&mut self.inner.get_mut(space).unwrap())
@@ -72,27 +86,32 @@ impl OverlayCache {
 #[cfg(feature = "std")]
 impl OverlayCache {
     pub fn put<V: Clone + FullCodec + 'static>(&mut self, space: &[u8], key: &[u8], value: V) {
+        let first_write_in_tx = self.first_write_in_tx(space, key);
         let f = |storage: &mut AnyStorage| {
             storage.downcast_mut::<StorageOverlay<Vec<u8>, V>>()
-                .map(|overlay| overlay.put(space, key, value));
+                .map(|overlay| overlay.put(first_write_in_tx, key, value));
         };
         self.handle_mut_or_default::<V, _, _>(space, f);
     }
 
     pub fn try_update_raw(&mut self, space: &[u8], key: &[u8], data: Vec<u8>) {
-        let f = |storage: &mut AnyStorage| { storage.try_update_raw(space, key, data); };
+        if !self.inner.contains_key(space) { return; }
+        let first_write_in_tx = self.first_write_in_tx(space, key);
+        let f = |storage: &mut AnyStorage| { storage.try_update_raw(first_write_in_tx, key, data); };
         self.handle_mut(space, f);
     }
 
     pub fn try_kill(&mut self, space: &[u8], key: &[u8]) {
-        let f = |storage: &mut AnyStorage| { storage.try_kill(space, key); };
+        if !self.inner.contains_key(space) { return; }
+        let first_write_in_tx = self.first_write_in_tx(space, key);
+        let f = |storage: &mut AnyStorage| { storage.try_kill(first_write_in_tx, key); };
         self.handle_mut(space, f);
     }
 
     pub fn contains_key<V: Clone + FullCodec + 'static>(&self, space: &[u8], key: &[u8]) -> Option<bool> {
         let f = |storage: &AnyStorage| {
             storage.downcast_ref::<StorageOverlay<Vec<u8>, V>>()
-                .map(|overlay| overlay.contains(space, key))
+                .map(|overlay| overlay.contains(key))
                 .unwrap_or(None)
         };
         self.handle_ref::<_, _>(space, f).unwrap_or(None)
@@ -104,7 +123,7 @@ impl OverlayCache {
     {
         let f = |storage: &mut AnyStorage| {
             storage.downcast_mut::<StorageOverlay<Vec<u8>, V>>()
-                .map(|overlay| overlay.get(space, key, init))
+                .map(|overlay| overlay.get(key, init))
         };
         self.handle_mut_or_default::<V, _, _>(space, f).unwrap_or(None)
     }
@@ -113,9 +132,10 @@ impl OverlayCache {
     where
         F: FnOnce() -> Option<V>,
     {
+        let first_write_in_tx = self.first_write_in_tx(space, key);
         let f = |storage: &mut AnyStorage| {
             storage.downcast_mut::<StorageOverlay<Vec<u8>, V>>()
-                .map(|overlay| overlay.get_ref(space, key, init))
+                .map(|overlay| overlay.get_ref(first_write_in_tx, key, init))
         };
         self.handle_mut_or_default::<V, _, _>(space, f).unwrap_or(None)
     }
@@ -128,7 +148,7 @@ impl OverlayCache {
     pub fn get_change<V: Clone + FullCodec + 'static>(&self, space: &[u8], key: &[u8]) -> Option<Option<V>> {
         let f = |storage: &AnyStorage| {
             storage.downcast_ref::<StorageOverlay<Vec<u8>, V>>()
-                .map(|overlay| overlay.get_change(space, key))
+                .map(|overlay| overlay.get_change(key))
         };
         self.handle_ref::<_, _>(space, f)?.unwrap_or(None)
     }
@@ -136,7 +156,7 @@ impl OverlayCache {
     pub fn get_change_ref<V: Clone + FullCodec + 'static>(&self, space: &[u8], key: &[u8]) -> Option<RcT<V>> {
         let f = |storage: &AnyStorage| {
             storage.downcast_ref::<StorageOverlay<Vec<u8>, V>>()
-                .map(|overlay| overlay.get_change_ref(space, key))
+                .map(|overlay| overlay.get_change_ref(key))
         };
         self.handle_ref::<_, _>(space, f)?.unwrap_or(None)
     }
@@ -144,7 +164,7 @@ impl OverlayCache {
     pub fn take<V: Clone + FullCodec + 'static>(&mut self, space: &[u8], key: &[u8]) -> Option<Option<V>> {
         let f = |storage: &mut AnyStorage| {
             storage.downcast_mut::<StorageOverlay<Vec<u8>, V>>()
-                .map(|overlay| overlay.take(space, key))
+                .map(|overlay| overlay.take(key))
         };
         self.handle_mut_or_default::<V, _, _>(space, f).unwrap_or(None)
     }
@@ -152,16 +172,17 @@ impl OverlayCache {
     pub fn pop_ref<V: Clone + FullCodec + 'static>(&mut self, space: &[u8], key: &[u8]) -> Option<RcT<V>> {
         let f = |storage: &mut AnyStorage| {
             storage.downcast_mut::<StorageOverlay<Vec<u8>, V>>()
-                .map(|overlay| overlay.pop_ref(space, key))
+                .map(|overlay| overlay.pop_ref(key))
                 .unwrap_or(None)
         };
         self.handle_mut::<_, _>(space, f).unwrap_or(None)
     }
 
     pub fn kill<V: Clone + FullCodec + 'static>(&mut self, space: &[u8], key: &[u8]) {
+        let first_write_in_tx = self.first_write_in_tx(space, key);
         let f = |storage: &mut AnyStorage| {
             storage.downcast_mut::<StorageOverlay<Vec<u8>, V>>()
-                .map(|overlay| overlay.kill(space, key));
+                .map(|overlay| overlay.kill(first_write_in_tx, key));
         };
         self.handle_mut_or_default::<V, _, _>(space, f);
     }
@@ -171,9 +192,10 @@ impl OverlayCache {
         F: FnOnce() -> Option<V>,
         M: FnOnce(&mut QT::Query) -> Result<R, E>,
     {
+        let first_write_in_tx = self.first_write_in_tx(space, key);
         let f = |storage: &mut AnyStorage| {
             storage.downcast_mut::<StorageOverlay<Vec<u8>, V>>()
-                .map(|overlay| overlay.mutate::<QT, _, _, _, _>(space, key, init, mutate))
+                .map(|overlay| overlay.mutate::<QT, _, _, _, _>(first_write_in_tx, key, init, mutate))
         };
         self.handle_mut_or_default::<V, _, _>(space, f).unwrap_or(None)
     }
@@ -183,9 +205,10 @@ impl OverlayCache {
         F: FnOnce() -> V,
         M: FnOnce(&mut Option<V>)
     {
+        let first_write_in_tx = self.first_write_in_tx(space, key);
         let f = |storage: &mut AnyStorage| {
             storage.downcast_mut::<StorageOverlay<Vec<u8>, V>>()
-                .map(|overlay| overlay.append(space, key, init, mutate))
+                .map(|overlay| overlay.append(first_write_in_tx, key, init, mutate))
         };
         self.handle_mut_or_default::<V, _, _>(space, f).unwrap_or(false)
     }
@@ -193,7 +216,7 @@ impl OverlayCache {
     pub fn init<V: Clone + FullCodec + 'static>(&mut self, space: &[u8], key: &[u8], value: Option<V>) {
         let f = |storage: &mut AnyStorage| {
             storage.downcast_mut::<StorageOverlay<Vec<u8>, V>>()
-                .map(|overlay| overlay.init(space, key, value));
+                .map(|overlay| overlay.init(key, value));
         };
         self.handle_mut_or_default::<V, _, _>(space, f);
     }
@@ -201,11 +224,28 @@ impl OverlayCache {
     pub fn cached<V: Clone + FullCodec + 'static>(&self, space: &[u8], key: &[u8]) -> bool {
         let f = |storage: &AnyStorage| {
             storage.downcast_ref::<StorageOverlay<Vec<u8>, V>>()
-                .map(|overlay| overlay.cached(space, key))
+                .map(|overlay| overlay.cached(key))
                 .unwrap_or(false)
         };
         self.handle_ref::<_, _>(space, f).unwrap_or(false)
     }
+}
+
+/// Inserts a key into the dirty set.
+///
+/// Returns true iff we are currently have at least one open transaction and if this
+/// is the first write to the given key that transaction.
+fn insert_dirty(set: &mut DirtyKeysSets<StorageKey>, space: &[u8], key: &[u8]) -> bool {
+    set.last_mut().map(|dk|
+        if let Some(set) = dk.get_mut(space) {
+            set.insert(key.to_vec())
+        } else {
+            let mut new_set: Set<StorageKey> = Default::default();
+            new_set.insert(key.to_vec());
+            dk.insert(space.to_vec(), new_set);
+            true
+        })
+        .unwrap_or_default()
 }
 
 #[cfg(feature = "std")]
@@ -221,6 +261,7 @@ impl OverlayCache {
             inner: self.inner.iter()
                 .map(|(space, overlay)| (space.clone(), overlay.copy_data()))
                 .collect(),
+            dirty_keys: self.dirty_keys.clone(),
             runtime_transactions: self.runtime_transactions,
             client_transactions: self.client_transactions,
             execution_mode: self.execution_mode.clone(),
@@ -228,40 +269,76 @@ impl OverlayCache {
         }
     }
 
+    pub fn transaction_depth(&self) -> usize {
+        self.dirty_keys.len()
+    }
+
+    fn has_open_runtime_transactions(&self) -> bool {
+        self.transaction_depth() > self.client_transactions
+    }
+
+    pub fn first_write_in_tx(&mut self, space: &[u8], key: &[u8]) -> bool {
+        self.has_open_runtime_transactions() && insert_dirty(&mut self.dirty_keys, space, key)
+    }
+
     pub fn enter_runtime(&mut self) {
         self.execution_mode = ExecutionMode::Runtime;
-        self.inner.iter_mut().for_each(|(_, overlay)| overlay.enter_runtime());
+        self.client_transactions = self.dirty_keys.len();
     }
 
     pub fn exit_runtime(&mut self) {
+        if self.has_open_runtime_transactions() {
+            warn!(
+				"{} storage transactions are left open by the runtime. Those will be rolled back.",
+				self.transaction_depth() - self.client_transactions,
+			);
+        }
+        while self.has_open_runtime_transactions() {
+            self.rollback_transaction();
+        }
         self.execution_mode = ExecutionMode::Client;
-        let max_depth = self.inner.iter_mut().map(|(_, overlay)| overlay.exit_runtime()).max().unwrap_or(self.client_transactions);
-        self.client_transactions = self.client_transactions.max(max_depth);
-        self.runtime_transactions = 0;
     }
 
     pub fn start_transaction(&mut self) {
-        self.inner.iter_mut().for_each(|(_, overlay)| overlay.start_transaction());
-        match self.execution_mode {
-            ExecutionMode::Runtime => self.runtime_transactions = self.runtime_transactions.saturating_add(1),
-            ExecutionMode::Client => self.client_transactions = self.client_transactions.saturating_add(1),
-        }
+        self.dirty_keys.push(Default::default());
     }
 
     pub fn commit_transaction(&mut self) {
-        self.inner.iter_mut().for_each(|(_, overlay)| overlay.commit_transaction(&self.execution_mode));
-        match self.execution_mode {
-            ExecutionMode::Runtime => self.runtime_transactions = self.runtime_transactions.saturating_sub(1),
-            ExecutionMode::Client => self.client_transactions = self.client_transactions.saturating_sub(1),
+        // runtime is not allowed to close transactions started by the client
+        if let ExecutionMode::Runtime = self.execution_mode {
+            if !self.has_open_runtime_transactions() {
+                return;
+            }
         }
+        self.dirty_keys
+            .pop()
+            .unwrap_or_default()
+            .into_iter()
+            .for_each(|(space, dirty_keys)|
+                self.inner
+                    .get_mut(&space)
+                    .map(|space_changes| space_changes.commit_transaction(dirty_keys))
+                    .unwrap_or(())
+            );
     }
 
     pub fn rollback_transaction(&mut self) {
-        self.inner.iter_mut().for_each(|(_, overlay)| overlay.rollback_transaction(&self.execution_mode));
-        match self.execution_mode {
-            ExecutionMode::Runtime => self.runtime_transactions = self.runtime_transactions.saturating_sub(1),
-            ExecutionMode::Client => self.client_transactions = self.client_transactions.saturating_sub(1),
+        // runtime is not allowed to close transactions started by the client
+        if let ExecutionMode::Runtime = self.execution_mode {
+            if !self.has_open_runtime_transactions() {
+                return;
+            }
         }
+        self.dirty_keys
+            .pop()
+            .unwrap_or_default()
+            .into_iter()
+            .for_each(|(space, dirty_keys)|
+                self.inner
+                    .get_mut(&space)
+                    .map(|space_changes| space_changes.rollback_transaction(dirty_keys))
+                    .unwrap_or(())
+            );
     }
 
     pub fn get_changed_keys_by_prefix(&self, space: &[u8]) -> Option<Vec<StorageKey>> {
@@ -463,6 +540,8 @@ pub mod test {
         cache.start_transaction();
         cache.put(b"u32", b"3211", 2u32);
         cache.put(b"u64", b"6411", 2u64);
+        assert_eq!(cache.get_change(b"u32", b"3211"), Some(Some(2u32)));
+        assert_eq!(cache.get_change(b"u64", b"6411"), Some(Some(2u64)));
         cache.rollback_transaction();
         cache.exit_runtime();
         assert_eq!(cache.get_change(b"u32", b"3211"), Some(Some(1u32)));

@@ -3,7 +3,7 @@ use downcast_rs::{impl_downcast, DowncastSync};
 use sp_std::collections::btree_map::BTreeMap;
 use sp_std::vec::Vec;
 use crate::changeset::ExecutionMode;
-use crate::{RcT, StorageKey};
+use crate::{RcT, Set, StorageKey};
 
 #[cfg(not(feature = "std"))]
 /// Default no requirements for `no_std`
@@ -28,9 +28,9 @@ pub trait StorageApi: DowncastSync {
     /// Start transaction changes.
     fn start_transaction(&mut self);
     /// Commit tmp changes when some transaction changes.
-    fn commit_transaction(&mut self, mode: &ExecutionMode);
+    fn commit_transaction(&mut self, dirty_keys: Set<StorageKey>);
     /// Drop tmp changes.
-    fn rollback_transaction(&mut self, mode: &ExecutionMode);
+    fn rollback_transaction(&mut self, dirty_keys: Set<StorageKey>);
     /// Get expected change if exists.
     fn get_change_encode(&self, key: &[u8]) -> Option<Option<Vec<u8>>>;
     /// Get all changed keys if exists.
@@ -42,9 +42,9 @@ pub trait StorageApi: DowncastSync {
     /// Get another copy with actual data, not just pointer(e.g. Arc).
     fn copy_data(&self) -> sp_std::boxed::Box<dyn StorageApi>;
     /// Try to update by raw data if exists.
-    fn try_update_raw(&mut self, space: &[u8], key: &[u8], data: Vec<u8>);
+    fn try_update_raw(&mut self, first_write_in_tx: bool, key: &[u8], data: Vec<u8>);
     /// Try to update by raw data if exists.
-    fn try_kill(&mut self, space: &[u8], key: &[u8]);
+    fn try_kill(&mut self, first_write_in_tx: bool, key: &[u8]);
 }
 
 #[cfg(feature = "std")]
@@ -55,25 +55,25 @@ impl_downcast!(sync StorageApi);
 /// `space` define specific workspace for same `V`.
 /// `init` is another data source
 pub trait StorageIO<V> {
-    fn contains(&self, space: &[u8], key: &[u8]) -> Option<bool>;
-    fn put(&mut self, space: &[u8], key: &[u8], value: V);
-    fn get<F>(&mut self, space: &[u8], key: &[u8], init: Option<F>) -> Option<Option<V>> where F: Fn(&[u8]) -> Option<V>;
-    fn get_change(&self, space: &[u8], key: &[u8]) -> Option<Option<V>>;
-    fn take(&mut self, space: &[u8], key: &[u8]) -> Option<Option<V>>;
-    fn kill(&mut self, space: &[u8], key: &[u8]);
-    fn get_ref<F>(&mut self, space: &[u8], key: &[u8], init: Option<F>) -> Option<RcT<V>> where F: FnOnce() -> Option<V>;
-    fn get_change_ref(&self, space: &[u8], key: &[u8]) -> Option<RcT<V>>;
-    fn pop_ref(&mut self, space: &[u8], key: &[u8]) -> Option<RcT<V>>;
-    fn mutate<QT: QueryTransfer<V>, F, R, E, M>(&mut self, space: &[u8], key: &[u8], init: Option<F>, mutate: M) -> Option<Result<R, E>>
+    fn contains(&self, key: &[u8]) -> Option<bool>;
+    fn put(&mut self, first_write_in_tx: bool, key: &[u8], value: V);
+    fn get<F>(&mut self, key: &[u8], init: Option<F>) -> Option<Option<V>> where F: Fn(&[u8]) -> Option<V>;
+    fn get_change(&self, key: &[u8]) -> Option<Option<V>>;
+    fn take(&mut self, key: &[u8]) -> Option<Option<V>>;
+    fn kill(&mut self, first_write_in_tx: bool, key: &[u8]);
+    fn get_ref<F>(&mut self, first_write_in_tx: bool, key: &[u8], init: Option<F>) -> Option<RcT<V>> where F: FnOnce() -> Option<V>;
+    fn get_change_ref(&self, key: &[u8]) -> Option<RcT<V>>;
+    fn pop_ref(&mut self, key: &[u8]) -> Option<RcT<V>>;
+    fn mutate<QT: QueryTransfer<V>, F, R, E, M>(&mut self, first_write_in_tx: bool, key: &[u8], init: Option<F>, mutate: M) -> Option<Result<R, E>>
     where
         F: FnOnce() -> Option<V>,
         M: FnOnce(&mut QT::Query) -> Result<R, E>;
-    fn append<F, M>(&mut self, space: &[u8], key: &[u8], init: F, mutate: M) -> bool
+    fn append<F, M>(&mut self, first_write_in_tx: bool, key: &[u8], init: F, mutate: M) -> bool
     where
         F: FnOnce() -> V,
         M: FnOnce(&mut Option<V>);
-    fn init(&mut self, space: &[u8], key: &[u8], value: Option<V>) -> bool;
-    fn cached(&self, space: &[u8], key: &[u8]) -> bool;
+    fn init(&mut self, key: &[u8], value: Option<V>) -> bool;
+    fn cached(&self, key: &[u8]) -> bool;
 }
 
 /// Trait for value transfer.

@@ -4,7 +4,15 @@ use sp_std::hash::Hash;
 use sp_std::vec::Vec;
 use codec::{Encode, FullCodec};
 use crate::{StorageIO, StorageApi, StorageKey, QueryTransfer, RcT};
-use crate::changeset::{ExecutionMode, StorageOverlay};
+use crate::changeset::StorageOverlay;
+
+#[cfg(not(feature = "std"))]
+use sp_std::collections::btree_set::BTreeSet as Set;
+#[cfg(feature = "std")]
+use std::collections::HashSet as Set;
+use smallvec::SmallVec;
+
+pub type DirtyKeysSets<K> = SmallVec<[Set<K>; 5]>;
 
 unsafe impl<K: Ord + Hash + Clone, V: Clone> Send for StorageOverlay<K, V> {}
 unsafe impl<K: Ord + Hash + Clone, V: Clone> Sync for StorageOverlay<K, V> {}
@@ -18,17 +26,15 @@ impl<V: Clone + FullCodec + 'static> StorageApi for StorageOverlay<StorageKey, V
         self.exit_runtime()
     }
 
-    fn start_transaction(&mut self) {
-        self.start_transaction()
+    fn start_transaction(&mut self) {}
+
+    fn commit_transaction(&mut self, dirty_keys: Set<StorageKey>) {
+        self.commit_transaction(dirty_keys).expect("commit_transaction NoOpenTransaction");
     }
 
-    fn commit_transaction(&mut self, mode: &ExecutionMode) {
-        self.commit_transaction(mode).expect("commit_transaction NoOpenTransaction");
-    }
-
-    fn rollback_transaction(&mut self, mode: &ExecutionMode) {
+    fn rollback_transaction(&mut self, dirty_keys: Set<StorageKey>) {
         // ignore here since we mey call any unchanged storages.
-        self.rollback_transaction(mode).expect("rollback_transaction NoOpenTransaction");
+        self.rollback_transaction(dirty_keys).expect("rollback_transaction NoOpenTransaction");
     }
 
     fn get_change_encode(&self, key: &[u8]) -> Option<Option<Vec<u8>>> {
@@ -79,7 +85,6 @@ impl<V: Clone + FullCodec + 'static> StorageApi for StorageOverlay<StorageKey, V
                     Some((k, v.pop_value().borrow().as_ref().map(|v| v.encode())))
                 } else {
                     None
-
                 }
             )
             .collect()
@@ -89,37 +94,32 @@ impl<V: Clone + FullCodec + 'static> StorageApi for StorageOverlay<StorageKey, V
         Box::new(self.clone_with_changes())
     }
 
-    fn try_update_raw(&mut self, space: &[u8], key: &[u8], data: Vec<u8>) {
-        if space != &self.space { return; }
+    fn try_update_raw(&mut self, first_write_in_tx: bool, key: &[u8], data: Vec<u8>) {
         if let Ok(value) = codec::Decode::decode(&mut data.as_slice()) {
-            self.set(key.to_vec(), Some(value), None);
+            self.set(first_write_in_tx, key.to_vec(), Some(value), None);
         }
     }
 
-    fn try_kill(&mut self, space: &[u8], key: &[u8]) {
-        if space != &self.space { return; }
-        self.set(key.to_vec(), None, None);
+    fn try_kill(&mut self, first_write_in_tx: bool, key: &[u8]) {
+        self.set(first_write_in_tx, key.to_vec(), None, None);
     }
 }
 
 impl<V: Clone> StorageIO<V> for StorageOverlay<StorageKey, V> {
-    fn contains(&self, space: &[u8], key: &[u8]) -> Option<bool> {
-        if space != self.space { return None; }
+    fn contains(&self, key: &[u8]) -> Option<bool> {
         self.changes
             .get(key)
             .map(|x| x.value_ref().borrow().is_some())
     }
     
-    fn put(&mut self, space: &[u8], key: &[u8], value: V) {
-        if space != &self.space { return; }
-        self.set(key.to_vec(), Some(value), None);
+    fn put(&mut self, first_write_in_tx: bool, key: &[u8], value: V) {
+        self.set(first_write_in_tx, key.to_vec(), Some(value), None);
     }
 
-    fn get<F>(&mut self, space: &[u8], key: &[u8], init: Option<F>) -> Option<Option<V>>
+    fn get<F>(&mut self, key: &[u8], init: Option<F>) -> Option<Option<V>>
     where
         F: Fn(&[u8]) -> Option<V>
     {
-        if space != &self.space { return None; }
         if let Some(x) = self.changes.get(key) {
             Some(x.value_ref().clone_inner())
         } else {
@@ -132,8 +132,7 @@ impl<V: Clone> StorageIO<V> for StorageOverlay<StorageKey, V> {
         }
     }
 
-    fn get_change(&self, space: &[u8], key: &[u8]) -> Option<Option<V>> {
-        if space != &self.space { return None; }
+    fn get_change(&self, key: &[u8]) -> Option<Option<V>> {
         match self.changes.get(key) {
             Some(entry) => if entry.value_ref().muted() {
                 Some(entry.value_ref().clone_inner())
@@ -144,16 +143,14 @@ impl<V: Clone> StorageIO<V> for StorageOverlay<StorageKey, V> {
         }
     }
 
-    fn get_ref<F>(&mut self, space: &[u8], key: &[u8], init: Option<F>) -> Option<RcT<V>>
+    fn get_ref<F>(&mut self, first_write_in_tx: bool, key: &[u8], init: Option<F>) -> Option<RcT<V>>
     where
         F: FnOnce() -> Option<V>
     {
-        if space != &self.space { return None; }
-        self.modify(key.to_vec(), init, None).map(|rc| rc.clone_ref())
+        self.modify(key.to_vec(), init, first_write_in_tx, None).map(|rc| rc.clone_ref())
     }
 
-    fn get_change_ref(&self, space: &[u8], key: &[u8]) -> Option<RcT<V>> {
-        if space != &self.space { return None; }
+    fn get_change_ref(&self, key: &[u8]) -> Option<RcT<V>> {
         match self.changes.get(key) {
             Some(entry) => if entry.value_ref().muted() {
                 Some(entry.value_ref().clone_ref())
@@ -164,15 +161,13 @@ impl<V: Clone> StorageIO<V> for StorageOverlay<StorageKey, V> {
         }
     }
 
-    fn take(&mut self, space: &[u8], key: &[u8]) -> Option<Option<V>> {
-        if space != &self.space { return None; }
+    fn take(&mut self, key: &[u8]) -> Option<Option<V>> {
         self.changes
             .get_mut(key)
             .map(|entry| entry.value_mut().mutate(|v| std::mem::take(v)))
     }
 
-    fn pop_ref(&mut self, space: &[u8], key: &[u8]) -> Option<RcT<V>> {
-        if space != &self.space { return None; }
+    fn pop_ref(&mut self, key: &[u8]) -> Option<RcT<V>> {
         if let Some(mut entry) = self.changes.remove(key) {
             let rct = entry.pop_value();
             if !entry.empty() {
@@ -184,23 +179,21 @@ impl<V: Clone> StorageIO<V> for StorageOverlay<StorageKey, V> {
         }
     }
 
-    fn kill(&mut self, space: &[u8], key: &[u8]) {
-        if space != &self.space { return; }
-        self.set(key.to_vec(), None, None);
+    fn kill(&mut self, first_write_in_tx: bool, key: &[u8]) {
+        self.set(first_write_in_tx, key.to_vec(), None, None);
     }
 
-    fn mutate<QT: QueryTransfer<V>, F, R, E, M>(&mut self, space: &[u8], key: &[u8], init: Option<F>, mutate: M) -> Option<Result<R, E>>
+    fn mutate<QT: QueryTransfer<V>, F, R, E, M>(&mut self, first_write_in_tx: bool, key: &[u8], init: Option<F>, mutate: M) -> Option<Result<R, E>>
     where
         F: FnOnce() -> Option<V>,
         M: FnOnce(&mut QT::Query) -> Result<R, E>,
     {
-        if space != &self.space { return None; }
         // modify must have mutable reference of value returned
-        match self.modify(key.to_vec(), init, None) {
+        match self.modify(key.to_vec(), init, first_write_in_tx, None) {
             Some(v) => {
                 let (res, new_value) = v.mutate(|t| QT::mut_from_optional_value_to_query(t, mutate));
                 if let Some(new_value) = new_value {
-                    self.set(key.to_vec(), Some(new_value), None);
+                    self.set(false, key.to_vec(), Some(new_value), None);
                 }
                 Some(res)
             }
@@ -208,26 +201,23 @@ impl<V: Clone> StorageIO<V> for StorageOverlay<StorageKey, V> {
         }
     }
 
-    fn append<F, M>(&mut self, space: &[u8], key: &[u8], init: F, mutate: M) -> bool
+    fn append<F, M>(&mut self, first_write_in_tx: bool, key: &[u8], init: F, mutate: M) -> bool
     where
         F: FnOnce() -> V,
         M: FnOnce(&mut Option<V>)
     {
-        if space != &self.space { return false; }
         // modify must have mutable reference of value returned
-        self.modify_append(key.to_vec(), init, None)
+        self.modify_append(key.to_vec(), init, first_write_in_tx, None)
             .map(|v| v.mutate(mutate))
             .expect("append value should have initialized");
         true
     }
 
-    fn init(&mut self, space: &[u8], key: &[u8], value: Option<V>) -> bool {
-        if space != &self.space { false; }
+    fn init(&mut self, key: &[u8], value: Option<V>) -> bool {
         self.init_cache(key.to_vec(), value)
     }
     
-    fn cached(&self, space: &[u8], key: &[u8]) -> bool {
-        if space != &self.space { return false; }
+    fn cached(&self, key: &[u8]) -> bool {
         self.changes
             .get(key)
             .map(|_| true)
@@ -237,88 +227,88 @@ impl<V: Clone> StorageIO<V> for StorageOverlay<StorageKey, V> {
 
 #[test]
 fn test_basic_types() {
-    let mut overlay1 = StorageOverlay::new(b"str", 0, 0);
-    let mut overlay2 = StorageOverlay::new(b"str", 0, 0);
+    let mut overlay1 = StorageOverlay::new();
+    let mut overlay2 = StorageOverlay::new();
 
     let mut none_f = Some(|_: &_| { None });
     none_f.take();
 
-    overlay1.put(b"str", b"key1", b"value1".to_vec());
-    overlay1.put(b"str", b"key2", b"value2".to_vec());
-    overlay2.put(b"str", b"key3", b"value3".to_vec());
-    assert_eq!(overlay1.get(b"str", b"key1", none_f), Some(Some(b"value1".to_vec())));
-    assert_eq!(overlay1.get(b"str", b"key2", none_f), Some(Some(b"value2".to_vec())));
-    assert_eq!(overlay2.get(b"str", b"key3", none_f), Some(Some(b"value3".to_vec())));
+    overlay1.put(true, b"key1", b"value1".to_vec());
+    overlay1.put(true, b"key2", b"value2".to_vec());
+    overlay2.put(true, b"key3", b"value3".to_vec());
+    assert_eq!(overlay1.get(b"key1", none_f), Some(Some(b"value1".to_vec())));
+    assert_eq!(overlay1.get(b"key2", none_f), Some(Some(b"value2".to_vec())));
+    assert_eq!(overlay2.get(b"key3", none_f), Some(Some(b"value3".to_vec())));
 }
 
 #[test]
 fn test_commit() {
     let mut none_f = Some(|_: &_| { None });
     none_f.take();
-    let mut overlay = StorageOverlay::new(b"str", 0, 0);
+    let mut overlay = StorageOverlay::new();
     overlay.start_transaction();
-    overlay.put(b"str", b"key1", b"value1".to_vec());
-    let _ = overlay.rollback_transaction(&ExecutionMode::Client);
-    overlay.put(b"str", b"key2", b"value2".to_vec());
-    assert_eq!(overlay.get(b"str", b"key1", none_f), Option::<Option<Vec<u8>>>::None);
-    assert_eq!(overlay.get(b"str", b"key2", none_f), Some(Some(b"value2".to_vec())));
+    overlay.put(true, b"key1", b"value1".to_vec());
+    let _ = overlay.rollback_transaction([b"key1".to_vec()].into_iter().collect::<Set<_>>());
+    overlay.put(true, b"key2", b"value2".to_vec());
+    assert_eq!(overlay.get(b"key1", none_f), Option::<Option<Vec<u8>>>::None);
+    assert_eq!(overlay.get(b"key2", none_f), Some(Some(b"value2".to_vec())));
 }
 
 #[test]
 fn test_clone_for_multi_threads() {
     let mut none_f = Some(|_: &_| { None });
     none_f.take();
-    let mut overlay1 = StorageOverlay::new(b"str", 0, 0);
-    overlay1.put(b"str", b"key1", b"value1".to_vec());
+    let mut overlay1 = StorageOverlay::new();
+    overlay1.put(true, b"key1", b"value1".to_vec());
     let mut overlay2 = overlay1.clone_with_changes();
     let mut overlay2 = std::thread::spawn(move || {
-        overlay2.put(b"str", b"key2", b"value2".to_vec());
+        overlay2.put(true, b"key2", b"value2".to_vec());
         overlay2
     }).join().unwrap();
 
-    assert_eq!(overlay1.get(b"str", b"key1", none_f), Some(Some(b"value1".to_vec())));
-    assert_eq!(overlay1.get(b"str", b"key2", none_f), Option::<Option<Vec<u8>>>::None);
-    assert_eq!(overlay2.get(b"str", b"key1", none_f), Some(Some(b"value1".to_vec())));
-    assert_eq!(overlay2.get(b"str", b"key2", none_f), Some(Some(b"value2".to_vec())));
+    assert_eq!(overlay1.get(b"key1", none_f), Some(Some(b"value1".to_vec())));
+    assert_eq!(overlay1.get(b"key2", none_f), Option::<Option<Vec<u8>>>::None);
+    assert_eq!(overlay2.get(b"key1", none_f), Some(Some(b"value1".to_vec())));
+    assert_eq!(overlay2.get(b"key2", none_f), Some(Some(b"value2".to_vec())));
 }
 
 #[test]
 fn test_cache() {
     let mut none_f = Some(|_: &_| { None });
     none_f.take();
-    let mut overlay = StorageOverlay::new(b"str", 0, 0);
-    overlay.init(b"str", b"key1", Some(b"value1".to_vec()));
-    assert_eq!(overlay.get(b"str", b"key1", none_f), Some(Some(b"value1".to_vec())));
+    let mut overlay = StorageOverlay::new();
+    overlay.init(b"key1", Some(b"value1".to_vec()));
+    assert_eq!(overlay.get(b"key1", none_f), Some(Some(b"value1".to_vec())));
 }
 
 #[test]
 fn test_storage_copy_data() {
     let mut none_f = Some(|_: &_| { None });
     none_f.take();
-    let mut overlay = StorageOverlay::new(b"str", 0, 0);
-    overlay.init(b"str", b"key1", Some(b"value1".to_vec()));
-    assert_eq!(overlay.get(b"str", b"key1", none_f), Some(Some(b"value1".to_vec())));
+    let mut overlay = StorageOverlay::new();
+    overlay.init(b"key1", Some(b"value1".to_vec()));
+    assert_eq!(overlay.get(b"key1", none_f), Some(Some(b"value1".to_vec())));
     overlay.start_transaction();
-    overlay.put(b"str", b"key1", b"value2".to_vec());
-    assert_eq!(overlay.get(b"str", b"key1", none_f), Some(Some(b"value2".to_vec())));
+    overlay.put(true, b"key1", b"value2".to_vec());
+    assert_eq!(overlay.get(b"key1", none_f), Some(Some(b"value2".to_vec())));
 
     let mut overlay1 = overlay.copy_data();
 
-    let _ = overlay.rollback_transaction(&ExecutionMode::Client);
-    assert_eq!(overlay.get(b"str", b"key1", none_f), Some(Some(b"value1".to_vec())));
+    let _ = overlay.rollback_transaction([b"key1".to_vec()].into_iter().collect::<Set<_>>());
+    assert_eq!(overlay.get(b"key1", none_f), Some(Some(b"value1".to_vec())));
 
     assert_eq!(
         overlay1.downcast_mut::<StorageOverlay<Vec<u8>, Vec<u8>>>()
             .unwrap()
-            .get(b"str", b"key1", none_f),
+            .get(b"key1", none_f),
         Some(Some(b"value2".to_vec()))
     );
-    overlay1.rollback_transaction(&ExecutionMode::Client);
+    overlay1.rollback_transaction(Default::default());
     assert_eq!(
         overlay1
             .downcast_mut::<StorageOverlay<Vec<u8>, Vec<u8>>>()
             .unwrap()
-            .get(b"str", b"key1", none_f),
-        Some(Some(b"value1".to_vec()))
+            .get(b"key1", none_f),
+        Some(Some(b"value2".to_vec()))
     );
 }
