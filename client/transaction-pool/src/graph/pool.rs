@@ -333,6 +333,23 @@ impl<B: ChainApi> Pool<B> {
 		let prune_tags_time = prune_tags_start.elapsed();
 		Ok(format!("tag_time {tag_time:?} all_time {all_time:?} prune_tags {prune_tags_time:?}({prune_times})"))
 	}
+	
+	/// Prune txs by just hashes.
+	pub async fn prune_by_hashes(
+		&self,
+		at: &BlockId<B::Block>,
+		in_pool_hashes: Vec<ExtrinsicHash<B>>,
+	) -> Result<String, B::Error> {
+		log::debug!(target: LOG_TARGET, "Starting pruning of block {at:?} (hashes: {})", in_pool_hashes.len());
+		let start = std::time::Instant::now();
+		let future_tags = self.validated_pool.extrinsics_tags(&in_pool_hashes)
+			.into_iter().filter_map(|r| r).flatten().collect::<Vec<_>>();
+		let tag_time = start.elapsed();
+		let prune_tags_start = std::time::Instant::now();
+		let prune_times = self.prune_tags(at, future_tags, in_pool_hashes).await?;
+		let prune_tags_time = prune_tags_start.elapsed();
+		Ok(format!("tag_time {tag_time:?} prune_tags {prune_tags_time:?}({prune_times})"))
+	}
 
 	/// Prunes ready transactions that provide given list of tags.
 	///

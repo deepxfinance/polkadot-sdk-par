@@ -56,7 +56,7 @@ use sc_transaction_pool_api::{
 	TransactionStatusStreamFor, TxHash,
 };
 use sp_core::traits::SpawnEssentialNamed;
-use sp_runtime::{generic::BlockId, traits::{AtLeast32Bit, Block as BlockT, Extrinsic, Header as HeaderT, NumberFor, Zero}};
+use sp_runtime::{generic::BlockId, traits::{AtLeast32Bit, Block as BlockT, Extrinsic, Header as HeaderT, NumberFor, Zero}, Saturating};
 use std::time::Instant;
 
 use crate::metrics::MetricsLink as PrometheusMetrics;
@@ -109,13 +109,13 @@ impl<T, Block: BlockT> ReadyPoll<T, Block> {
 	}
 
 	fn trigger(&mut self, number: NumberFor<Block>, iterator_factory: impl Fn(Option<(NumberFor<Block>, NumberFor<Block>)>, Option<usize>) -> T) {
-		self.updated_at = number;
+		self.updated_at = self.updated_at.max(number);
 
 		let mut idx = 0;
 		while idx < self.pollers.len() {
-			if self.pollers[idx].0 <= number {
+			if self.pollers[idx].0 <= self.updated_at {
 				let poller_sender = self.pollers.swap_remove(idx);
-				log::debug!(target: LOG_TARGET, "Sending ready signal at block {}", number);
+				log::debug!(target: LOG_TARGET, "Sending ready signal at block {}", self.updated_at);
 				let _ = poller_sender.1.send(iterator_factory(Some((self.updated_at, poller_sender.0)), poller_sender.2));
 			} else {
 				idx += 1;
@@ -620,18 +620,41 @@ async fn prune_known_txs_for_block<Block: BlockT, Api: graph::ChainApi<Block = B
 		log::error!("Cannot prune known in the pool: {}", e);
 		Default::default()
 	});
-	// if let Err(e) = pool
-	// 	.prune(&BlockId::Hash(block_hash), &BlockId::hash(*header.parent_hash()), &extrinsics)
-	// 	.await
-	// {
-	// 	log::error!("Cannot prune known in the pool: {}", e);
-	// }
 	let prune_time = prune_start.elapsed();
 	if hashes.len() > 1 {
 		log::info!(
 			target: LOG_TARGET,
 			"prune_known_txs_for_block {}: {} txs in {:?}(body {body_time:?} header {header_time:?} hash {hash_time:?} prune {prune_time:?}({prune_times}))",
 			header.number(),
+			hashes.len(),
+			start.elapsed(),
+		);
+	}
+	hashes
+}
+
+/// Prune the known txs for the given block.
+async fn prune_known_consensus_txs_for_block<Block: BlockT, Api: graph::ChainApi<Block = Block>>(
+	block: NumberFor<Block>,
+	pool: &graph::Pool<Api>,
+) -> Vec<ExtrinsicHash<Api>> {
+	let start = std::time::Instant::now();
+	let (_tx_root, hash_set) = pool.validated_pool()
+		.clear_consensus_hashes(&BlockId::Number(block)).unwrap_or_default();
+	if hash_set.is_empty() { return Vec::new(); }
+	let hashes = hash_set.into_iter().collect::<Vec<_>>();
+	log::trace!(target: LOG_TARGET, "Pruning transactions: {:?}", hashes);
+	let prune_start = std::time::Instant::now();
+	let prune_times = pool.prune_by_hashes(&BlockId::Number(block), hashes.clone())
+		.await.unwrap_or_else(|e| {
+		log::error!("Cannot prune known in the pool: {}", e);
+		Default::default()
+	});
+	let prune_time = prune_start.elapsed();
+	if hashes.len() > 0 {
+		log::info!(
+			target: LOG_TARGET,
+			"prune_known_consensus_txs_for_block {block}: {} txs in {:?}(prune {prune_time:?}({prune_times}))",
 			hashes.len(),
 			start.elapsed(),
 		);
@@ -664,7 +687,7 @@ where
 			},
 		};
 
-		let next_action = self.revalidation_strategy.lock().next(
+		let mut next_action = self.revalidation_strategy.lock().next(
 			*block_number,
 			Some(std::time::Duration::from_secs(60)),
 			Some(20u32.into()),
@@ -684,21 +707,22 @@ where
 			pool.validated_pool().on_block_retracted(retracted.hash);
 		}
 
-		future::join_all(
-			tree_route
-				.enacted()
-				.iter()
-				.map(|h| prune_known_txs_for_block(h.hash, &*api, &*pool)),
-		)
-		.await
-		.into_iter()
-		.for_each(|enacted_log| {
-			pruned_log.extend(enacted_log);
-		});
+		// future::join_all(
+		// 	tree_route
+		// 		.enacted()
+		// 		.iter()
+		// 		.map(|h| prune_known_txs_for_block(h.hash, &*api, &*pool)),
+		// )
+		// .await
+		// .into_iter()
+		// .for_each(|enacted_log| {
+		// 	pruned_log.extend(enacted_log);
+		// });
+		//
+		// self.metrics
+		// 	.report(|metrics| metrics.block_transactions_pruned.inc_by(pruned_log.len() as u64));
 
-		self.metrics
-			.report(|metrics| metrics.block_transactions_pruned.inc_by(pruned_log.len() as u64));
-
+		next_action.resubmit = false;
 		if next_action.resubmit {
 			let mut resubmit_transactions = Vec::new();
 
@@ -778,6 +802,20 @@ where
 	async fn handle_consensus(&self, block: NumberFor<Block>, root: Block::Hash, hashes: Vec<Block::Hash>) {
 		log::trace!(target: LOG_TARGET, "handle_consensus block: {block:?}");
 		self.pool.validated_pool().on_consensus(block, root, hashes);
+
+		// We keep track of everything we prune so that later we won't add
+		// transactions with those hashes from the retracted blocks.
+		let pool = self.pool.clone();
+		let pruned_hashes = prune_known_consensus_txs_for_block(block.saturating_sub(1u32.into()), &*pool).await;
+		self.metrics
+			.report(|metrics| metrics.block_transactions_pruned.inc_by(pruned_hashes.len() as u64));
+		let extra_pool = self.pool.clone();
+		self.ready_poll
+			.lock()
+			.trigger(
+				block.saturating_sub(1u32.into()),
+				move |at: Option<(NumberFor<Block>, NumberFor<Block>)>, limit| Box::new(extra_pool.validated_pool().ready(at, limit))
+			);
 	}
 }
 
