@@ -1464,6 +1464,7 @@ impl<Block: BlockT> Backend<Block> {
 		let mut current_transaction_justifications: HashMap<Block::Hash, Justification> =
 			HashMap::new();
 		for (block_hash, justification) in operation.finalized_blocks {
+			debug!(target:"commit-time", "⌛️ operation.finalized_blocks");
 			let block_header = self.blockchain.expect_header(block_hash)?;
 			meta_updates.push(self.finalize_block_with_transaction(
 				&mut transaction,
@@ -1497,12 +1498,12 @@ impl<Block: BlockT> Backend<Block> {
 			let lookup_key = utils::number_and_hash_to_lookup_key(number, hash)?;
 
 			if pending_block.leaf_state.is_best() {
-				self.set_head_with_transaction(&mut transaction, parent_hash, (number, hash))?;
+				debug!(target:"commit-time", "⌛️ pending_block.leaf_state.is_best");
+				self.set_head_with_transaction(&mut transaction_state, parent_hash, (number, hash))?;
 			};
 
-			utils::insert_hash_to_key_mapping(&mut transaction, columns::KEY_LOOKUP, number, hash)?;
-
-			transaction.set_from_vec(columns::HEADER, &lookup_key, pending_block.header.encode());
+			utils::insert_hash_to_key_mapping(&mut transaction_state, columns::KEY_LOOKUP, number, hash)?;
+			transaction_state.set_from_vec(columns::HEADER, &lookup_key, pending_block.header.encode());
 			if let Some(body) = pending_block.body {
 				// If we have any index operations we save block in the new format with indexed
 				// extrinsic headers Otherwise we save the body as a single blob.
@@ -1555,7 +1556,7 @@ impl<Block: BlockT> Backend<Block> {
 				#[cfg(feature = "kvdb")]
 				let cache = kv_cache_lock.as_mut().unwrap();
 
-				info!("⌛️ The time taken to collect basic data {:?}", start.elapsed());
+				debug!(target:"commit-time", "⌛️ The time taken to collect basic data {:?}", start.elapsed());
 
 				for (mut key, (val, rc)) in operation.db_updates.drain() {
 					self.storage.db.sanitize_key(&mut key);
@@ -1587,7 +1588,7 @@ impl<Block: BlockT> Backend<Block> {
 					}
 				}
 
-				info!("⌛️ The time taken to collect state data {:?}", start.elapsed());
+				debug!(target:"commit-time", "⌛️ The time taken to collect state data {:?}", start.elapsed());
 
 				#[cfg(feature = "kvdb")]
 				drop(kv_cache_lock);
@@ -1777,7 +1778,7 @@ impl<Block: BlockT> Backend<Block> {
 
 		let print = imported.is_some();
 		if print {
-			info!("⌛️ The time before to commit basic state & header data {:?}", start.elapsed());
+			debug!(target:"commit-time", "⌛️ The time before to commit basic state & header data {:?}", start.elapsed());
 		}
 
 		self.storage.db.commit(transaction.clone())?;
@@ -1791,7 +1792,7 @@ impl<Block: BlockT> Backend<Block> {
 
 		if print {
 			let lens_txs = transaction_state.0.len();
-			info!("⌛️ The time taken to commit basic state & header data {:?} and next {lens_txs}", start.elapsed());
+			debug!(target:"commit-time", "⌛️ The time taken to commit basic state & header data {:?} and next {lens_txs}", start.elapsed());
 			self.commit_db_state_background().send(transaction_state);
 		}
 
@@ -1824,10 +1825,10 @@ impl<Block: BlockT> Backend<Block> {
 
 			thread::spawn(move || {				
 				while let Ok(msg) = receiver.recv() {
-					std::thread::sleep(std::time::Duration::from_millis(5));
+					//std::thread::sleep(std::time::Duration::from_millis(5));
 					let start = std::time::Instant::now();
                     let res = db_clone.commit(msg);
-					log::info!("⏳ Commit full State to DB success {:?} time {:?}", res, start.elapsed());
+					debug!(target:"commit-time", "⏳ Commit full State to DB success {:?} time {:?}", res, start.elapsed());
 				}
 			});
 
