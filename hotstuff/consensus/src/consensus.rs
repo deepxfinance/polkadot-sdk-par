@@ -774,9 +774,10 @@ where
                     // send execute block mission to a block execute queue and execute/import it.
                     info!(
                         target: CLIENT_LOG_TARGET,
-                        "^^_^^. block {new_block_number} can be execute with QC {} parent {}",
+                        "^^_^^. block {new_block_number} can be execute with QC {} parent {} timestamp {}",
                         commit.round(),
                         grandpa.qc.round(),
+                        commit.commit_time().as_millis(),
                     );
                     self.state.authority.on_block_commit(commit.view(), commit.block_number());
                     let extrinsics = grandpa.payload.extrinsics.clone().unwrap();
