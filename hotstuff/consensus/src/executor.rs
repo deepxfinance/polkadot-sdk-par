@@ -154,6 +154,7 @@ where
         if current < import_start {
             tokio::time::sleep(Duration::from_millis(import_start - current)).await;
         }
+        let start = std::time::Instant::now();
         match self.block_lock.import_block(import.import).await {
             Ok(res) => {
                 res.handle_justification(
@@ -170,6 +171,8 @@ where
                 }
                 // remove confirm.
                 self.confirms.remove(header.number());
+                import.info.set_import_time(start.elapsed());
+                self.oracle.update_execute_info(&import.info);
                 Ok(true)
             },
             Err(err) => {
@@ -199,7 +202,7 @@ where
     }
 
     // Execute one block and try import, return execute info.
-    async fn execute_mission(&mut self, mission: BlockMission<B>) -> Result<BlockExecuteInfo<B>, String> {
+    async fn execute_mission(&mut self, mission: BlockMission<B>) -> Result<(), String> {
         let best_block = self.client.info().best_number;
         let best_hash = self.client.info().best_hash;
         let mission_block = mission.block_number();
@@ -311,8 +314,8 @@ where
             }
         };
         // try import block
-        self.try_import_block(ImportMission::new(mission, slot, block_import_params)).await?;
-        Ok(info)
+        self.try_import_block(ImportMission::new(mission, slot, block_import_params, info)).await?;
+        Ok(())
     }
 
     async fn try_execute_all(&mut self) {
@@ -328,8 +331,7 @@ where
             let result = self.execute_mission(mission).await;
             self.block_lock.unlock(BlockOrigin::ConsensusBroadcast, mission_block).await;
             match result {
-                Ok(info) => {
-                    self.oracle.update_execute_info(&info);
+                Ok(()) => {
                     self.missions.remove(&mission_block);
                 },
                 Err(e) => {

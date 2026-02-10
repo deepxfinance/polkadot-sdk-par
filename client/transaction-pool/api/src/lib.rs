@@ -326,8 +326,10 @@ pub enum ChainEvent<B: BlockT> {
 		block: NumberFor<B>,
 		/// confirmed transactions' hash.
 		root: B::Hash,
-		/// Hash of consensus confirmed transactions. 
+		/// Hash of consensus transactions.
 		hashes: Vec<B::Hash>,
+		/// If block confirmed.
+		confirm: bool,
 	}
 }
 

@@ -805,23 +805,26 @@ where
 		}
 	}
 
-	async fn handle_consensus(&self, block: NumberFor<Block>, root: Block::Hash, hashes: Vec<Block::Hash>) {
+	async fn handle_consensus(&self, block: NumberFor<Block>, root: Block::Hash, hashes: Vec<Block::Hash>, confirm: bool) {
 		log::trace!(target: LOG_TARGET, "handle_consensus block: {block:?}");
-		self.pool.validated_pool().on_consensus(block, root, hashes);
+		if !confirm {
+			self.pool.validated_pool().on_consensus(block, root, hashes);
+		} else {
+			// We keep track of everything we prune so that later we won't add
+			// transactions with those hashes from the retracted blocks.
+			let pool = self.pool.clone();
+			let pruned_hashes = prune_known_consensus_txs_for_block(block, &*pool).await;
+			self.metrics
+				.report(|metrics| metrics.block_transactions_pruned.inc_by(pruned_hashes.len() as u64));
+			let extra_pool = self.pool.clone();
+			self.ready_poll
+				.lock()
+				.trigger(
+					block,
+					move |at: Option<(NumberFor<Block>, NumberFor<Block>)>, limit| Box::new(extra_pool.validated_pool().ready(at, limit))
+				);
+		}
 
-		// We keep track of everything we prune so that later we won't add
-		// transactions with those hashes from the retracted blocks.
-		let pool = self.pool.clone();
-		let pruned_hashes = prune_known_consensus_txs_for_block(block.saturating_sub(1u32.into()), &*pool).await;
-		self.metrics
-			.report(|metrics| metrics.block_transactions_pruned.inc_by(pruned_hashes.len() as u64));
-		let extra_pool = self.pool.clone();
-		self.ready_poll
-			.lock()
-			.trigger(
-				block.saturating_sub(1u32.into()),
-				move |at: Option<(NumberFor<Block>, NumberFor<Block>)>, limit| Box::new(extra_pool.validated_pool().ready(at, limit))
-			);
 	}
 }
 
@@ -860,8 +863,8 @@ where
 			Ok(EnactmentAction::HandleEnactment(tree_route)) => {
 				self.handle_enactment(tree_route).await;
 			},
-			Ok(EnactmentAction::HandleConsensus(block, root, hashes)) => {
-				self.handle_consensus(block, root, hashes).await;
+			Ok(EnactmentAction::HandleConsensus(block, root, hashes, confirm)) => {
+				self.handle_consensus(block, root, hashes, confirm).await;
 			}
 		};
 

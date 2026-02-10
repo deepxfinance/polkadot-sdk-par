@@ -2,6 +2,7 @@ use std::str::FromStr;
 use sp_api::{BlockT, HeaderT, ProvideRuntimeApi, TransactionFor};
 use codec::{Encode, Decode};
 use hotstuff_primitives::digests::CompatibleDigestItem;
+use sc_basic_authorship::BlockExecuteInfo;
 use sc_consensus::BlockImportParams;
 use sp_consensus_slots::Slot;
 use sp_runtime::DigestItem;
@@ -121,11 +122,12 @@ pub struct ImportMission<B: BlockT, C: ProvideRuntimeApi<B>> {
     pub mission: BlockMission<B>,
     pub slot: Slot,
     pub import: BlockImportParams<B, TransactionFor<C, B>>,
+    pub info: BlockExecuteInfo<B>,
 }
 
 impl<B: BlockT, C: ProvideRuntimeApi<B>> ImportMission<B, C> {
-    pub fn new(mission: BlockMission<B>, slot: Slot, import: BlockImportParams<B, TransactionFor<C, B>>) -> Self {
-        Self { mission, slot, import }
+    pub fn new(mission: BlockMission<B>, slot: Slot, import: BlockImportParams<B, TransactionFor<C, B>>, info: BlockExecuteInfo<B>) -> Self {
+        Self { mission, slot, import, info }
     }
 
     pub fn confirm(&mut self, commit: &BlockCommit<B>) -> Result<(), String> {

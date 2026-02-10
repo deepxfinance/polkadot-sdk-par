@@ -396,14 +396,17 @@ pub struct ConsensusNotification<Block: BlockT> {
 	pub root: Block::Hash,
 	/// consensus block transaction hashes.
 	pub hashes: Vec<Block::Hash>,
+	/// if this block is confirmed.
+	pub confirm: bool,
 }
 
-impl<Block: BlockT> From<(NumberFor<Block>, Block::Hash, Vec<Block::Hash>)> for ConsensusNotification<Block> {
-	fn from(value: (NumberFor<Block>, Block::Hash, Vec<Block::Hash>)) -> Self {
+impl<Block: BlockT> From<(NumberFor<Block>, Block::Hash, Vec<Block::Hash>, bool)> for ConsensusNotification<Block> {
+	fn from(value: (NumberFor<Block>, Block::Hash, Vec<Block::Hash>, bool)) -> Self {
 		Self {
 			block: value.0,
 			root: value.1,
 			hashes: value.2,
+			confirm: value.3,
 		}
 	}
 }
@@ -428,7 +431,7 @@ impl<B: BlockT> From<FinalityNotification<B>> for ChainEvent<B> {
 
 impl<B: BlockT> From<ConsensusNotification<B>> for ChainEvent<B> {
 	fn from(n: ConsensusNotification<B>) -> Self {
-		Self::Consensus { block: n.block, root: n.root, hashes: n.hashes }
+		Self::Consensus { block: n.block, root: n.root, hashes: n.hashes, confirm: n.confirm }
 	}
 }
 

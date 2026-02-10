@@ -806,6 +806,7 @@ where
                     if self.executor_tx.send(mission).is_err() {
                         warn!(target: CLIENT_LOG_TARGET, "~~ trigger_qc_mission({from}). block {confirm_block} confirm mission send failed");
                     }
+                    self.notify_confirm_block(confirm_block, self.commit.extrinsics_root());
                 }
             }
             ConsensusStage::PreCommit => return Ok(()),
@@ -1266,10 +1267,16 @@ where
                     .collect::<Vec<_>>()
             );
         let block = commit.block_number();
-        if let Err(e) = self.client.notify_consensus((block, commit.extrinsics_root(), hashes.clone()).into()) {
+        if let Err(e) = self.client.notify_consensus((block, commit.extrinsics_root(), hashes.clone(), false).into()) {
             warn!(target: CLIENT_LOG_TARGET, "notify_consensus_block {block} failed for err: {e:?}");
         }
         hashes
+    }
+
+    fn notify_confirm_block(&mut self, block: NumberFor<B>, extrinsics_root: B::Hash) {
+        if let Err(e) = self.client.notify_consensus((block, extrinsics_root, Vec::new(), true).into()) {
+            warn!(target: CLIENT_LOG_TARGET, "notify_confirm_block {block} failed for err: {e:?}");
+        }
     }
 }
 
