@@ -41,6 +41,7 @@ use std::time::Duration;
 const BACKGROUND_REVALIDATION_INTERVAL: Duration = Duration::from_millis(200);
 
 const MIN_BACKGROUND_REVALIDATION_BATCH_SIZE: usize = 20;
+const MAX_BACKGROUND_REVALIDATION_BATCH_SIZE: usize = 10000;
 
 /// Payload from queue to worker.
 struct WorkerPayload<Api: ChainApi> {
@@ -171,7 +172,8 @@ impl<Api: ChainApi> RevalidationWorker<Api> {
 	fn prepare_batch(&mut self) -> Vec<ExtrinsicHash<Api>> {
 		let mut queued_exts = Vec::new();
 		let mut left =
-			std::cmp::max(MIN_BACKGROUND_REVALIDATION_BATCH_SIZE, self.members.len() / 4);
+			std::cmp::max(MIN_BACKGROUND_REVALIDATION_BATCH_SIZE, self.members.len() / 4)
+				.min(MAX_BACKGROUND_REVALIDATION_BATCH_SIZE);
 
 		// Take maximum of count transaction by order
 		// which they got into the pool

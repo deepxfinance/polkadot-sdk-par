@@ -25,7 +25,7 @@ use std::{
 
 use crate::LOG_TARGET;
 use log::{debug, trace};
-use sc_transaction_pool_api::error;
+use sc_transaction_pool_api::{error, InPoolTransaction};
 use serde::Serialize;
 use sp_runtime::{traits::Member, transaction_validity::TransactionTag as Tag};
 
@@ -54,9 +54,8 @@ impl<Hash, Ex> Clone for TransactionRef<Hash, Ex> {
 
 impl<Hash, Ex> Ord for TransactionRef<Hash, Ex> {
 	fn cmp(&self, other: &Self) -> cmp::Ordering {
-		self.transaction
-			.priority
-			.cmp(&other.transaction.priority)
+		(self.transaction.priority, other.transaction.priority2)
+			.cmp(&(other.transaction.priority, self.transaction.priority2))
 			.then_with(|| other.transaction.valid_till.cmp(&self.transaction.valid_till))
 			.then_with(|| other.insertion_id.cmp(&self.insertion_id))
 	}
@@ -153,6 +152,7 @@ impl<Hash: hash::Hash + Member + Serialize, Ex> ReadyTransactions<Hash, Ex> {
 	/// 2. Then by priority:
 	/// - If there are two transactions with all requirements satisfied the one with higher priority
 	///   goes first.
+	/// - By priority2 for same priority. Lower priority2 goes first.
 	/// 3. Then by the ttl that's left
 	/// - transactions that are valid for a shorter time go first
 	/// 4. Lastly we sort by the time in the queue
@@ -161,13 +161,58 @@ impl<Hash: hash::Hash + Member + Serialize, Ex> ReadyTransactions<Hash, Ex> {
 	/// The iterator is providing a way to report transactions that the receiver considers invalid.
 	/// In such case the entire subgraph of transactions that depend on the reported one will be
 	/// skipped.
-	pub fn get(&self) -> BestIterator<Hash, Ex> {
-		BestIterator {
-			all: self.ready.clone_map(),
-			best: self.best.clone(),
-			awaiting: Default::default(),
-			invalid: Default::default(),
-		}
+	pub fn get(&self, limit: Option<usize>) -> (BestIterator<Hash, Ex>, String) {
+		let best_start = std::time::Instant::now();
+		let (all, best, get_info) = if limit.is_none()
+			|| limit.as_ref().unwrap() >= &self.ready.read().len()
+		{
+			let (all, all_info) = self.ready.clone_map();
+			let best_start = std::time::Instant::now();
+			let best = self.best.clone();
+			let limit_info = if limit.is_some() { "limited ".to_string() } else { "".to_string() };
+			let get_info = format!("{limit_info}all {all_info} best {:?}({})", best_start.elapsed(), self.best.len());
+			(all, best, get_info)
+		} else {
+			let limit = limit.unwrap();
+			let mut unlocks = Vec::new();
+			let mut all = HashMap::new();
+			let ready = self.ready.read();
+			let best: BTreeSet<_> = self.best.iter()
+				.rev()
+				.filter_map(|r| {
+					ready.get(r.transaction.hash()).map(|tx| {
+						if tx.unlocks.len() > 0 {
+							unlocks.push(tx.unlocks.clone());
+						}
+						all.insert(tx.transaction.transaction.hash.clone(), tx.clone());
+						r.clone()
+					})
+				})
+				.take(limit)
+				.collect();
+			loop {
+				if all.len() >= limit || unlocks.is_empty() { break; }
+				for unlock in core::mem::take(&mut unlocks).into_iter().flatten() {
+					if let Some(tx) = ready.get(&unlock) {
+						if tx.unlocks.len() > 0 {
+							unlocks.push(tx.unlocks.clone());
+						}
+						all.insert(tx.transaction.transaction.hash.clone(), tx.clone());
+					}
+				}
+			}
+			let get_info = format!("limited all {}/{} best {}/{} {:?}", all.len(), ready.len(), best.len(), self.best.len(), best_start.elapsed());
+			(all, best, get_info)
+		};
+		(
+			BestIterator {
+				all,
+				best,
+				awaiting: Default::default(),
+				invalid: Default::default(),
+			},
+			get_info
+		)
 	}
 
 	/// Imports transactions to the pool of ready transactions.
@@ -511,6 +556,10 @@ impl<Hash: hash::Hash + Member, Ex> sc_transaction_pool_api::ReadyTransactions
 	fn report_invalid(&mut self, tx: &Self::Item) {
 		BestIterator::report_invalid(self, tx)
 	}
+
+	fn total(&self) -> usize {
+		self.all.len()
+	}
 }
 
 impl<Hash: hash::Hash + Member, Ex> BestIterator<Hash, Ex> {
@@ -597,11 +646,13 @@ mod tests {
 			bytes: 1,
 			hash: id as u64,
 			priority: 1,
+			priority2: Default::default(),
 			valid_till: 2,
 			requires: vec![vec![1], vec![2]],
 			provides: vec![vec![3], vec![4]],
 			propagate: true,
 			source: Source::External,
+			group_info: vec![],
 		}
 	}
 
@@ -707,11 +758,13 @@ mod tests {
 			bytes: 1,
 			hash: 7,
 			priority: 1,
+			priority2: Default::default(),
 			valid_till: u64::MAX, // use the max here for testing.
 			requires: vec![tx1.provides[0].clone()],
 			provides: vec![],
 			propagate: true,
 			source: Source::External,
+			group_info: vec![],
 		};
 
 		// when

@@ -17,13 +17,14 @@
 
 use crate::{
 	hash::{ReversibleStorageHasher, StorageHasher},
-	storage::{self, storage_prefix, unhashed, KeyPrefixIterator, PrefixIterator, StorageAppend, TStorage},
+	storage::{self, storage_prefix_with_const, unhashed, KeyPrefixIterator, PrefixIterator, StorageAppend, TStorage},
 	Never,
 };
 use codec::{Decode, Encode, EncodeLike, FullCodec, FullEncode};
 use sp_std::prelude::*;
 use scale_info::prelude::string::String;
-use crate::storage::TypedAppend;
+use typed_cache::{OptionQT, QueryTransfer};
+use crate::storage::{TypedAppend, RcT};
 
 /// Generator for `StorageDoubleMap` used by `decl_storage`.
 ///
@@ -45,10 +46,7 @@ use crate::storage::TypedAppend;
 /// If the key2s are not trusted (e.g. can be set by a user), a cryptographic `hasher` such as
 /// `blake2_256` must be used for Hasher2. Otherwise, other items in storage with the same first
 /// key can be compromised.
-pub trait StorageDoubleMap<K1: FullEncode, K2: FullEncode, V: FullCodec + TStorage> {
-	/// The type that get/take returns.
-	type Query;
-
+pub trait StorageDoubleMap<K1: FullEncode, K2: FullEncode, V: FullCodec + TStorage>: QueryTransfer<V> {
 	/// Hasher for the first key.
 	type Hasher1: StorageHasher;
 
@@ -61,25 +59,25 @@ pub trait StorageDoubleMap<K1: FullEncode, K2: FullEncode, V: FullCodec + TStora
 	/// Storage prefix. Used for generating final key.
 	fn storage_prefix() -> &'static [u8];
 
+	/// Module prefix hash. Used for generating final key.
+	fn module_prefix_hash() -> [u8; 16];
+
+	/// Storage prefix hash. Used for generating final key.
+	fn storage_prefix_hash() -> &'static [u8; 16];
+
 	/// The full prefix; just the hash of `module_prefix` concatenated to the hash of
 	/// `storage_prefix`.
 	fn prefix_hash() -> Vec<u8> {
-		let result = storage_prefix(Self::module_prefix(), Self::storage_prefix());
+		let result = storage_prefix_with_const(&Self::module_prefix_hash(), Self::storage_prefix_hash());
 		result.to_vec()
 	}
-
-	/// Convert an optional value retrieved from storage to the type queried.
-	fn from_optional_value_to_query(v: Option<V>) -> Self::Query;
-
-	/// Convert a query to an optional value into storage.
-	fn from_query_to_optional_value(v: Self::Query) -> Option<V>;
 
 	/// Generate the first part of the key used in top storage.
 	fn storage_double_map_final_key1<KArg1>(k1: KArg1) -> Vec<u8>
 	where
 		KArg1: EncodeLike<K1>,
 	{
-		let storage_prefix = storage_prefix(Self::module_prefix(), Self::storage_prefix());
+		let storage_prefix = storage_prefix_with_const(&Self::module_prefix_hash(), Self::storage_prefix_hash());
 		let key_hashed = k1.using_encoded(Self::Hasher1::hash);
 
 		let mut final_key = Vec::with_capacity(storage_prefix.len() + key_hashed.as_ref().len());
@@ -96,7 +94,7 @@ pub trait StorageDoubleMap<K1: FullEncode, K2: FullEncode, V: FullCodec + TStora
 		KArg1: EncodeLike<K1>,
 		KArg2: EncodeLike<K2>,
 	{
-		let storage_prefix = storage_prefix(Self::module_prefix(), Self::storage_prefix());
+		let storage_prefix = storage_prefix_with_const(&Self::module_prefix_hash(), Self::storage_prefix_hash());
 		let key1_hashed = k1.using_encoded(Self::Hasher1::hash);
 		let key2_hashed = k2.using_encoded(Self::Hasher2::hash);
 
@@ -136,11 +134,7 @@ where
 	{
 		let key = Self::storage_double_map_final_key(k1, k2);
 		#[cfg(feature = "std")]
-		if sp_io::mut_typed_cache(|_| ()).is_none() {
-			unhashed::exists(&key)
-		} else {
-			unhashed::get_cache(&key, |_| { Option::<V>::None }).is_some()
-		}
+		{ unhashed::contains_key_cache::<V>(&key) }
 		#[cfg(not(feature = "std"))]
 		unhashed::exists(&key)
 	}
@@ -154,11 +148,22 @@ where
 		{
 			G::from_optional_value_to_query(unhashed::get_cache(
 				&Self::storage_double_map_final_key(k1, k2),
-				|_| { Option::<V>::None }
+				unhashed::non_f::<V>
 			))
 		}
 		#[cfg(not(feature = "std"))]
 		G::from_optional_value_to_query(unhashed::get(&Self::storage_double_map_final_key(k1, k2)))
+	}
+
+	fn get_ref<KArg1, KArg2>(k1: KArg1, k2: KArg2) -> RcT<V>
+	where
+		KArg1: EncodeLike<K1>,
+		KArg2: EncodeLike<K2>
+	{
+		unhashed::get_cache_ref(
+			&Self::storage_double_map_final_key(k1, k2),
+			#[cfg(feature = "std")] unhashed::non_t::<V>,
+		)
 	}
 
 	fn try_get<KArg1, KArg2>(k1: KArg1, k2: KArg2) -> Result<V, ()>
@@ -170,7 +175,7 @@ where
 		{
 			unhashed::get_cache(
 				&Self::storage_double_map_final_key(k1, k2),
-				|_| { Option::<V>::None }
+				unhashed::non_f::<V>
 			)
 				.ok_or(())
 		}
@@ -192,7 +197,7 @@ where
 	{
 		let final_key = Self::storage_double_map_final_key(k1, k2);
 		#[cfg(feature = "std")]
-		let value = unhashed::take_cache(&final_key, |_| { Option::<V>::None });
+		let value = unhashed::take_cache(&final_key);
 		#[cfg(not(feature = "std"))]
 		let value = unhashed::take(&final_key);
 		G::from_optional_value_to_query(value)
@@ -210,8 +215,8 @@ where
 
 		#[cfg(feature = "std")]
 		{
-			let v1 = unhashed::get_cache(&final_x_key, |_| { Option::<V>::None });
-			if let Some(val) = unhashed::get_cache(&final_y_key, |_| { Option::<V>::None }) {
+			let v1 = unhashed::get_cache(&final_x_key, unhashed::non_f::<V>);
+			if let Some(val) = unhashed::get_cache(&final_y_key, unhashed::non_f::<V>) {
 				unhashed::put_cache(&final_x_key, val);
 			} else {
 				unhashed::kill_cache::<V>(&final_x_key);
@@ -244,10 +249,6 @@ where
 		KArg1: EncodeLike<K1>,
 		KArg2: EncodeLike<K2>
 	{
-		log::trace!(target: "storage_dev", "double map insert {} {}",
-			String::from_utf8(Self::module_prefix().to_vec()).unwrap(),
-			String::from_utf8(Self::storage_prefix().to_vec()).unwrap(),
-		);
 		#[cfg(feature = "std")]
 		unhashed::put_cache(&Self::storage_double_map_final_key(k1, k2), val);
 		#[cfg(not(feature = "std"))]
@@ -261,10 +262,6 @@ where
 		KArg2: EncodeLike<K2>,
 		VArg: EncodeLike<V>,
 	{
-		log::trace!(target: "storage_dev", "double map insert {} {}",
-			String::from_utf8(Self::module_prefix().to_vec()).unwrap(), 
-			String::from_utf8(Self::storage_prefix().to_vec()).unwrap(),
-		);
 		unhashed::put(&Self::storage_double_map_final_key(k1, k2), &val)
 	}
 
@@ -346,12 +343,39 @@ where
 			.expect("`Never` can not be constructed; qed")
 	}
 
+	fn mutate_ref<KArg1, KArg2, R, F>(k1: KArg1, k2: KArg2, f: F) -> R
+	where
+		KArg1: EncodeLike<K1>,
+		KArg2: EncodeLike<K2>,
+		F: FnOnce(&mut Self::Query) -> R
+	{
+		Self::try_mutate_ref(k1, k2, |v| Ok::<R, Never>(f(v)))
+			.expect("`Never` can not be constructed; qed")
+	}
+
 	fn mutate_exists<KArg1, KArg2, R, F>(k1: KArg1, k2: KArg2, f: F) -> R
 	where
 		KArg1: EncodeLike<K1>,
 		KArg2: EncodeLike<K2>,
 		F: FnOnce(&mut Option<V>) -> R,
 	{
+		Self::try_mutate_exists(k1, k2, |v| Ok::<R, Never>(f(v)))
+			.expect("`Never` can not be constructed; qed")
+	}
+
+	fn mutate_exists_ref<KArg1, KArg2, R, F>(k1: KArg1, k2: KArg2, f: F) -> R
+	where
+		KArg1: EncodeLike<K1>,
+		KArg2: EncodeLike<K2>,
+		F: FnOnce(&mut Option<V>) -> R
+	{
+		#[cfg(feature = "std")]
+		{
+			let final_key = Self::storage_double_map_final_key(k1, k2);
+			unhashed::mutate_cache::<OptionQT, V, _, _, _, _>(&final_key, || { None::<V> }, |v| Ok::<R, Never>(f(v)))
+				.expect("`Never` can not be constructed; qed")
+		}
+		#[cfg(not(feature = "std"))]
 		Self::try_mutate_exists(k1, k2, |v| Ok::<R, Never>(f(v)))
 			.expect("`Never` can not be constructed; qed")
 	}
@@ -366,17 +390,13 @@ where
 		#[cfg(feature = "std")]
 		let mut val = G::from_optional_value_to_query(unhashed::get_cache(
 			final_key.as_ref(),
-			|_| { Option::<V>::None }
+			unhashed::non_f::<V>
 		));
 		#[cfg(not(feature = "std"))]
 		let mut val = G::from_optional_value_to_query(unhashed::get(final_key.as_ref()));
 
 		let ret = f(&mut val);
 		if ret.is_ok() {
-			log::trace!(target: "storage_dev", "double map mutate {} {}",
-				String::from_utf8(Self::module_prefix().to_vec()).unwrap(), 
-				String::from_utf8(Self::storage_prefix().to_vec()).unwrap(),
-			);
 			match G::from_query_to_optional_value(val) {
 				Some(ref val) => {
 					#[cfg(feature = "std")]
@@ -395,6 +415,21 @@ where
 		ret
 	}
 
+	fn try_mutate_ref<KArg1, KArg2, R, E, F>(k1: KArg1, k2: KArg2, f: F) -> Result<R, E>
+	where
+		KArg1: EncodeLike<K1>,
+		KArg2: EncodeLike<K2>,
+		F: FnOnce(&mut Self::Query) -> Result<R, E>,
+	{
+		#[cfg(feature = "std")]
+		{
+			let final_key = Self::storage_double_map_final_key(k1, k2);
+			unhashed::mutate_cache::<G, V, _, _, _, _>(&final_key, || { None::<V> }, |v| f(v))
+		}
+		#[cfg(not(feature = "std"))]
+		Self::try_mutate(k1, k2, |v| f(v))
+	}
+
 	fn try_mutate_exists<KArg1, KArg2, R, E, F>(k1: KArg1, k2: KArg2, f: F) -> Result<R, E>
 	where
 		KArg1: EncodeLike<K1>,
@@ -403,16 +438,12 @@ where
 	{
 		let final_key = Self::storage_double_map_final_key(k1, k2);
 		#[cfg(feature = "std")]
-		let mut val = unhashed::get_cache(final_key.as_ref(), |_| { Option::<V>::None });
+		let mut val = unhashed::get_cache(final_key.as_ref(), unhashed::non_f::<V>);
 		#[cfg(not(feature = "std"))]
 		let mut val = unhashed::get(final_key.as_ref());
 
 		let ret = f(&mut val);
 		if ret.is_ok() {
-			log::trace!(target: "storage_dev", "double map mutate_exists {} {}",
-				String::from_utf8(Self::module_prefix().to_vec()).unwrap(), 
-				String::from_utf8(Self::storage_prefix().to_vec()).unwrap(),
-			);
 			match val {
 				Some(ref val) => {
 					#[cfg(feature = "std")]
@@ -438,10 +469,6 @@ where
 		KArg2: EncodeLike<K2>,
 		V: TypedAppend<Item> + TStorage
 	{
-		log::trace!(target: "storage_dev", "double map append {} {}",
-			String::from_utf8(Self::module_prefix().to_vec()).unwrap(),
-			String::from_utf8(Self::storage_prefix().to_vec()).unwrap(),
-		);
 		let final_key = Self::storage_double_map_final_key(k1, k2);
 		unhashed::append_cache::<V, Item>(&final_key, item);
 	}
@@ -455,10 +482,6 @@ where
 		EncodeLikeItem: EncodeLike<Item>,
 		V: StorageAppend<Item>,
 	{
-		log::trace!(target: "storage_dev", "double map append {} {}",
-			String::from_utf8(Self::module_prefix().to_vec()).unwrap(), 
-			String::from_utf8(Self::storage_prefix().to_vec()).unwrap(),
-		);
 		sp_io::storage::append(&Self::storage_double_map_final_key(k1, k2), item.encode());
 	}
 
@@ -472,7 +495,7 @@ where
 		key2: KeyArg2,
 	) -> Option<V> {
 		let old_key = {
-			let storage_prefix = storage_prefix(Self::module_prefix(), Self::storage_prefix());
+			let storage_prefix = storage_prefix_with_const(&Self::module_prefix_hash(), Self::storage_prefix_hash());
 
 			let key1_hashed = key1.using_encoded(OldHasher1::hash);
 			let key2_hashed = key2.using_encoded(OldHasher2::hash);
@@ -489,7 +512,7 @@ where
 		};
 		#[cfg(feature = "std")]
 		{
-			unhashed::take_cache(&old_key, |_| { Option::<V>::None }).map(|value| {
+			unhashed::take_cache::<V>(&old_key).map(|value| {
 				unhashed::put_cache(Self::storage_double_map_final_key(key1, key2).as_ref(), value.clone());
 				value
 			})

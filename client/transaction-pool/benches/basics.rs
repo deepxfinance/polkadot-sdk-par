@@ -171,7 +171,7 @@ fn bench_configured(pool: Pool<TestApi>, number: u64) {
 
 	// Prune all transactions.
 	let block_num = 6;
-	block_on(pool.prune_tags(&BlockId::Number(block_num), tags, vec![])).expect("Prune failed");
+	block_on(pool.prune_tags(&BlockId::Number(block_num), tags, vec![], false, true)).expect("Prune failed");
 
 	// pool is empty
 	assert_eq!(pool.validated_pool().status().ready, 0);

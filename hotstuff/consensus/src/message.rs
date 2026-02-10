@@ -669,6 +669,10 @@ impl<B: BlockT> BlockCommit<B> {
         }
     }
 
+    pub fn is_empty_block(&self) -> bool {
+        self.extrinsics_root() == Default::default()
+    }
+
     pub fn round(&self) -> Round {
         (self.view, ConsensusStage::Commit).into()
     }

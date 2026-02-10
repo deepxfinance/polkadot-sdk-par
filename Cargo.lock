@@ -2771,6 +2771,7 @@ dependencies = [
  "sp-tracing",
  "sp-weights",
  "tt-call",
+ "typed-cache",
 ]
 
 [[package]]
@@ -2785,6 +2786,7 @@ dependencies = [
  "proc-macro-warning",
  "proc-macro2",
  "quote",
+ "sp-core-hashing",
  "syn 2.0.104",
 ]
 
@@ -12921,9 +12923,9 @@ name = "typed-cache"
 version = "0.1.0"
 dependencies = [
  "downcast-rs 2.0.2",
+ "env_logger 0.11.8",
  "lazy_static",
  "log",
- "once_cell",
  "parity-scale-codec",
  "smallvec",
  "sp-std",

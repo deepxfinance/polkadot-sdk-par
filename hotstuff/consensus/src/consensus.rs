@@ -30,14 +30,14 @@ use sp_consensus::SelectChain;
 use crate::{
     client::{ClientForHotstuff, LinkHalf},
     executor::{BlockExecutor, types::{BlockMission, ExecutorMission, ExecuteStage}},
-    import::{PendingFinalizeBlockQueue, ImportLock}, oracle::HotsOracle, 
+    import::{PendingFinalizeBlockQueue, ImportLock}, oracle::HotsOracle,
     message::{
         ConsensusMessage, Proposal, Timeout, Vote, QC, TC, BlockCommit, ConsensusStage, Payload,
-        PeerAuthority, ProposalKey, ProposalReq, ProposalRequest, CommitQC, Round, 
-    }, 
-    network::{HotstuffNetworkBridge, Network as NetworkT, Syncing as SyncingT}, 
+        PeerAuthority, ProposalKey, ProposalReq, ProposalRequest, CommitQC, Round,
+    },
+    network::{HotstuffNetworkBridge, Network as NetworkT, Syncing as SyncingT},
     error::{HotstuffError, PayloadError, ViewNumber}, state::ConsensusState,
-    aux_data::{AuxDataStore, Timer}, revert::get_block_commit, 
+    aux_data::{AuxDataStore, Timer}, revert::get_block_commit,
     CLIENT_LOG_TARGET, AuthorityId, AuthorityList,
     find_consensus_logs, find_block_commit,
 };
@@ -170,10 +170,12 @@ where
     }
 
     pub fn should_propose_empty(&self) -> bool {
-        // if time passed since last commit time greater than `(max_empty - 1) * slot_duration`
+        // If time passed since last commit time greater than `(max_empty - 1) * slot_duration`
+        // Or last block is not empty(to push this block to be executed)
         // we should propose block even empty.
         if self.max_empty > 1 {
-            Timestamp::current().as_millis().saturating_sub(self.commit.commit_time().as_millis())
+            !self.commit.is_empty_block()
+                || Timestamp::current().as_millis().saturating_sub(self.commit.commit_time().as_millis())
                 > self.max_empty.saturating_sub(1) as u64 * self.slot_duration.as_millis()
         } else {
             true
@@ -920,6 +922,7 @@ where
             // already proposed for this round.
             return Ok(())
         }
+        self.local_timer.reset();
         match self.get_proposal_payload().await {
             Some(payload) => {
                 if payload.stage != self.state.round.stage {
@@ -1047,13 +1050,14 @@ where
         let info = self.client.info();
         let parent_header = self.client.header(info.best_hash).expect("failed to get best_hash").expect("no expected header");
         let proposer = self.proposer_factory.write().await.init(&parent_header).await.expect("proposer init");
-        let (mut multi, single, group_info) = match GroupTransaction::<B>::extrinsic(
+        let (mut multi, single, mut group_info) = match GroupTransaction::<B>::extrinsic(
             &proposer,
+            block_number,
             *parent_header.number(),
-            // time wait for pool response. (slot_duration / 10)
-            std::time::Duration::from_millis(self.slot_duration.as_millis()).checked_div(10).unwrap_or_default(),
-            // time for pool get transactions. (HotstuffDuration / 10)
-            self.local_timer.period() / 10,
+            // time wait for pool response. (slot_duration * 3 / 20)
+            std::time::Duration::from_millis(self.slot_duration.as_millis() * 3 / 20),
+            // time for pool get transactions. (HotstuffDuration / 5)
+            self.local_timer.period() / 5,
             None,
             None,
             self.filter_transactions(block_number),
@@ -1073,6 +1077,7 @@ where
                 return (None, start.elapsed());
             }
         };
+        group_info.extra_debug_info = format!("(round {} block {block_number})", self.state.round);
         self.oracle.update_group_info(&group_info);
         // sort by extrinsic length ascending order for merge.
         multi.sort_by(|a, b| a.len().cmp(&b.len()));
@@ -1250,7 +1255,6 @@ where
 
     fn notify_consensus_block(&mut self, commit: &BlockCommit<B>, extrinsics: &Vec<Vec<Vec<B::Extrinsic>>>) -> Vec<B::Hash> {
         // empty block
-        if extrinsics == &vec![vec![], vec![vec![]]] { return Vec::new(); }
         let hashes = self.proposal_extrinsic_hashes.remove(&commit.view())
             .unwrap_or(
                 // TODO faster parallel calculation.

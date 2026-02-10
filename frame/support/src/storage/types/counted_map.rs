@@ -34,6 +34,7 @@ use codec::{Decode, Encode, EncodeLike, FullCodec, MaxEncodedLen, Ref};
 use sp_io::MultiRemovalResults;
 use sp_runtime::traits::Saturating;
 use sp_std::prelude::*;
+use typed_cache::QueryTransfer;
 use crate::storage::TypedAppend;
 
 /// A wrapper around a `StorageMap` and a `StorageValue<Value=u32>` to keep track of how many items

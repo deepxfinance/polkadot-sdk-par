@@ -706,6 +706,10 @@ impl StorageDef {
 			.map(syn::LitStr::value)
 			.unwrap_or_else(|| self.ident.to_string())
 	}
+	
+	pub fn prefix_hash(&self) -> [u8; 16] {
+		sp_core_hashing::twox_128(self.prefix().as_bytes())
+	}
 
 	/// Return either the span of the ident or the span of the literal in the
 	/// #[storage_prefix] attribute

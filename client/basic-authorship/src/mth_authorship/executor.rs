@@ -517,11 +517,12 @@ where
             invalid_tx.sort_by(|a, b| a.0.cmp(&b.0));
             for (index, e) in invalid_tx {
                 let invalid_hash = &execute_txs[index].1;
-                trace!("[{invalid_hash:?}] Invalid transaction: {e}");
+                trace!(target: "authorship", "[{invalid_hash:?}] Invalid transaction: {e}");
                 unqueue_invalid.push(invalid_hash.clone());
             }
-            for (index, _) in future_or_exhausted {
+            for (index, e) in future_or_exhausted {
                 let future_or_exhausted_hash = &execute_txs[index].1;
+                trace!(target: "authorship", "[{future_or_exhausted_hash:?}] Invalid transaction: {e}");
                 filter_transactions.remove(future_or_exhausted_hash);
             }
             if let Some(break_reason) = should_break {

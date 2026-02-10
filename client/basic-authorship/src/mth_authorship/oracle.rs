@@ -9,6 +9,8 @@ use crate::BlockExecuteInfo;
 
 pub const DEFAULT_BLOCK_SIZE_LIMIT: usize = 4 * 1024 * 1024 + 512;
 
+pub const EXECUTE_WINDOW_SIZE: usize = 30000;
+
 pub trait BlockOracle<B: BlockT> {
     /// update block_duration.
     fn update_block_duration(&self, time: Duration);
@@ -50,14 +52,20 @@ pub struct ExecutionOracle<B: BlockT> {
     pub round_tx: usize,
     /// expected block execute time(default 200 millis, g.e than slot_duration).
     pub block_duration: Arc<Mutex<Duration>>,
-    /// max time for get transactions from pool(default 10%).
+    /// max time for get transactions from pool(default 15%).
     pub pool_permill: Arc<Mutex<Permill>>,
     /// `max_block_duration * execution_permill` estimates `linear_execution_time`(default 55%).
     pub execution_permill: Arc<Mutex<Permill>>,
     /// `linear_execution_time * merge_permill` estimates execution results `merge_time`(default 15%).
     pub merge_permill: Arc<Mutex<Permill>>,
+    /// estimates time for import.
+    pub import_permill: Arc<Mutex<Permill>>,
     /// average transaction execute time with weight.
-    pub execute_time_per_tx: Arc<Mutex<(Duration, usize)>>,
+    ///
+    /// window `[(tx_number, Duration)]`, sum of `tx_number` should not grater than total window number sum limit
+    pub execute_time_per_tx: Arc<Mutex<(Duration, Vec<(usize, Duration)>)>>,
+    /// Limit of window number, total window number sum limit.
+    pub execute_avg_window: (usize, usize),
     pub block_size_limit: usize,
     phantom: PhantomData<B>,
 }
@@ -82,7 +90,7 @@ impl<B: BlockT> ExecutionOracle<B> {
             Ok(tx) => tx.parse().expect("`ORACLE_ROUND_TX` should be a usize"),
             Err(_) => 500,
         };
-        let mut pool_permill = Permill::from_percent(10);
+        let mut pool_permill = Permill::from_percent(15);
         if let Ok(value) = env::var("ORACLE_POOL_PERCENT") {
             if let Ok(percent) = value.parse::<u32>() {
                 pool_permill = Permill::from_percent(percent);
@@ -100,6 +108,18 @@ impl<B: BlockT> ExecutionOracle<B> {
                 merge_permill = Permill::from_percent(percent);
             }
         }
+        let mut execute_avg_window_num = 5;
+        if let Ok(num) = env::var("ORACLE_EXECUTE_WINDOW_NUM") {
+            if let Ok(num) = num.parse::<usize>() {
+                execute_avg_window_num = num;
+            }
+        }
+        let mut execute_avg_window_size = 30000;
+        if let Ok(size) = env::var("ORACLE_EXECUTE_WINDOW_SIZE") {
+            if let Ok(size) = size.parse::<usize>() {
+                execute_avg_window_size = size;
+            }
+        }
         Self {
             thread_limit,
             min_single_tx,
@@ -108,8 +128,10 @@ impl<B: BlockT> ExecutionOracle<B> {
             pool_permill: Arc::new(Mutex::new(pool_permill)),
             execution_permill: Arc::new(Mutex::new(execution_permill)),
             merge_permill: Arc::new(Mutex::new(merge_permill)),
-            execute_time_per_tx: Arc::new(Mutex::new((Duration::from_micros(400), 0))),
+            import_permill: Arc::new(Mutex::new(Permill::from_percent(15))),
+            execute_time_per_tx: Arc::new(Mutex::new((Duration::from_micros(400), vec![]))),
             block_size_limit: block_size_limit.unwrap_or(DEFAULT_BLOCK_SIZE_LIMIT),
+            execute_avg_window: (execute_avg_window_num, execute_avg_window_size),
             phantom: PhantomData,
         }
     }
@@ -124,21 +146,36 @@ impl<B: BlockT> ExecutionOracle<B> {
 
     fn update_execute_time_per_tx(&self, info: &BlockExecuteInfo<B>) -> Option<(Duration, Duration)> {
         let mut execute_time_per_tx = None;
-        let (ave_execute_time, weight) = info.avg_time();
-        if ave_execute_time > Duration::default() {
-            let (pre_execute_time_per_tx, pre_weight) = *self.execute_time_per_tx.lock().unwrap();
-            if weight > 0 {
-                let mut total_weight = (pre_weight + weight) as u128;
-                let new_exe_cute_time_per_tx = ((((ave_execute_time.as_micros() * weight as u128) << 20)
-                    + ((pre_execute_time_per_tx.as_micros() * pre_weight as u128)  << 20)) / total_weight) >> 20;
-                let new_avg_execute_time = Duration::from_micros(new_exe_cute_time_per_tx as u64);
-                // limit weight
-                if total_weight >> 20 > 0 {
-                    total_weight = total_weight >> 1;
+        let (avg_execute_time, tx_number) = info.avg_time();
+        if avg_execute_time > Duration::default() {
+            let (_, prev_window) = self.execute_time_per_tx.lock().unwrap().clone();
+            let (new_avg_execute_time, new_window) = if tx_number >= self.execute_avg_window.1 {
+                (avg_execute_time, vec![(self.execute_avg_window.1, avg_execute_time)])
+            } else {
+                let mut total_time = avg_execute_time.as_nanos() * tx_number as u128;
+                let mut new_window = vec![(tx_number, avg_execute_time)];
+                let mut remain = self.execute_avg_window.1 - tx_number;
+                for (number, avg_time) in prev_window {
+                    if new_window.len() >= self.execute_avg_window.0 {
+                        new_window.truncate(self.execute_avg_window.0);
+                        break;
+                    }
+                    if number >= remain {
+                        total_time += avg_time.as_nanos() * remain as u128;
+                        new_window.push((remain, avg_time));
+                        remain = remain.saturating_sub(number);
+                        break;
+                    } else {
+                        remain = remain.saturating_sub(number);
+                        total_time += avg_time.as_nanos() * number as u128;
+                        new_window.push((number, avg_time));
+                    }
                 }
-                *self.execute_time_per_tx.lock().unwrap() = (new_avg_execute_time, total_weight as usize);
-                execute_time_per_tx = Some((ave_execute_time, new_avg_execute_time));
-            }
+                let new_avg_nanos = total_time / self.execute_avg_window.1.saturating_sub(remain) as u128;
+                (Duration::from_nanos(new_avg_nanos as u64), new_window)
+            };
+            *self.execute_time_per_tx.lock().unwrap() = (new_avg_execute_time, new_window);
+            execute_time_per_tx = Some((avg_execute_time, new_avg_execute_time));
         }
         execute_time_per_tx
     }
@@ -148,28 +185,38 @@ impl<B: BlockT> ExecutionOracle<B> {
         if info.is_empty_block() {
             return None;
         }
+        let full_time = info.time.as_nanos() + info.import.as_nanos();
+        let import_permill = Permill::from_rational(info.import.as_nanos(), full_time);
+        let mut update_import = false;
+        if full_time >= self.block_duration.lock().unwrap().as_micros() / 5 {
+            *self.import_permill.lock().unwrap() = import_permill;
+            update_import = true;
+        }
+
         let pool_permill = Permill::from_rational(info.group.time.as_micros(), info.time.as_micros());
         let merge_permill = Permill::from_rational_with_rounding(info.merge.extra_merge_time.as_micros(), info.time.as_micros(), Rounding::NearestPrefUp).ok()?;
         let finalize_permill = Permill::from_rational(info.finalize.as_micros(), info.time.as_micros());
         let except_execute_permill = pool_permill + merge_permill + finalize_permill;
         if except_execute_permill < Permill::one() {
-            let execute_permill = Permill::one() - except_execute_permill;
             let mut update = "".to_string();
+            let full_execute_permill = Permill::one() - import_permill;
+            let execute_permill = Permill::one() - except_execute_permill;
             if !pool_permill.is_zero() {
-                *self.pool_permill.lock().unwrap() = pool_permill;
-                update += &format!(" pool {:?}", pool_permill);
+                // *self.pool_permill.lock().unwrap() = pool_permill;
+                update += &format!(" pool {:?}", pool_permill * full_execute_permill);
             }
             if !execute_permill.is_zero() {
                 *self.execution_permill.lock().unwrap() = execute_permill;
-                update += &format!(" execute {:?}", execute_permill);
+                update += &format!(" execute {:?}", execute_permill * full_execute_permill);
             }
             if !merge_permill.is_zero() {
                 *self.merge_permill.lock().unwrap() = merge_permill;
-                update += &format!(" merge {:?}", merge_permill);
+                update += &format!(" merge {:?}", merge_permill * full_execute_permill);
             }
             if !update.is_empty() {
-                update += &format!(" finalize {:?}", finalize_permill);
+                update += &format!(" finalize {:?}", finalize_permill * full_execute_permill);
             }
+            update += &format!(" import {:?}({update_import})", import_permill);
             if !update.is_empty() { return Some(update); }
         } else {
             warn!(target: "oracle_exec", "[Update] Block {block} (pool({pool_permill:?}) + merge({merge_permill:?}) + finalize({finalize_permill:?})) > 100% with no time for execute!!!");
@@ -196,7 +243,7 @@ impl<B: BlockT> BlockOracle<B> for ExecutionOracle<B> {
             update_info += &format!(" exe_avg {}μs, new_avg_tx {}μs", exe_avg.as_micros(), new_avg_tx.as_micros());
         }
         if !update_permill.is_empty() || !update_info.is_empty() {
-            let full_millis = info.time.as_millis();
+            let full_millis = info.time.as_millis() + info.import.as_millis();
             let block_duration = self.block_duration().as_millis();
             let (mth_t, mth_n) = info.mth_applied();
             let mth_info = if mth_t > 0 || mth_n > 0 {
@@ -217,14 +264,15 @@ impl<B: BlockT> BlockOracle<B> for ExecutionOracle<B> {
         self.block_duration()
     }
 
-    fn thread_limit(&self) -> usize { self.thread_limit }
+    fn thread_limit(&self) -> usize { self.thread_limit.max(1) }
 
     fn round_tx(&self) -> usize { self.round_tx }
 
     /// we allow full block execution time is slot_duration * 2.
     /// and default 80 percent block time to execute extrinsic.
     fn linear_execute_time(&self) -> Duration {
-        Duration::from_micros(self.execution_permill.lock().unwrap().mul_floor(self.block_duration().as_micros()) as u64)
+        let execute_time = self.block_duration().as_micros().saturating_sub(self.import_permill.lock().unwrap().mul_floor(self.block_duration().as_micros()));
+        Duration::from_micros(self.execution_permill.lock().unwrap().mul_floor(execute_time) as u64)
     }
 
     fn min_single_tx(&self) -> usize {
@@ -247,7 +295,7 @@ impl<B: BlockT> BlockOracle<B> for ExecutionOracle<B> {
         if execute_time_per_tx == Duration::default() {
             return None;
         }
-        Some(self.linear_execute_time().as_micros() as usize / execute_time_per_tx.as_micros() as usize)
+        Some((self.linear_execute_time().as_micros() as usize / execute_time_per_tx.as_micros() as usize).max(1))
     }
 
     fn linear_tx_limit(&self) -> usize {

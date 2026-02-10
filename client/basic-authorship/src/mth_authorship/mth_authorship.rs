@@ -34,7 +34,7 @@ use sp_blockchain::HeaderBackend;
 use sp_consensus::{DisableProofRecording, EnableProofRecording, ProofRecording, Proposal};
 use sp_core::traits::SpawnNamed;
 use sp_inherents::InherentData;
-use sp_runtime::{traits::{Block as BlockT, Header as HeaderT}, Digest};
+use sp_runtime::{traits::{Block as BlockT, Header as HeaderT}, Digest, Saturating};
 use std::{marker::PhantomData, pin::Pin, sync::Arc, time};
 use std::collections::HashSet;
 use std::time::Duration;
@@ -333,6 +333,7 @@ where
         // 3. get groups transactions
         let max_time = self.oracle.pool_time();
         let group_output = self.transaction_grouper.group_transactions_from_pool(
+            self.parent_number + One::one(),
             self.parent_number,
             GroupTxInput {
                 wait_pool: max_time / 3,
@@ -408,6 +409,7 @@ where
 {
     async fn extrinsic(
         &self,
+        block: <Block::Header as HeaderT>::Number,
         parent: <Block::Header as HeaderT>::Number,
         wait_pool: Duration,
         max_time: Duration,
@@ -416,6 +418,7 @@ where
         filter: HashSet<Block::Hash>,
     ) -> Result<(Vec<Vec<Block::Extrinsic>>, Vec<Block::Extrinsic>, GroupInfo), String> {
         self.transaction_grouper.group_transactions_from_pool(
+            block,
             parent,
             GroupTxInput {
                 wait_pool,

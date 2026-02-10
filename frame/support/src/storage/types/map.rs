@@ -30,7 +30,8 @@ use crate::{
 use codec::{Decode, Encode, EncodeLike, FullCodec, MaxEncodedLen};
 use sp_arithmetic::traits::SaturatedConversion;
 use sp_std::prelude::*;
-use crate::storage::TypedAppend;
+use typed_cache::QueryTransfer;
+use crate::storage::{TypedAppend, RcT};
 
 /// A type that allow to store value for given key. Allowing to insert/remove/iterate on values.
 ///
@@ -70,6 +71,35 @@ where
 	}
 }
 
+impl<Prefix, Hasher, Key, Value, QueryKind, OnEmpty, MaxValues> QueryTransfer<Value>
+	for StorageMap<Prefix, Hasher, Key, Value, QueryKind, OnEmpty, MaxValues>
+where
+	Prefix: StorageInstance,
+	Hasher: crate::hash::StorageHasher,
+	Key: FullCodec,
+	Value: FullCodec + TStorage,
+	QueryKind: QueryKindTrait<Value, OnEmpty>,
+	OnEmpty: Get<QueryKind::Query> + 'static,
+	MaxValues: Get<Option<u32>>,
+{
+	type Query = QueryKind::Query;
+
+	fn from_optional_value_to_query(v: Option<Value>) -> QueryKind::Query {
+		QueryKind::from_optional_value_to_query(v)
+	}
+
+	fn mut_from_optional_value_to_query<M, R, E>(v: &mut Option<Value>, m: M) -> (Result<R, E>, Option<Value>)
+	where
+		M: FnOnce(&mut Self::Query) -> Result<R, E>
+	{
+		QueryKind::mut_from_optional_value_to_query(v, m)
+	}
+
+	fn from_query_to_optional_value(v: QueryKind::Query) -> Option<Value> {
+		QueryKind::from_query_to_optional_value(v)
+	}
+}
+
 impl<Prefix, Hasher, Key, Value, QueryKind, OnEmpty, MaxValues>
 	crate::storage::generator::StorageMap<Key, Value>
 	for StorageMap<Prefix, Hasher, Key, Value, QueryKind, OnEmpty, MaxValues>
@@ -82,7 +112,6 @@ where
 	OnEmpty: Get<QueryKind::Query> + 'static,
 	MaxValues: Get<Option<u32>>,
 {
-	type Query = QueryKind::Query;
 	type Hasher = Hasher;
 	fn module_prefix() -> &'static [u8] {
 		Prefix::pallet_prefix().as_bytes()
@@ -90,11 +119,13 @@ where
 	fn storage_prefix() -> &'static [u8] {
 		Prefix::STORAGE_PREFIX.as_bytes()
 	}
-	fn from_optional_value_to_query(v: Option<Value>) -> Self::Query {
-		QueryKind::from_optional_value_to_query(v)
+
+	fn module_prefix_hash() -> [u8; 16] {
+		Prefix::module_name_hash()
 	}
-	fn from_query_to_optional_value(v: Self::Query) -> Option<Value> {
-		QueryKind::from_query_to_optional_value(v)
+
+	fn storage_prefix_hash() -> &'static [u8; 16] {
+		&Prefix::STORAGE_PREFIX_HASH
 	}
 }
 
@@ -143,6 +174,11 @@ where
 		<Self as crate::storage::StorageMap<Key, Value>>::get(key)
 	}
 
+	/// Load the value reference associated with the given key from the map.
+	pub fn get_ref<KeyArg: EncodeLike<Key>>(key: KeyArg) -> RcT<Value> {
+		<Self as crate::storage::StorageMap<Key, Value>>::get_ref(key)
+	}
+
 	/// Try to get the value for the given key from the map.
 	///
 	/// Returns `Ok` if it exists, `Err` if not.
@@ -184,6 +220,14 @@ where
 		<Self as crate::storage::StorageMap<Key, Value>>::mutate(key, f)
 	}
 
+	/// Mutate the value by reference under a key.
+	pub fn mutate_ref<KeyArg: EncodeLike<Key>, R, F: FnOnce(&mut QueryKind::Query) -> R>(
+		key: KeyArg,
+		f: F,
+	) -> R {
+		<Self as crate::storage::StorageMap<Key, Value>>::mutate_ref(key, f)
+	}
+
 	/// Mutate the item, only if an `Ok` value is returned.
 	pub fn try_mutate<KeyArg, R, E, F>(key: KeyArg, f: F) -> Result<R, E>
 	where
@@ -193,12 +237,29 @@ where
 		<Self as crate::storage::StorageMap<Key, Value>>::try_mutate(key, f)
 	}
 
+	/// Mutate the item by reference, only if an `Ok` value is returned.
+	pub fn try_mutate_ref<KeyArg, R, E, F>(key: KeyArg, f: F) -> Result<R, E>
+	where
+		KeyArg: EncodeLike<Key>,
+		F: FnOnce(&mut QueryKind::Query) -> Result<R, E>,
+	{
+		<Self as crate::storage::StorageMap<Key, Value>>::try_mutate_ref(key, f)
+	}
+
 	/// Mutate the value under a key. Deletes the item if mutated to a `None`.
 	pub fn mutate_exists<KeyArg: EncodeLike<Key>, R, F: FnOnce(&mut Option<Value>) -> R>(
 		key: KeyArg,
 		f: F,
 	) -> R {
 		<Self as crate::storage::StorageMap<Key, Value>>::mutate_exists(key, f)
+	}
+
+	/// Mutate the value by reference under a key. Deletes the item if mutated to a `None`.
+	pub fn mutate_exists_ref<KeyArg: EncodeLike<Key>, R, F: FnOnce(&mut Option<Value>) -> R>(
+		key: KeyArg,
+		f: F,
+	) -> R {
+		<Self as crate::storage::StorageMap<Key, Value>>::mutate_exists_ref(key, f)
 	}
 
 	/// Mutate the item, only if an `Ok` value is returned. Deletes the item if mutated to a `None`.

@@ -79,18 +79,18 @@ where
 		_info: &DispatchInfoOf<Self::Call>,
 		_len: usize,
 	) -> Result<(), TransactionValidityError> {
-		let mut account = crate::Account::<T>::get(who);
-		if self.0 != account.nonce {
-			return Err(if self.0 < account.nonce {
-				InvalidTransaction::Stale
+		crate::Account::<T>::get_ref(who)
+			.mutate_value_query(|account| if self.0 != account.nonce {
+				Err(if self.0 < account.nonce {
+					InvalidTransaction::Stale
+				} else {
+					InvalidTransaction::Future
+				}
+					.into())
 			} else {
-				InvalidTransaction::Future
-			}
-			.into())
-		}
-		account.nonce += T::Index::one();
-		crate::Account::<T>::insert(who, account);
-		Ok(())
+				account.nonce += T::Index::one();
+				Ok(())
+			})
 	}
 
 	fn validate(
@@ -100,22 +100,22 @@ where
 		_info: &DispatchInfoOf<Self::Call>,
 		_len: usize,
 	) -> TransactionValidity {
-		// check index
-		let account = crate::Account::<T>::get(who);
-		if self.0 < account.nonce {
-			return InvalidTransaction::Stale.into()
-		}
-
-		let provides = vec![Encode::encode(&(who, self.0))];
-		let requires = if account.nonce < self.0 {
-			vec![Encode::encode(&(who, self.0 - One::one()))]
-		} else {
-			vec![]
-		};
-
+		let (provides, requires) = crate::Account::<T>::get_ref(who)
+			.map_value_query(|account| if self.0 < account.nonce {
+				Err(TransactionValidityError::Invalid(InvalidTransaction::Stale))
+			} else {
+				let provides = vec![Encode::encode(&(who, self.0))];
+				let requires = if account.nonce < self.0 {
+					vec![Encode::encode(&(who, self.0 - One::one()))]
+				} else {
+					vec![]
+				};
+				Ok((provides, requires))
+			})?;
 		Ok(ValidTransaction {
 			groups: None,
 			priority: 0,
+			priority2: Default::default(),
 			requires,
 			provides,
 			longevity: TransactionLongevity::max_value(),

@@ -26,6 +26,7 @@ use syn::{
 	spanned::Spanned,
 	token, Attribute, Error, Ident, Path, Result, Token,
 };
+use crate::counter_prefix;
 
 mod keyword {
 	syn::custom_keyword!(Block);
@@ -582,6 +583,11 @@ impl Pallet {
 	/// Return whether pallet contains part
 	pub fn exists_part(&self, name: &str) -> bool {
 		self.find_part(name).is_some()
+	}
+	
+	/// Return name twox_128 hash
+	pub fn name_hash(&self) -> [u8; 16] {
+		sp_core_hashing::twox_128(self.name.to_string().as_bytes())
 	}
 }
 

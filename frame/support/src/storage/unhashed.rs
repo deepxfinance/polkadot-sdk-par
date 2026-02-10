@@ -19,7 +19,8 @@
 
 use codec::{Decode, Encode, FullCodec};
 use sp_std::prelude::*;
-use crate::storage::{TStorage, TypedAppend};
+use typed_cache::QueryTransfer;
+use crate::storage::{TStorage, TypedAppend, RcT};
 
 #[cfg(all(feature = "std", feature = "dev-time"))]
 lazy_static::lazy_static! {
@@ -29,8 +30,6 @@ lazy_static::lazy_static! {
 
 /// Return the value of the item in storage under `key`, or `None` if there is no explicit entry.
 pub fn get<T: Decode + Sized>(key: &[u8]) -> Option<T> {
-	#[cfg(all(feature = "std", feature = "dev-time"))]
-	let start = std::time::Instant::now();
 	sp_io::storage::get(key).and_then(|val| parse_type(key, val.to_vec()))
 }
 
@@ -89,12 +88,55 @@ fn parse_type<T: Decode>(key: &[u8], val: Vec<u8>) -> Option<T> {
 }
 
 #[cfg(feature = "std")]
+pub fn contains_key_cache<T: FullCodec + TStorage>(key: &[u8]) -> bool {
+	match sp_io::mut_typed_cache(|o| o.contains_key::<T>(key_prefix(key), &key)) {
+		Some(Some(contains)) => contains,
+		Some(None) => {
+			let res = get::<T>(key);
+			sp_io::mut_typed_cache(|o| o.init(key_prefix(key), key, res.clone()));
+			res.is_some()
+		},
+		None => {
+			exists(key)
+		},
+	}
+}
+
+#[cfg(feature = "std")]
 pub fn put_cache<T: FullCodec + TStorage>(key: &[u8], val: T) {
 	if sp_io::mut_typed_cache(|_| ()).is_none() {
 		put(key, &val);
 	} else {
 		sp_io::mut_typed_cache(|o| o.put(key_prefix(key), &key, val));
 	}
+}
+
+pub fn non_f<T>(_k: &[u8]) -> Option<T> { None }
+
+pub fn non_t<T>() -> Option<T> { None }
+
+#[cfg(feature = "std")]
+pub fn get_cache_ref<T: FullCodec + TStorage, F>(key: &[u8], _f: F) -> RcT<T>
+where
+	F: FnOnce() -> Option<T>
+{
+	match sp_io::mut_typed_cache(
+		|o| o.get_ref::<T, F>(key_prefix(key), key, None),
+	) {
+		Some(Some(value)) => value,
+		Some(None) => {
+			let res = get::<T>(key);
+			sp_io::mut_typed_cache(|o| o.get_ref::<T, _>(key_prefix(key), key, Some(|| { res })))
+				.expect("get_cache_ref should enable typed_cache")
+				.expect("get_cache_ref should have initialized")
+		}
+		None => panic!("get_cache_ref should enable typed_cache(Don't call `get_ref`/`get_cache_ref` in `GenesisBuild` with `std` environment)"),
+	}
+}
+
+#[cfg(not(feature = "std"))]
+pub fn get_cache_ref<T: Decode + Sized>(key: &[u8]) -> RcT<T> {
+	RcT::new(key, get(key))
 }
 
 #[cfg(feature = "std")]
@@ -105,17 +147,53 @@ pub fn get_cache<T: FullCodec + TStorage, F>(key: &[u8], _f: F) -> Option<T> whe
 		Some(Some(value)) => value,
 		Some(None) => {
 			let res = get(key);
-			sp_io::mut_typed_cache(|o| o.cache(key_prefix(key), key, res.clone()));
+			sp_io::mut_typed_cache(|o| o.init(key_prefix(key), key, res.clone()));
 			res
 		}
 		None => get(key),
 	}
 }
 
+/// If `f` used, return `true`.
+/// If `f` not used, return `false`. Then we should try raw cache.
 #[cfg(feature = "std")]
-pub fn take_cache<T: FullCodec + TStorage, F>(key: &[u8], _f: F) -> Option<T> where F: Fn(&[u8]) -> Option<T> {
+pub fn mutate_cache<QT: QueryTransfer<T>, T: FullCodec + TStorage, Ini, F, R, E>(key: &[u8], _ini: Ini, f: F) -> Result<R, E>
+where
+	Ini: FnOnce() -> Option<T>,
+	F: FnOnce(&mut QT::Query) -> Result<R, E>
+{
+	let key_prefix = key_prefix(key);
 	match sp_io::mut_typed_cache(
-		|o| o.take::<T, F>(key_prefix(key), key, None),
+		|o| o.cached::<T>(key_prefix, key),
+	) {
+		Some(cached) => if cached {
+			sp_io::mut_typed_cache(|o| o.mutate::<QT, T, Ini, F, _, _>(key_prefix, key, None, f))
+				.expect("typed_cache should exists")
+				.expect("mutate should finish")
+		} else {
+			let init = get::<T>(key);
+			sp_io::mut_typed_cache(|o| o.mutate::<QT, T, _, F, _, _>(key_prefix, key, Some(|| { init }), f))
+				.expect("typed_cache should exists")
+				.expect("mutate should finish")
+		},
+		None => {
+			let mut val = QT::from_optional_value_to_query(get(key));
+			let ret = f(&mut val);
+			if ret.is_ok() {
+				match QT::from_query_to_optional_value(val) {
+					Some(ref val) => put(key, val),
+					None => kill(key),
+				}
+			}
+			ret
+		}
+	}
+}
+
+#[cfg(feature = "std")]
+pub fn take_cache<T: FullCodec + TStorage>(key: &[u8]) -> Option<T> {
+	match sp_io::mut_typed_cache(
+		|o| o.take::<T>(key_prefix(key), key),
 	) {
 		Some(Some(value)) => value,
 		Some(None) => {
@@ -123,7 +201,7 @@ pub fn take_cache<T: FullCodec + TStorage, F>(key: &[u8], _f: F) -> Option<T> wh
 			if res.is_some() {
 				sp_io::mut_typed_cache(|o| o.kill::<T>(key_prefix(key), key));
 			} else {
-				sp_io::mut_typed_cache(|o| o.cache(key_prefix(key), key, res.clone()));
+				sp_io::mut_typed_cache(|o| o.init(key_prefix(key), key, res.clone()));
 			}
 			res
 		}
@@ -148,17 +226,17 @@ where
 	sp_io::mut_externalities(|ext|  {
 		let mut raw_value = None;
 		if let Some(overlay) = ext.overlay_cache() {
-			if !overlay.contains_key::<T>(key_prefix(key), key) {
+			if overlay.contains_key::<T>(key_prefix(key), key).is_none() {
 				raw_value = ext.storage(&key);
 			};
 		};
 		if let Some(overlay) = ext.overlay_cache() {
-			let updated = overlay.mutate::<T, _, _>(
+			let updated = overlay.append::<T, _, _>(
 				key_prefix(key),
 				&key,
 				|| { raw_value.clone().and_then(|val| parse_type(key, val)).unwrap_or_default() },
 				|t| {
-					t.map(|t| t.append(item.clone()));
+					t.as_mut().map(|t| t.append(item.clone()));
 				}
 			);
 			if !updated {

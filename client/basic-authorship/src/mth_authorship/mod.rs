@@ -36,6 +36,7 @@ pub trait MultiThreadBlockBuilder<B, Block: BlockT, Api>: MergeChange<StorageKey
 pub trait GroupTransaction<Block: BlockT> {
     async fn extrinsic(
         &self,
+        block: <Block::Header as HeaderT>::Number,
         parent: <Block::Header as HeaderT>::Number,
         // time limit for waiting transaction_pool response before start get transaction.
         wait_pool: Duration,

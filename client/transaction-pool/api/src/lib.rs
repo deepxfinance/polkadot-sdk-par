@@ -35,6 +35,7 @@ const LOG_TARGET: &str = "txpool::api";
 pub use sp_runtime::transaction_validity::{
 	TransactionLongevity, TransactionPriority, TransactionSource, TransactionTag,
 };
+use sp_runtime::transaction_validity::AscendingPriority;
 
 /// Transaction pool status.
 #[derive(Debug)]
@@ -171,6 +172,8 @@ pub trait InPoolTransaction {
 	fn hash(&self) -> &Self::Hash;
 	/// Get priority of the transaction.
 	fn priority(&self) -> &TransactionPriority;
+	/// Get second priority of the transaction if `priority` is equal.
+	fn priority2(&self) -> &AscendingPriority;
 	/// Get longevity of the transaction.
 	fn longevity(&self) -> &TransactionLongevity;
 	/// Get transaction dependencies.
@@ -240,6 +243,7 @@ pub trait TransactionPool: Send + Sync {
 	fn ready_at(
 		&self,
 		at: NumberFor<Self::Block>,
+		limit: Option<usize>,
 	) -> Pin<
 		Box<
 			dyn Future<
@@ -249,7 +253,7 @@ pub trait TransactionPool: Send + Sync {
 	>;
 
 	/// Get an iterator for ready transactions ordered by priority.
-	fn ready(&self) -> Box<dyn ReadyTransactions<Item = Arc<Self::InPoolTransaction>> + Send>;
+	fn ready(&self, limit: Option<usize>) -> Box<dyn ReadyTransactions<Item = Arc<Self::InPoolTransaction>> + Send>;
 
 	// *** Block production
 	/// Remove transactions identified by given hashes (and dependent transactions) from the pool.
@@ -288,6 +292,9 @@ pub trait ReadyTransactions: Iterator {
 	/// This might affect subsequent elements returned by the iterator, so dependent transactions
 	/// are skipped for performance reasons.
 	fn report_invalid(&mut self, _tx: &Self::Item);
+	
+	/// Return total get transaction reference count.
+	fn total(&self) -> usize { 0 }
 }
 
 /// A no-op implementation for an empty iterator.

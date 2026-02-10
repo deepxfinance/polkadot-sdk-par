@@ -490,7 +490,7 @@ pub mod pallet {
 			);
 
 			for &(ref who, free) in self.balances.iter() {
-				frame_system::Pallet::<T>::inc_providers(who);
+				frame_system::Pallet::<T>::genesis_inc_providers(who);
 				assert!(T::AccountStore::insert(who, AccountData { free, ..Default::default() })
 					.is_ok());
 			}

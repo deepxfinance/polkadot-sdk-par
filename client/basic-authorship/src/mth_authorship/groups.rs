@@ -33,6 +33,7 @@ where
 
     pub async fn group_transactions_from_pool(
         &self,
+        block: <B::Header as HeaderT>::Number,
         parent_number: <B::Header as HeaderT>::Number,
         input: GroupTxInput,
         mut block_size: usize,
@@ -49,17 +50,34 @@ where
             block_size_limit,
         } = input.clone();
         let start = Instant::now();
+        let max_time = max_time * 2;
         let deadline = start + max_time;
-        let block = parent_number + One::one();
-        let mut t1 = self.transaction_pool.ready_at(parent_number).fuse();
-        let mut t2 = futures_timer::Delay::new(wait_pool).fuse();
-        let mut pending_iterator = select! {
-			res = t1 => res,
-			_ = t2 => {
-				trace!(target: LOG_TARGET, "[GroupTx B {block}] Timeout fired waiting for transaction pool. Proceeding with production.");
-				self.transaction_pool.ready()
-			},
-		};
+        let mut t1 = self.transaction_pool.ready_at(parent_number, Some(total_tx_limit)).fuse();
+        // let mut t2 = futures_timer::Delay::new(wait_pool).fuse();
+        // let mut t3 = futures_timer::Delay::new(max_time).fuse();
+        let (ready_number, ready_time, mut pending_iterator) = select! {
+            res = t1 => (res.total(), start.elapsed(), res),
+            // _ = t2 => {
+            //     let second_start = Instant::now();
+            //     trace!(target: LOG_TARGET, "[GroupTx {block}] Timeout fired waiting for transaction pool. Proceeding with production.");
+            //     let res = self.transaction_pool.ready(Some(total_tx_limit / 2));
+            //     (res.total(), second_start.elapsed(), res)
+            // },
+            // _ = t3 => {
+            //     debug!(target: LOG_TARGET, "[GroupTx {block}] Reach deadline {}/{} ms (txpool no response)", start.elapsed().as_millis(), max_time.as_millis());
+            //     let elapsed = start.elapsed();
+            //     return Ok(GroupTxOutput {
+            //         info: GroupInfo {
+            //             input,
+            //             time: elapsed,
+            //             wait: elapsed,
+            //             ..Default::default()
+            //         },
+            //         groups: Vec::new(),
+            //         single: Vec::new(),
+            //     })
+            // }
+        };
         let wait = start.elapsed();
 
         let mut skipped = 0;
@@ -73,17 +91,17 @@ where
         //      parse transaction runtime call group info and return by channel.
         loop {
             if raw_tx_count >= total_tx_limit {
-                debug!(target: LOG_TARGET, "[GroupTx B {block}] Reach tx_limit {}/{} ms (total {raw_tx_count}, block size: {}/{block_size_limit})", start.elapsed().as_millis(), max_time.as_millis(), block_size + proof_size);
+                debug!(target: LOG_TARGET, "[GroupTx {block}] Reach tx_limit {}/{} ms (total {raw_tx_count}, block size: {}/{block_size_limit})", start.elapsed().as_millis(), max_time.as_millis(), block_size + proof_size);
                 break;
             }
             if Instant::now() > deadline {
-                debug!(target: LOG_TARGET, "[GroupTx B {block}] Reach deadline {}/{} ms (total {raw_tx_count}, block size: {}/{block_size_limit})", start.elapsed().as_millis(), max_time.as_millis(), block_size + proof_size);
+                debug!(target: LOG_TARGET, "[GroupTx {block}] Reach deadline {}/{} ms (total {raw_tx_count}, block size: {}/{block_size_limit})", start.elapsed().as_millis(), max_time.as_millis(), block_size + proof_size);
                 break;
             }
             let pending_tx = if let Some(pending_tx) = pending_iterator.next() {
                 pending_tx
             } else {
-                debug!(target: LOG_TARGET, "[GroupTx B {block}] Out of transactions({} ms, total {raw_tx_count}, block size: {}/{block_size_limit})", start.elapsed().as_millis(), block_size + proof_size);
+                debug!(target: LOG_TARGET, "[GroupTx {block}] Out of transactions({} ms, total {raw_tx_count}, block size: {}/{block_size_limit})", start.elapsed().as_millis(), block_size + proof_size);
                 break;
             };
             if filter.remove(pending_tx.hash()) {
@@ -96,14 +114,14 @@ where
                     skipped += 1;
                     trace!(
                         target: LOG_TARGET,
-                        "[GroupTx B {block}] Transaction would overflow the block size limit, but will try {} more transactions before quitting.",
+                        "[GroupTx {block}] Transaction would overflow the block size limit, but will try {} more transactions before quitting.",
                         MAX_SKIPPED_TRANSACTIONS - skipped,
                     );
                     continue
                 } else {
                     debug!(
                         target: LOG_TARGET,
-                        "[GroupTx B {block}] Reached block size limit({}/{block_size_limit}) with extrinsic: {raw_tx_count} in {} ms. start execute transactions.",
+                        "[GroupTx {block}] Reached block size limit({}/{block_size_limit}) with extrinsic: {raw_tx_count} in {} ms. start execute transactions.",
                         block_size + proof_size,
                         start.elapsed().as_millis(),
                     );
@@ -137,6 +155,8 @@ where
                 time: start.elapsed(),
                 wait,
                 sort,
+                ready_info: Some((ready_number, ready_time)),
+                extra_debug_info: Default::default(),
             },
             groups,
             single,

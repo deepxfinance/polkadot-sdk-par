@@ -113,13 +113,12 @@ pub fn new_partial(
 		task_manager.spawn_essential_handle(),
 		client.clone(),
 	);
-	let execution_strategies = config.execution_strategies.clone();
 	let executor = BlockExecutor::new(
 		Box::new(task_manager.spawn_handle()),
 		client.clone(),
 		transaction_pool.clone(),
 		<ExecutorDispatch as sc_executor::NativeExecutionDispatch>::native_version(),
-		execution_strategies.clone(),
+		config.execution_strategies.clone(),
 		Default::default(),
 		None,
 	);
@@ -220,6 +219,7 @@ pub fn new_full(config: Configuration) -> Result<TaskManager, ServiceError> {
 		})
 	};
 
+	let execution_strategies = config.execution_strategies.clone();
 	let _rpc_handlers = sc_service::spawn_tasks(sc_service::SpawnTasksParams {
 		network: network.clone(),
 		client: client.clone(),

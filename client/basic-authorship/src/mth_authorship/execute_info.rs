@@ -102,6 +102,7 @@ impl<B: BlockT> InfoRecorder<B> {
             max_time: self.max_time,
             finalize: self.finalize_start.take().expect("Finalize time not initialized").elapsed(),
             time: self.block_start.take().expect("BlockStart time not initialized").elapsed(),
+            import: Default::default(),
             group: self.group,
             inherent: self.inherent.unwrap_or_default(),
             threads: self.threads,
@@ -135,6 +136,8 @@ pub struct BlockExecuteInfo<B: BlockT> {
     pub finalize: Duration,
     /// full block execute time.
     pub time: Duration,
+    /// import time for block.
+    pub import: Duration,
     /// group transactions info from pool, not necessary.
     pub group: GroupInfo,
     pub inherent: ThreadExecutionInfo<B>,
@@ -151,6 +154,10 @@ impl<B: BlockT> BlockExecuteInfo<B> {
         self.group = group;
     }
 
+    pub fn set_import_time(&mut self, import: Duration) {
+        self.import = import;
+    }
+    
     pub fn is_empty_block(&self) -> bool {
         if self.threads.is_empty() {
             return true;
@@ -408,6 +415,7 @@ impl GroupTxInput {
     }
 }
 
+#[derive(Default)]
 pub struct GroupTxOutput<A: TransactionPool> {
     /// Parallel execute transactions.
     pub groups: Vec<Vec<(usize, Arc<<A as TransactionPool>::InPoolTransaction>)>>,
@@ -435,6 +443,10 @@ pub struct GroupInfo {
     pub wait: Duration,
     /// time for groups sort.
     pub sort: Duration,
+    /// pool ready info(`ready_at`/`ready` number, time)
+    pub ready_info: Option<(usize, Duration)>,
+    /// Extra info.
+    pub extra_debug_info: String,
 }
 
 impl GroupInfo {
@@ -447,8 +459,14 @@ impl GroupInfo {
         } else {
             "".to_string()
         };
+        let ready_info = if let Some((number, time)) = self.ready_info {
+            format!("(ready {number}({time:?}))")
+        } else {
+            "".to_string()
+        };
         format!(
-            "Group {}({}) tx in {}ms(W{}μs S{}μs){}(groups {}->{})(Input: {})",
+            "Group{} {}({}) tx in {}ms(W{}μs S{}μs){}(groups {}->{}){ready_info}(Input: {})",
+            self.extra_debug_info,
             self.tx_count,
             self.raw_tx_count,
             self.time.as_millis(),

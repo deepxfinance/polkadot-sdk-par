@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, HashSet};
 use std::env;
 use std::marker::PhantomData;
+use std::ops::Div;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use sc_basic_authorship::{BlockExecuteInfo, BlockOracle, GroupInfo};
@@ -31,6 +32,8 @@ pub struct HotstuffOracle<B: BlockT, O: BlockOracle<B>> {
     pub verify_percent: Arc<Mutex<Percent>>,
     /// state recording last verify extrinsic speed.
     pub verify_time_per_tx: Arc<Mutex<Duration>>,
+    /// rate for get `total_tx_limit`
+    pub pool_limit_rate: f32,
     /// config filter blocks.
     pub filter_blocks: u32,
     /// filter all applied transaction.
@@ -38,6 +41,11 @@ pub struct HotstuffOracle<B: BlockT, O: BlockOracle<B>> {
     /// Network config hotstuff protocol size limit, which will influence block transaction size.
     /// Default 5M Bytes(1024 *1024 * 5).
     pub network_notification_limit: usize,
+    
+    /// Average time to get transaction from pool(`ready_at`/`ready`).
+    pub ready_avg_time: Arc<Mutex<Option<Duration>>>,
+    /// If group timeout, next group number div this.
+    pub limit_div_rate: Arc<Mutex<usize>>,
     phantom: PhantomData<B>,
 }
 
@@ -67,6 +75,13 @@ impl<B: BlockT, O: BlockOracle<B>> HotstuffOracle<B, O> {
             }
         }
 
+        let mut pool_limit_rate = 2f32;
+        if let Ok(rate) = env::var("HOTSTUFF_POOL_TX_RATE") {
+            if let Ok(rate) = rate.parse::<f32>() {
+                pool_limit_rate = rate;
+            }
+        }
+
         let mut filter_blocks = 50u32;
         if let Ok(value) = env::var("HOTSTUFF_FILTER_BLOCKS") {
             if let Ok(blocks) = value.parse::<u32>() {
@@ -78,9 +93,13 @@ impl<B: BlockT, O: BlockOracle<B>> HotstuffOracle<B, O> {
             hotstuff_duration,
             verify_percent: Arc::new(Mutex::new(verify_percent)),
             verify_time_per_tx: Arc::new(Mutex::new(Duration::from_micros(verify_per_tx))),
+            pool_limit_rate,
             filter_blocks,
             transaction_filter: Arc::new(Mutex::new(BTreeMap::new())),
             network_notification_limit: network_notification_limit.unwrap_or(1024 * 1024 * 5),
+            
+            ready_avg_time: Arc::new(Mutex::new(None)),
+            limit_div_rate: Arc::new(Mutex::new(1)),
             phantom: PhantomData,
         }
     }
@@ -103,6 +122,17 @@ impl <B: BlockT, O: BlockOracle<B>> HotstuffOracle<B, O> {
 
 impl<B: BlockT, O: BlockOracle<B>> HotsOracle<B> for HotstuffOracle<B, O> {
     fn update_group_info(&self, info: &GroupInfo) {
+        match info.ready_info {
+            Some((ready_number, ready_time)) => {
+                let avg_time = ready_time.checked_div(ready_number as u32).unwrap_or_default();
+                if avg_time > Default::default() {
+                    self.ready_avg_time.lock().unwrap().replace(avg_time);
+                    let prev_rate = *self.limit_div_rate.lock().unwrap();
+                    *self.limit_div_rate.lock().unwrap() = (prev_rate / 2).max(1);
+                }
+            },
+            None => *self.limit_div_rate.lock().unwrap() *= 2,
+        }
         let group_info = info.info();
         if !group_info.is_empty() {
             log::debug!(target: "oracle_hots", "[Update] {group_info}");
@@ -144,7 +174,7 @@ impl<B: BlockT, O: BlockOracle<B>> HotsOracle<B> for HotstuffOracle<B, O> {
             return None;
         }
         // During full consensus process, verify extrinsic takes most time.
-        Some(self.verify_time_limit().as_micros() as usize / verify_time_per_tx.as_micros() as usize)
+        Some((self.verify_time_limit().as_micros() as usize / verify_time_per_tx.as_micros() as usize).max(1))
     }
 
     fn filter_transactions(&self) -> HashSet<B::Hash> {
@@ -200,18 +230,24 @@ impl<B: BlockT, O: BlockOracle<B>> BlockOracle<B> for  HotstuffOracle<B, O> {
     }
 
     fn linear_tx_limit(&self) -> usize {
-        match (self.thread_verify_limit(), self.thread_execution_limit()) {
-            (None, execution_limit) => execution_limit,
-            (verify_limit, None) => verify_limit,
-            (Some(verify_limit), Some(execution_limit)) => {
-                Some(verify_limit.min(execution_limit))
-            }
-        }
-            .unwrap_or(200)
+        self.thread_execution_limit().unwrap_or(2000)
     }
 
     fn block_size_limit(&self) -> usize {
         // both decide by execute block size limit and `network_notification_limit`
         self.inner.block_size_limit().min(self.network_notification_limit - 1000)
+    }
+
+    fn total_tx_limit(&self) -> usize {
+        let linear_tx_limit = self.linear_tx_limit();
+        let execute_limit = linear_tx_limit * self.thread_limit() * ((self.pool_limit_rate * 100f32) as usize) / 100;
+        // let total_tx_limit = if let Some(ready_avg_time) = self.ready_avg_time.lock().unwrap().clone() {
+        //     let ready_pool_limit = self.pool_time().as_nanos().div(ready_avg_time.as_nanos()) as usize;
+        //     execute_limit.max(1).min(ready_pool_limit)
+        // } else {
+        //     execute_limit.max(1)
+        // };
+        // (total_tx_limit / self.limit_div_rate.lock().unwrap().max(1)).max(1000)
+        execute_limit
     }
 }

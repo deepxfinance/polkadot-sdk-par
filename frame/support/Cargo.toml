@@ -41,6 +41,7 @@ log = { version = "0.4.17", default-features = false }
 sp-core-hashing-proc-macro = { version = "5.0.0", path = "../../primitives/core/hashing/proc-macro" }
 k256 = { version = "0.13.0", default-features = false, features = ["ecdsa"] }
 environmental = { version = "1.1.4", default-features = false }
+typed-cache = { default-features = false, path = "../../primitives/typed-cache" }
 
 [dev-dependencies]
 serde_json = "1.0.85"
@@ -71,6 +72,7 @@ std = [
 	"frame-support-procedural/std",
 	"log/std",
 	"environmental/std",
+	"typed-cache/std",
 ]
 runtime-benchmarks = [
 	"frame-system/runtime-benchmarks",

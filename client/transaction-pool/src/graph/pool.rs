@@ -169,9 +169,12 @@ impl<B: ChainApi> Pool<B> {
 		xts: impl IntoIterator<Item = ExtrinsicFor<B>>,
 		multi: bool,
 	) -> Result<Vec<Result<ExtrinsicHash<B>, B::Error>>, B::Error> {
+		if self.validated_pool.locked() {
+			return Err(error::Error::ImmediatelyDropped.into());
+		}
 		let xts = xts.into_iter().map(|xt| (source, xt));
 		let validated_transactions = self.verify(at, xts, CheckBannedBeforeVerify::Yes, multi).await?;
-		Ok(self.validated_pool.submit(validated_transactions.into_values()))
+		Ok(self.validated_pool.submit(validated_transactions))
 	}
 
 	/// Resubmit the given extrinsics to the pool.
@@ -185,7 +188,7 @@ impl<B: ChainApi> Pool<B> {
 	) -> Result<Vec<Result<ExtrinsicHash<B>, B::Error>>, B::Error> {
 		let xts = xts.into_iter().map(|xt| (source, xt));
 		let validated_transactions = self.verify(at, xts, CheckBannedBeforeVerify::No, false).await?;
-		Ok(self.validated_pool.submit(validated_transactions.into_values()))
+		Ok(self.validated_pool.submit(validated_transactions))
 	}
 
 	/// Imports one unverified extrinsic to the pool
@@ -272,6 +275,8 @@ impl<B: ChainApi> Pool<B> {
 		parent: &BlockId<B::Block>,
 		extrinsics: &[ExtrinsicFor<B>],
 		in_pool_hashes: Vec<ExtrinsicHash<B>>,
+		pruned: bool,
+		fire_pruned: bool,
 	) -> Result<String, B::Error> {
 		log::debug!(
 			target: LOG_TARGET,
@@ -279,57 +284,81 @@ impl<B: ChainApi> Pool<B> {
 			at,
 			extrinsics.len()
 		);
-		let start = std::time::Instant::now();
-		let in_pool_tags = self.validated_pool.extrinsics_tags(&in_pool_hashes);
-		let tag_time = start.elapsed();
-
-		// Zip the ones from the pool with the full list (we get pairs `(Extrinsic,
-		// Option<Vec<Tag>>)`)
-		let all = extrinsics.iter().zip(in_pool_tags.into_iter());
-
+		let mut prune_info = "".to_string();
 		let mut future_tags = Vec::new();
-		let all_start = std::time::Instant::now();
-		let mut none_verify_count = 0usize;
-		for (index, (extrinsic, in_pool_tags)) in all.into_iter().enumerate() {
-			match in_pool_tags {
-				// reuse the tags for extrinsics that were found in the pool
-				Some(tags) => future_tags.extend(tags),
-				// if it's not found in the pool query the runtime at parent block
-				// to get validity info and tags that the extrinsic provides.
-				None => {
-					// skip first extrinsic verify for Timestamp inherent.
-					if index == 0 { continue; }
-					// Avoid validating block txs if the pool is empty
-					if !self.validated_pool.status().is_empty() {
-						none_verify_count += 1;
-						let validity = self
-							.validated_pool
-							.api()
-							.validate_transaction(
-								parent,
-								TransactionSource::InBlock,
-								extrinsic.clone(),
-							)
-							.await;
+		if !pruned {
+			let start = std::time::Instant::now();
+			let in_pool_tags = self.validated_pool.extrinsics_tags(&in_pool_hashes);
+			let tag_time = start.elapsed();
+			prune_info += &format!("tag_time {tag_time:?} ");
 
-						if let Ok(Ok(validity)) = validity {
-							future_tags.extend(validity.provides);
-						}
-					} else {
-						log::trace!(
-							target: LOG_TARGET,
-							"txpool is empty, skipping validation for block {at:?}",
-						);
-					}
-				},
+			// Zip the ones from the pool with the full list (we get pairs `(Extrinsic,
+			// Option<Vec<Tag>>)`)
+			let all = extrinsics.iter().zip(in_pool_tags.into_iter());
+
+			let all_start = std::time::Instant::now();
+			for (_index, (_extrinsic, in_pool_tags)) in all.into_iter().enumerate() {
+				match in_pool_tags {
+					// reuse the tags for extrinsics that were found in the pool
+					Some(tags) => future_tags.extend(tags),
+					// if it's not found in the pool query the runtime at parent block
+					// to get validity info and tags that the extrinsic provides.
+					None => {
+						// // skip first extrinsic verify for Timestamp inherent.
+						// if index == 0 { continue; }
+						// // Avoid validating block txs if the pool is empty
+						// if !self.validated_pool.status().is_empty() {
+						// 	none_verify_count += 1;
+						// 	let validity = self
+						// 		.validated_pool
+						// 		.api()
+						// 		.validate_transaction(
+						// 			parent,
+						// 			TransactionSource::InBlock,
+						// 			extrinsic.clone(),
+						// 		)
+						// 		.await;
+						//
+						// 	if let Ok(Ok(validity)) = validity {
+						// 		future_tags.extend(validity.provides);
+						// 	}
+						// } else {
+						// 	log::trace!(
+						// 		target: LOG_TARGET,
+						// 		"txpool is empty, skipping validation for block {at:?}",
+						// 	);
+						// }
+					},
+				}
 			}
+			let all_time = all_start.elapsed();
+			prune_info += &format!("all_time {all_time:?} ");
 		}
-		let all_time = all_start.elapsed();
 
 		let prune_tags_start = std::time::Instant::now();
-		let prune_times = self.prune_tags(at, future_tags, in_pool_hashes).await?;
+		let prune_times = self.prune_tags(at, future_tags, in_pool_hashes, pruned, fire_pruned).await?;
 		let prune_tags_time = prune_tags_start.elapsed();
-		Ok(format!("tag_time {tag_time:?} all_time {all_time:?}({none_verify_count}) prune_tags {prune_tags_time:?}({prune_times})"))
+		prune_info += &format!("prune_tags {prune_tags_time:?}({prune_times})");
+		Ok(prune_info)
+	}
+	
+	/// Prune txs by just hashes.
+	pub async fn prune_by_hashes(
+		&self,
+		at: &BlockId<B::Block>,
+		in_pool_hashes: Vec<ExtrinsicHash<B>>,
+		pruned: bool,
+		fire_pruned: bool,
+	) -> Result<String, B::Error> {
+		log::debug!(target: LOG_TARGET, "Starting pruning of block {at:?} (hashes: {})", in_pool_hashes.len());
+		let start = std::time::Instant::now();
+		let future_tags = self.validated_pool.extrinsics_tags(&in_pool_hashes)
+			.into_iter().filter_map(|r| r).flatten().collect::<Vec<_>>();
+		let tag_time = start.elapsed();
+		let prune_tags_start = std::time::Instant::now();
+		let prune_times = self.prune_tags(at, future_tags, in_pool_hashes, pruned, fire_pruned).await?;
+		let prune_tags_time = prune_tags_start.elapsed();
+		Ok(format!("tag_time {tag_time:?} prune_tags {prune_tags_time:?}({prune_times})"))
 	}
 
 	/// Prunes ready transactions that provide given list of tags.
@@ -358,29 +387,42 @@ impl<B: ChainApi> Pool<B> {
 		at: &BlockId<B::Block>,
 		tags: impl IntoIterator<Item = Tag>,
 		known_imported_hashes: impl IntoIterator<Item = ExtrinsicHash<B>> + Clone,
+		pruned: bool,
+		fire_pruned: bool,
 	) -> Result<String, B::Error> {
-		log::debug!(target: LOG_TARGET, "Pruning at {:?}", at);
-		// Prune all transactions that provide given tags
-		let start = std::time::Instant::now();
-		let _prune_status = self.validated_pool.prune_tags(tags)?;
-		let prune_status_time = start.elapsed();
+		let mut prune_tags_info = "".to_string();
+		if !pruned {
+			log::debug!(target: LOG_TARGET, "Pruning at {:?}", at);
+			// Prune all transactions that provide given tags
+			let start = std::time::Instant::now();
+			let _prune_status = self.validated_pool.prune_tags(tags)?;
+			let prune_status_time = start.elapsed();
 
-		// Make sure that we don't revalidate extrinsics that were part of the recently
-		// imported block. This is especially important for UTXO-like chains cause the
-		// inputs are pruned so such transaction would go to future again.
-		self.validated_pool
-			.ban(&Instant::now(), known_imported_hashes.clone().into_iter());
-		let ban_time = start.elapsed() - prune_status_time;
+			// Make sure that we don't revalidate extrinsics that were part of the recently
+			// imported block. This is especially important for UTXO-like chains cause the
+			// inputs are pruned so such transaction would go to future again.
+			self.validated_pool
+				.ban(&Instant::now(), known_imported_hashes.clone().into_iter());
+			let ban_time = start.elapsed() - prune_status_time;
+			prune_tags_info += &format!("prune_status {prune_status_time:?} ban {ban_time:?}");
+		}
 
-		// these two steps only handle last handle of `self.validated_pool.resubmit_pruned`.
-		// we no more handle following `verify` and `resubmit_pruned`.
-		let fire_pruned_start = std::time::Instant::now();
-		let fire_pruned = self.validated_pool.fire_pruned(at, known_imported_hashes.into_iter())?;
-		let fire_pruned_time = fire_pruned_start.elapsed();
-		let clear_stale_start = std::time::Instant::now();
-		self.validated_pool.clear_stale(at)?;
-		let clear_stale_time = clear_stale_start.elapsed();
-		Ok(format!("prune_status {prune_status_time:?} ban {ban_time:?} fire_pruned {fire_pruned_time:?}({fire_pruned}) clear_stale {clear_stale_time:?}"))
+		if fire_pruned {
+			// these two steps only handle last handle of `self.validated_pool.resubmit_pruned`.
+			// we no more handle following `verify` and `resubmit_pruned`.
+			let fire_pruned_start = std::time::Instant::now();
+			let fire_pruned = self.validated_pool.fire_pruned(at, known_imported_hashes.into_iter())?;
+			let fire_pruned_time = fire_pruned_start.elapsed();
+			prune_tags_info += &format!(" fire_pruned {fire_pruned_time:?}({fire_pruned})")
+		}
+
+		if !pruned {
+			let clear_stale_start = std::time::Instant::now();
+			self.validated_pool.clear_stale(at)?;
+			let clear_stale_time = clear_stale_start.elapsed();
+			prune_tags_info += &format!(" clear_stale {clear_stale_time:?}")
+		}
+		Ok(prune_tags_info)
 
 		// // Try to re-validate pruned transactions since some of them might be still valid.
 		// // note that `known_imported_hashes` will be rejected here due to temporary ban.
@@ -427,7 +469,7 @@ impl<B: ChainApi> Pool<B> {
 		xts: impl IntoIterator<Item = (TransactionSource, ExtrinsicFor<B>)>,
 		check: CheckBannedBeforeVerify,
 		multi: bool,
-	) -> Result<HashMap<ExtrinsicHash<B>, ValidatedTransactionFor<B>>, B::Error> {
+	) -> Result<Vec<ValidatedTransactionFor<B>>, B::Error> {
 		// we need a block number to compute tx validity
 		let block_number = self.resolve_block_number(at)?;
 		let res = if !multi {
@@ -437,9 +479,10 @@ impl<B: ChainApi> Pool<B> {
 			)
 				.await
 				.into_iter()
-				.collect::<HashMap<_, _>>()
+				.map(|r| r.1)
+				.collect::<Vec<_>>()
 		} else {
-			self.verify_multi(at, block_number, xts.into_iter().collect(), check).await?.into_iter().collect::<HashMap<_, _>>()
+			self.verify_multi(at, block_number, xts.into_iter().collect(), check).await?.into_iter().map(|r| r.1).collect::<Vec<_>>()
 		};
 
 		Ok(res)
