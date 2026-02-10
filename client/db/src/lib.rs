@@ -1808,7 +1808,7 @@ impl<Block: BlockT> Backend<Block> {
 		self.blockchain.update_block_gap(block_gap);
 
 		if print {
-			info!("⏳ full try_commit_operation time: {:?}", start.elapsed());
+			debug!(target:"commit-time", "⏳ full try_commit_operation time: {:?}", start.elapsed());
 		}
 
 		Ok(())
