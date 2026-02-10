@@ -92,6 +92,13 @@ impl From<Box<dyn Fn() -> bool + Send + Sync>> for IsValidator {
 	}
 }
 
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub enum TxConsensusState {
+	#[default]
+	Consensus,
+	Pruned,
+}
+
 /// Pool that deals with validated transactions.
 pub struct ValidatedPool<B: ChainApi> {
 	api: Arc<B>,
@@ -99,7 +106,7 @@ pub struct ValidatedPool<B: ChainApi> {
 	options: Options,
 	listener: RwLock<Listener<ExtrinsicHash<B>, B>>,
 	pool: RwLock<base::BasePool<ExtrinsicHash<B>, ExtrinsicFor<B>>>,
-	consensus_pool: RwLock<HashMap<NumberFor<B>, (ExtrinsicHash<B>, HashSet<ExtrinsicHash<B>>)>>,
+	consensus_pool: RwLock<HashMap<NumberFor<B>, (ExtrinsicHash<B>, TxConsensusState, HashSet<ExtrinsicHash<B>>)>>,
 	import_notification_sinks: Mutex<Vec<Sender<Vec<ExtrinsicHash<B>>>>>,
 	rotator: PoolRotator<ExtrinsicHash<B>>,
 }
@@ -696,7 +703,9 @@ impl<B: ChainApi> ValidatedPool<B> {
 				let to = to.saturating_add(1u32.into());
 				loop {
 					if block > to { break; }
-					extra += self.consensus_pool.read().get(&block).map(|(_, hashes)| hashes.len()).unwrap_or_default();
+					extra += self.consensus_pool.read().get(&block)
+						.map(|(_, state, hashes)| if state != &TxConsensusState::Pruned { hashes.len() } else { 0 })
+						.unwrap_or_default();
 					block = block.saturating_add(1u32.into());
 				}
 			}
@@ -747,21 +756,45 @@ impl<B: ChainApi> ValidatedPool<B> {
 	pub fn on_consensus(&self, block: NumberFor<B>, root: ExtrinsicHash<B>, hashes: Vec<ExtrinsicHash<B>>) {
 		if hashes.len() > 0 {
 			log::info!(target: "txpool_consensus", "consensus_pool on consensus block {block}, {} hashes registered, tx_root {root:?}", hashes.len());
-			self.consensus_pool.write().insert(block, (root, hashes.into_iter().collect()));
+			self.consensus_pool.write().insert(block, (root, TxConsensusState::Consensus, hashes.into_iter().collect()));
 		}
 	}
 	
 	pub fn consensus_confirmed(&self, _block: &NumberFor<B>, hash: &ExtrinsicHash<B>) -> bool {
-		self.consensus_pool.read().iter().any(|(_, hashes)| hashes.1.contains(hash))
+		self.consensus_pool.read().iter().any(|(_, hashes)| hashes.2.contains(hash))
+	}
+	
+	pub fn consensus_state_hashes(&self, at: &BlockId<B::Block>) -> Option<(ExtrinsicHash<B>, TxConsensusState, HashSet<ExtrinsicHash<B>>)> {
+		let block = match at {
+			BlockId::Hash(_) => self.api.block_id_to_number(at).unwrap().unwrap(),
+			BlockId::Number(n) => *n,
+		};
+		let res = self.consensus_pool.read().get(&block).cloned();
+		if let Some((_, state, _)) = &res {
+			if state == &TxConsensusState::Pruned { 
+				return None;
+			}
+		}
+		res
+	}
+	
+	pub fn consensus_pruned(&self, at: &BlockId<B::Block>) {
+		let block = match at {
+			BlockId::Hash(_) => self.api.block_id_to_number(at).unwrap().unwrap(),
+			BlockId::Number(n) => *n,
+		};
+		if let Some((_, state, _)) = self.consensus_pool.write().get_mut(&block) {
+			*state = TxConsensusState::Pruned;
+		}
 	}
 
-	pub fn clear_consensus_hashes(&self, at: &BlockId<B::Block>) -> Option<(ExtrinsicHash<B>, HashSet<ExtrinsicHash<B>>)> {
+	pub fn clear_consensus_hashes(&self, at: &BlockId<B::Block>) -> Option<(ExtrinsicHash<B>, TxConsensusState, HashSet<ExtrinsicHash<B>>)> {
 		let block = match at {
 			BlockId::Hash(_) => self.api.block_id_to_number(at).unwrap().unwrap(),
 			BlockId::Number(n) => *n,
 		};
 		let res = self.consensus_pool.write().remove(&block);
-		if let Some((root, hash_set)) = &res {
+		if let Some((root, _, hash_set)) = &res {
 			if hash_set.len() > 1 {
 				log::info!(target: "txpool_consensus", "consensus_pool on block {at}, {} hashes cleared, tx_root {root:?}", hash_set.len());
 			}

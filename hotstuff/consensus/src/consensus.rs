@@ -1178,7 +1178,6 @@ where
 
     fn notify_consensus_block(&mut self, commit: &BlockCommit<B>, extrinsics: &Vec<Vec<Vec<B::Extrinsic>>>) -> Option<Vec<B::Hash>> {
         // empty block
-        if extrinsics == &vec![vec![], vec![vec![]]] { return None; }
         let hashes = self.proposal_extrinsic_hashes.remove(&commit.view())
             .unwrap_or(
                 // TODO faster parallel calculation.
