@@ -1,4 +1,5 @@
 use std::str::FromStr;
+use std::time::Duration;
 use sp_api::{BlockT, HeaderT, ProvideRuntimeApi, TransactionFor};
 use codec::{Encode, Decode};
 use hotstuff_primitives::digests::CompatibleDigestItem;
@@ -6,6 +7,7 @@ use sc_basic_authorship::BlockExecuteInfo;
 use sc_consensus::BlockImportParams;
 use sp_consensus_slots::Slot;
 use sp_runtime::DigestItem;
+use sp_runtime::traits::NumberFor;
 use sp_timestamp::Timestamp;
 use crate::error::ViewNumber;
 use crate::message::{BlockCommit, ExtrinsicBlock};
@@ -176,8 +178,11 @@ pub enum ExecutorMission<B: BlockT> {
     Execute(BlockMission<B>),
     /// A block can be imported.
     Confirm(ViewNumber, BlockCommit<B>),
-    /// A block is already imported.
-    Imported(B::Header),
+}
+
+pub enum ExecutorMessage<B: BlockT> {
+    ExecuteFinish(NumberFor<B>, ViewNumber, Duration),
+    ImportFinish(B::Header),
 }
 
 /// We use this to wrap BlockImportParams since we ensure it is thread safe.

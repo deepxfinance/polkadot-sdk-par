@@ -3,12 +3,12 @@ pub mod types;
 use std::collections::HashMap;
 use std::marker::PhantomData;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use log::{debug, error, trace, warn};
-use tokio::sync::mpsc::UnboundedReceiver;
+use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tokio::sync::RwLock;
 use hotstuff_primitives::digests::CompatibleDigestItem;
-use sc_basic_authorship::{BlockExecuteInfo, BlockOracle, BlockPropose};
+use sc_basic_authorship::{BlockOracle, BlockPropose};
 use sc_client_api::Backend;
 use sc_consensus::{BlockImport, BlockImportParams, ForkChoiceStrategy, StateAction};
 use sc_consensus_slots::{InherentDataProviderExt, StorageChanges};
@@ -21,13 +21,21 @@ use sp_runtime::traits::NumberFor;
 use sp_timestamp::Timestamp;
 use types::{BlockMission, ExecutorMission, ImportMission, SafeImportMission};
 use crate::client::ClientForHotstuff;
-use crate::executor::types::SafeWrap;
+use crate::error::ViewNumber;
+use crate::executor::types::{ExecutorMessage, SafeWrap};
 use crate::find_block_commit;
 use crate::import::ImportLock;
-use crate::message::BlockCommit;
+use crate::message::{BlockCommit, Round};
 use crate::oracle::HotsOracle;
 
 const LOG_TARGET: &str = "hots_executor";
+
+pub struct BestState<B: BlockT> {
+    pub block: NumberFor<B>,
+    pub hash: B::Hash,
+    pub commit: BlockCommit<B>,
+    pub commit_hash: B::Hash,
+}
 
 pub struct BlockExecutor<C: ClientForHotstuff<B, BE>, B: BlockT, I, PF, L: sc_consensus::JustificationSyncLink<B>, BE: Backend<B>, CIDP, SC, O> {
     pub client: Arc<C>,
@@ -40,6 +48,8 @@ pub struct BlockExecutor<C: ClientForHotstuff<B, BE>, B: BlockT, I, PF, L: sc_co
     pub slot_duration: SlotDuration,
     pub oracle: Arc<O>,
     pub executor_rx: UnboundedReceiver<ExecutorMission<B>>,
+    /// Imported block `Round` and `commit hash`.
+    pub commit_hash: HashMap<NumberFor<B>, (Round, B::Hash)>,
     /// Block execution missions.
     pub missions: HashMap<NumberFor<B>, BlockMission<B>>,
     /// Block execution results to be imported.
@@ -47,6 +57,7 @@ pub struct BlockExecutor<C: ClientForHotstuff<B, BE>, B: BlockT, I, PF, L: sc_co
     /// Block confirms that decide the block can be imported.
     pub confirms: HashMap<NumberFor<B>, BlockCommit<B>>,
     pub block_size_limit: Option<usize>,
+    executor_msg_tx: UnboundedSender<ExecutorMessage<B>>,
     phantom_data: PhantomData<BE>,
 }
 
@@ -75,7 +86,18 @@ where
         create_inherent_data_providers: CIDP,
         select_chain: SC,
         executor_rx: UnboundedReceiver<ExecutorMission<B>>,
+        executor_msg_tx: UnboundedSender<ExecutorMessage<B>>,
     ) -> Self {
+        let mut commit_hash = HashMap::new();
+        let best_info = client.info();
+        if best_info.best_number > 0u32.into() {
+            let best_header = client.header(best_info.best_hash)
+                .expect("can't get best block header")
+                .expect("no best block header");
+            let best_block_commit = find_block_commit::<B>(&best_header)
+                .expect("best block header no block commit");
+            commit_hash.insert(best_info.best_number, (best_block_commit.round(), best_block_commit.commit_hash()));
+        }
         Self {
             client,
             oracle,
@@ -87,10 +109,12 @@ where
             last_slot: 0.into(),
             slot_duration,
             executor_rx,
+            commit_hash,
             missions: HashMap::new(),
             imports: HashMap::new(),
             confirms: HashMap::new(),
             block_size_limit: None,
+            executor_msg_tx,
             phantom_data: PhantomData,
         }
     }
@@ -130,6 +154,7 @@ where
     ///     `Ok(false)` if not confirmed.
     ///     `Err(_)` if any other error.
     async fn try_import_block(&mut self, mut import: ImportMission<B, C>) -> Result<bool, String> {
+        let full_import_start = Instant::now();
         let best_block = self.client.info().best_number;
         if import.mission.block_number() <= best_block {
             // this may happen if block imported by Synchronization before we lock this.
@@ -151,10 +176,11 @@ where
         let import_time = self.oracle.import_time().as_millis() as u64;
         let import_start = commit_time.saturating_sub(import_time);
         let current = Timestamp::current().as_millis();
+        let mut wait = 0;
         if current < import_start {
-            tokio::time::sleep(Duration::from_millis(import_start - current)).await;
+            wait = import_start - current;
+            tokio::time::sleep(Duration::from_millis(wait)).await;
         }
-        let start = std::time::Instant::now();
         match self.block_lock.import_block(import.import).await {
             Ok(res) => {
                 res.handle_justification(
@@ -171,8 +197,10 @@ where
                 }
                 // remove confirm.
                 self.confirms.remove(header.number());
-                import.info.set_import_time(start.elapsed());
+                self.on_imported(header.number(), confirm.round(), confirm.commit_hash());
                 self.oracle.update_execute_info(&import.info);
+                self.notify_worker_block_imported(header);
+                import.info.set_import_time(Instant::now().duration_since(full_import_start).saturating_sub(Duration::from_millis(wait)));
                 Ok(true)
             },
             Err(err) => {
@@ -203,38 +231,34 @@ where
 
     // Execute one block and try import, return execute info.
     async fn execute_mission(&mut self, mission: BlockMission<B>) -> Result<(), String> {
+        let execute_start = std::time::Instant::now();
         let best_block = self.client.info().best_number;
         let best_hash = self.client.info().best_hash;
         let mission_block = mission.block_number();
         if best_block >= mission_block {
-            return Err(format!("skip old block #{mission_block} for best_block #{best_block}"));
+            trace!(target: LOG_TARGET, "skip old block #{mission_block} for best_block #{best_block}");
+            return Ok(());
         } else if mission_block != best_block.saturating_add(1u32.into()) {
             return Err(format!("skip next block #{mission_block} for too far than best #{best_block}"));
         }
         // check parent block's commit qc hash. ensure correct chain fork.
         if mission_block > 1u32.into() {
-            match self.client.header(best_hash) {
-                Ok(Some(parent_header)) => match find_block_commit::<B>(&parent_header) {
-                    Some(parent_commit) => if parent_commit.commit_hash() != mission.parent_commit_hash()
-                        || mission_block != parent_commit.block_number().saturating_add(1u32.into()) {
-                        return Err(format!(
-                            "skip next block: #{mission_block} for no expected parent #{} commit_qc_hash {}:{} expect: {}",
-                            parent_commit.block_number(),
-                            parent_commit.round(),
-                            parent_commit.commit_hash(),
-                            mission.parent_commit_hash(),
-                        ));
-                    },
-                    None => {
-                        return Err(format!("skip next block #{mission_block} for parent #{best_block} header have no commit!!!"));
-                    }
-                },
-                Ok(None) => {
-                    return Err(format!("skip next block #{mission_block} for no parent header"));
-                },
-                Err(e) => {
-                    return Err(format!("skip next block #{mission_block} for get parent header error: {e:?}"));
-                }
+            let (parent_round, parent_commit_hash) = if let Some(parent) = self.commit_hash.get(&best_block) {
+                parent
+            } else {
+                let parent_header = self.client.header(best_hash)
+                    .map_err(|e| format!("skip next block #{mission_block} for get parent header error: {e:?}"))?
+                    .ok_or(format!("skip next block #{mission_block} for no parent header"))?;
+                let parent_commit = find_block_commit::<B>(&parent_header)
+                    .ok_or(format!("skip next block #{mission_block} for parent #{best_block} header have no commit!!!"))?;
+                self.commit_hash.insert(best_block, (parent_commit.round(), parent_commit.commit_hash()));
+                self.commit_hash.get(&best_block).unwrap()
+            };
+            if parent_commit_hash != &mission.parent_commit_hash() {
+                return Err(format!(
+                    "skip next block: #{mission_block} for no expected parent #{best_block} commit_qc_hash {parent_round}:{parent_commit_hash} expect: {}",
+                    mission.parent_commit_hash(),
+                ));
             }
         }
         // execute block
@@ -252,7 +276,8 @@ where
         debug!(target: LOG_TARGET, "Start #{mission_block} with view {} (best {best_block}:{best_hash})", mission.view());
         let slot = inherent_data_providers.slot();// Never yield the same slot twice.
         if slot <= self.last_slot {
-            return Err(format!("Best block number: {best_block}, next block number: {mission_block} Skipped for last_slot {}, current_slot {slot}", self.last_slot));
+            error!(target: LOG_TARGET, "Best block number: {best_block}, next block number: {mission_block} Skipped for last_slot {}, current_slot {slot}", self.last_slot);
+            return Ok(());
         }
         let inherent_data = inherent_data_providers.create_inherent_data().await.expect("create_inherent_data");
 
@@ -265,14 +290,14 @@ where
         let proposer = self.proposer_factory.write().await.init(&parent_header).await.expect("proposer init");
         let mut multi = vec![];
         let mut single = vec![];
-        let extrinsic = mission.extrinsics.clone();
+        let mut extrinsic = mission.extrinsics.clone();
         if extrinsic.len() >= 1 {
-            multi = extrinsic[0].clone();
+            multi = core::mem::take(&mut extrinsic[0]);
         }
         if extrinsic.len() >= 2 && extrinsic[1].len() >= 1 {
-            single = extrinsic[1][0].clone();
+            single = core::mem::take(&mut extrinsic[1][0]);
         }
-        let (proposal, info) = match BlockPropose::<B>::propose_block(
+        let (proposal, mut info) = match BlockPropose::<B>::propose_block(
             proposer,
             "Consensus",
             best_hash,
@@ -313,6 +338,8 @@ where
                 return Err(format!("Propose block {mission_block} get block_import_params failed for {e:?}"));
             }
         };
+        info.set_time_by_executor(execute_start.elapsed());
+        self.notify_worker_block_executed(mission_block, mission.view(), info.time_by_executor);
         // try import block
         self.try_import_block(ImportMission::new(mission, slot, block_import_params, info)).await?;
         Ok(())
@@ -342,8 +369,28 @@ where
         }
     }
 
+    fn notify_worker_block_executed(&self, block: NumberFor<B>, view: ViewNumber, time: Duration) {
+        if let Err(e) = self.executor_msg_tx.send(ExecutorMessage::ExecuteFinish(block, view, time)) {
+            warn!(target: LOG_TARGET, "can't inform self `BlockImport` for {e:?}.");
+        }
+    }
+
+    fn notify_worker_block_imported(&self, header: B::Header) {
+        if let Err(e) = self.executor_msg_tx.send(ExecutorMessage::ImportFinish(header)) {
+            warn!(target: LOG_TARGET, "can't inform self `BlockImport` for {e:?}.");
+        }
+    }
+
+    fn on_imported(&mut self, block: &NumberFor<B>, round: Round, commit_hash: B::Hash) {
+        self.commit_hash.insert(*block, (round, commit_hash));
+        self.missions.retain(|b, _| b > block);
+        self.imports.retain(|b, _| b > block);
+        self.confirms.retain(|b, _| b > block);
+    }
+
     fn retain(&mut self) {
         let best_number = self.client.info().best_number;
+        self.commit_hash.retain(|b, _| *b >= best_number);
         self.missions.retain(|b, _| *b > best_number);
         self.imports.retain(|b, _| *b > best_number);
         self.confirms.retain(|b, _| *b > best_number);
@@ -393,11 +440,6 @@ where
                                 self.confirms.insert(block, confirm);
                             }
                         },
-                        ExecutorMission::Imported(header) => {
-                            self.missions.retain(|b, _| b > header.number());
-                            self.imports.retain(|b, _| b > header.number());
-                            self.confirms.retain(|b, _| b > header.number());
-                        }
                     }
                 }
                 self.try_import_all().await;

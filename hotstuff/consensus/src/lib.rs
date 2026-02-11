@@ -15,6 +15,7 @@ pub mod executor;
 pub mod revert;
 pub mod oracle;
 pub mod state;
+pub mod trace;
 
 pub use client::{block_import, LinkHalf};
 pub use import::HotstuffBlockImport;
@@ -36,6 +37,7 @@ use crate::message::BlockCommit;
 
 pub const LOG_TARGET: &str = "hots";
 pub const CLIENT_LOG_TARGET: &str = "hotstuff";
+pub const TRACE_LOG_TARGET: &str = "hotstuff_trace";
 
 pub type AuthorityId = hotstuff_primitives::bls_crypto::AuthorityId;
 pub type AuthorityPair = hotstuff_primitives::bls_crypto::AuthorityPair;

@@ -13,7 +13,7 @@ use futures::{channel::mpsc::Receiver as Recv, Future, StreamExt};
 
 use codec::{Decode, Encode};
 use log::{debug, error, info, trace, warn};
-use tokio::sync::mpsc::{channel, unbounded_channel, Receiver, Sender, UnboundedSender};
+use tokio::sync::mpsc::{channel, unbounded_channel, Receiver, Sender, UnboundedReceiver, UnboundedSender};
 use tokio::sync::RwLock;
 use frame_system::extrinsics_data_root;
 use sc_basic_authorship::{BlockPropose, GroupTransaction, BlockOracle};
@@ -22,7 +22,7 @@ use sc_network::types::ProtocolName;
 use sc_network_gossip::TopicNotification;
 use sp_core::traits::CallContext;
 use sp_keystore::KeystorePtr;
-use sp_runtime::{generic::BlockId, traits, traits::{Block as BlockT, Header as HeaderT}, SaturatedConversion, Saturating};
+use sp_runtime::{generic::BlockId, traits, traits::{Block as BlockT, Header as HeaderT}, Saturating};
 use sc_consensus::BlockImport;
 use sc_consensus_slots::InherentDataProviderExt;
 use sp_consensus::SelectChain;
@@ -51,7 +51,9 @@ use sp_inherents::CreateInherentDataProviders;
 use sp_runtime::traits::{NumberFor, Zero};
 use sp_runtime::transaction_validity::TransactionSource;
 use sp_timestamp::Timestamp;
-use crate::executor::types::{PendingBlock, ExecuteMode};
+use std::time::Instant;
+use crate::trace::IntervalTrace;
+use crate::executor::types::{PendingBlock, ExecuteMode, ExecutorMessage};
 
 #[cfg(test)]
 #[path = "tests/consensus_tests.rs"]
@@ -79,6 +81,7 @@ pub struct ConsensusWorker<
     aux_data: AuxDataStore<B, C>,
     consensus_msg_tx: Sender<(bool, ConsensusMessage<B>)>,
     consensus_msg_rx: Receiver<(bool, ConsensusMessage<B>)>,
+    executor_msg_rx: UnboundedReceiver<ExecutorMessage<B>>,
     executor_tx: UnboundedSender<ExecutorMission<B>>,
     proposer_factory: Arc<RwLock<PF>>,
     oracle: Arc<O>,
@@ -87,11 +90,10 @@ pub struct ConsensusWorker<
     processed: Proposal<B>,
     /// consensus success block waiting to execute.
     commit: BlockCommit<B>,
-    commit_extrinsic: HashMap<<B::Header as HeaderT>::Number, (ViewNumber, Vec<B::Hash>, std::time::Instant)>,
+    commit_extrinsic: HashMap<<B::Header as HeaderT>::Number, (ViewNumber, Vec<B::Hash>, Instant)>,
     /// Tmp proposal extrinsic hashes for faster consensus notify.
     proposal_extrinsic_hashes: HashMap<ViewNumber, Vec<B::Hash>>,
-    /// Imported block for stage log.
-    imported_trace: Option<(NumberFor<B>, std::time::Instant)>,
+    interval_trace: IntervalTrace<B>,
 
     network_notification_limit: usize,
     phantom: PhantomData<BE>,
@@ -125,6 +127,7 @@ where
         oracle: Arc<O>,
         consensus_msg_tx: Sender<(bool, ConsensusMessage<B>)>,
         consensus_msg_rx: Receiver<(bool, ConsensusMessage<B>)>,
+        executor_msg_rx: UnboundedReceiver<ExecutorMessage<B>>,
         executor_tx: UnboundedSender<ExecutorMission<B>>,
         network_notification_limit: usize,
     ) -> Self {
@@ -152,6 +155,7 @@ where
             max_empty,
             consensus_msg_tx,
             consensus_msg_rx,
+            executor_msg_rx,
             executor_tx,
             client,
             sync,
@@ -163,7 +167,7 @@ where
             commit,
             commit_extrinsic: HashMap::new(),
             proposal_extrinsic_hashes: HashMap::new(),
-            imported_trace: None,
+            interval_trace: IntervalTrace::new(100),
             network_notification_limit,
             phantom: PhantomData,
         }
@@ -179,22 +183,6 @@ where
                 > self.max_empty.saturating_sub(1) as u64 * self.slot_duration.as_millis()
         } else {
             true
-        }
-    }
-
-    pub fn trace_block_rate(&mut self, block: NumberFor<B>) {
-        if self.imported_trace.is_none() {
-            self.imported_trace = Some((block, std::time::Instant::now()));
-            return;
-        }
-        if let Some((prev_block, prev_time)) = &mut self.imported_trace {
-            let elapsed = prev_time.elapsed();
-            if elapsed >= Duration::from_secs(30) {
-                let blocks: u128 = block.saturating_sub(*prev_block).saturated_into();
-                info!(target: CLIENT_LOG_TARGET, "Average block time {}ms(#{prev_block}->#{block})", elapsed.as_micros() / blocks / 1000);
-                *prev_block = block;
-                *prev_time = std::time::Instant::now();
-            }
         }
     }
 
@@ -319,6 +307,9 @@ where
                 _ = &mut self.local_timer => if let Err(e) = self.handle_local_timer().await {
                     debug!(target: CLIENT_LOG_TARGET, "handle_local_timer has error {e:?}");
                 },
+                Some(message) = self.executor_msg_rx.recv() => {
+                    self.handle_executor_msg(message).await;
+                }
                 Some((local, message)) = self.consensus_msg_rx.recv()=> {
                     let from = if local { "local" } else { "network" };
                     match message {
@@ -374,6 +365,19 @@ where
         }
     }
 
+    async fn handle_executor_msg(&mut self, msg: ExecutorMessage<B>) {
+        match msg {
+            ExecutorMessage::ExecuteFinish(block, view, time) => {
+                self.interval_trace.on_executed(block, view, time);
+            },
+            ExecutorMessage::ImportFinish(header) => {
+                if let Err(e) = self.handle_block_import(&header).await {
+                    debug!(target: CLIENT_LOG_TARGET, "[handle_block_import(executor)] has error {e:?}");
+                }
+            }
+        }
+    }
+
     pub async fn handle_local_timer(&mut self) -> Result<(), HotstuffError> {
         debug!(target: CLIENT_LOG_TARGET, "$L$ handle_local_timer. self.round {}", self.state.round);
 
@@ -386,11 +390,11 @@ where
             None => return Ok(()),
         };
         self.state.increase_last_voted();
-        let message = ConsensusMessage::Timeout(timeout.clone());
+        let message = ConsensusMessage::Timeout(timeout);
 
         self.network.send_to_authorities(self.state.authorities(self.state.view(), true)?, message.encode())?;
 
-        if let Err(e) = self.consensus_msg_tx.send((true, ConsensusMessage::Timeout(timeout))).await {
+        if let Err(e) = self.consensus_msg_tx.send((true, message)).await {
             warn!(target: CLIENT_LOG_TARGET, "$L$ handle_local_timer. Can't inform self `Timeout` for {e:?}.");
         }
         Ok(())
@@ -475,7 +479,10 @@ where
     }
 
     pub async fn handle_block_import(&mut self, header: &B::Header) -> Result<(), HotstuffError> {
-        self.trace_block_rate(*header.number());
+        if !self.interval_trace.on_import(header) {
+            // Duplicate block.
+            return Ok(())
+        }
         if let Some(commit) = find_block_commit::<B>(header) {
             for consensus_log in find_consensus_logs::<B, RuntimeAuthorityId>(header) {
                 match consensus_log {
@@ -510,9 +517,6 @@ where
         }
         if self.client.info().best_number > *header.number() {
             return Ok(());
-        }
-        if self.executor_tx.send(ExecutorMission::Imported(header.clone())).is_err() {
-            warn!(target: CLIENT_LOG_TARGET, "~~ handle_block_import. Notify executor block {} imported failed", header.number());
         }
         // try handle pending proposal.
         if let Some(pending_proposal) = self.pending_proposal.take() {
@@ -801,11 +805,11 @@ where
                 // Prepare finished, we can confirm that commited parent block can be imported and finalized.
                 let confirm_block = self.commit.block_number();
                 if confirm_block > 0u32.into() && confirm_block.saturating_add(1u32.into()) == qc_proposal.payload.block_number() {
-                    info!(target: CLIENT_LOG_TARGET, "[Confirm] block {confirm_block} by QC {}:{}", qc.round(), qc.proposal_hash);
                     let mission = ExecutorMission::Confirm(qc_proposal.view, self.commit.clone());
                     if self.executor_tx.send(mission).is_err() {
                         warn!(target: CLIENT_LOG_TARGET, "~~ trigger_qc_mission({from}). block {confirm_block} confirm mission send failed");
                     }
+                    self.interval_trace.on_confirm(&qc.round(), &qc.proposal_hash, confirm_block);
                     self.notify_confirm_block(confirm_block, self.commit.extrinsics_root());
                 }
             }
@@ -833,20 +837,6 @@ where
                         None => return Ok(()),
                     };
                     // send execute block mission to a block execute queue and execute/import it.
-                    let parent_block = new_block_number.saturating_sub(1u32.into());
-                    info!(
-                        target: CLIENT_LOG_TARGET,
-                        "[Commit] block {new_block_number} by QC {}:{} parent {}:{}{}",
-                        commit.round(),
-                        commit.commit_hash(),
-                        grandpa.qc.round(),
-                        grandpa.qc.proposal_hash,
-                        self.commit_extrinsic
-                            .get(&parent_block)
-                            .map(|pre| format!("({:?})", pre.2.elapsed()))
-                            .unwrap_or("".into()),
-                    );
-                    self.state.authority.on_block_commit(commit.view(), commit.block_number());
                     let extrinsics = grandpa.payload.extrinsics.clone().unwrap();
                     if self.mode == ExecuteMode::Commit {
                         let mission = ExecutorMission::Execute(BlockMission {
@@ -859,13 +849,15 @@ where
                         }
                     }
                     let hashes = self.notify_consensus_block(&commit, &extrinsics);
+                    self.interval_trace.on_commit(&commit, &grandpa.qc.round(), &grandpa.qc.proposal_hash);
+                    self.state.authority.on_block_commit(commit.view(), commit.block_number());
                     if let Some((pre_view, pre_hashes, prev_time)) = self.commit_extrinsic.get_mut(&commit.block_number()) {
                         if commit.view() > *pre_view {
                             *pre_hashes = hashes;
-                            *prev_time = std::time::Instant::now();
+                            *prev_time = Instant::now();
                         }
                     } else {
-                        self.commit_extrinsic.insert(commit.block_number(), (commit.view(), hashes, std::time::Instant::now()));
+                        self.commit_extrinsic.insert(commit.block_number(), (commit.view(), hashes, Instant::now()));
                     }
                     self.state.update_commit_qc(&qc);
                     self.commit = commit;
@@ -1040,7 +1032,7 @@ where
     }
 
     async fn get_new_block_payload(&self, block_number: <B::Header as HeaderT>::Number) -> (Option<Payload<B>>, Duration) {
-        let start = std::time::Instant::now();
+        let start = Instant::now();
         let timestamp = match self.estimate_block_timestamp(block_number) {
             Ok(timestamp) => timestamp,
             Err(e) => {
@@ -1170,7 +1162,7 @@ where
             return Ok((false, None));
         }
         // verify extrinsic
-        let start = std::time::Instant::now();
+        let start = Instant::now();
         let extrinsics = payload.extrinsics.clone().unwrap();
         if extrinsics.iter().flatten().all(|v| v.is_empty()) && !self.should_propose_empty() {
             // for empty transaction block and not exceed max_empty block. we don't need to propose.
@@ -1203,7 +1195,7 @@ where
         for thread_extrinsic in extrinsic {
             let client = self.client.clone();
             let task = tokio::spawn(async move {
-                let thread_start = std::time::Instant::now();
+                let thread_start = Instant::now();
                 let length = thread_extrinsic.len();
                 let hashes = thread_extrinsic
                     .iter()
@@ -1452,6 +1444,7 @@ where
         }
     }
     let (executor_tx, executor_rx) = unbounded_channel();
+    let (executor_msg_tx, executor_msg_rx) = unbounded_channel();
     let proposer_factory = Arc::new(RwLock::new(proposer_factory));
     let consensus_worker = ConsensusWorker::<B, BE, C, N, S, PF, Error, O>::new(
         mode,
@@ -1467,6 +1460,7 @@ where
         oracle.clone(),
         consensus_msg_tx.clone(),
         consensus_msg_rx,
+        executor_msg_rx,
         executor_tx,
         max_notification_size.unwrap_or(1024 * 1024 * 5),
     );
@@ -1482,6 +1476,7 @@ where
         create_inherent_data_providers,
         select_chain,
         executor_rx,
+        executor_msg_tx,
     );
     Ok((async { consensus_worker.run().await }, consensus_network, async move { block_executor.run().await }))
 }
