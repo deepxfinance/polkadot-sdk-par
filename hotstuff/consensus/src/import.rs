@@ -381,7 +381,7 @@ where
 		self.unlock(orign, number).await;
 		import_result.map(|(r, mut block_execute_info)| {
 			if let Some(info) = block_execute_info.take() {
-				self.oracle.update_execute_info(&info);
+				self.oracle.update_execute_info(info);
 			}
 			r
 		})

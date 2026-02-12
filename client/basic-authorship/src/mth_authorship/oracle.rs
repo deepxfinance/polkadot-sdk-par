@@ -15,7 +15,7 @@ pub trait BlockOracle<B: BlockT> {
     /// update block_duration.
     fn update_block_duration(&self, time: Duration);
     /// update oracle by last block execute info.
-    fn update_execute_info(&self, info: &BlockExecuteInfo<B>);
+    fn update_execute_info(&self, info: BlockExecuteInfo<B>);
     /// get expected block_duration.
     fn block_duration(&self) -> Duration;
     /// estimate thread_limit.
@@ -43,7 +43,7 @@ pub trait BlockOracle<B: BlockT> {
     }
 }
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct ExecutionOracle<B: BlockT> {
     pub thread_limit: usize,
     /// minimal single thread tx number(if exists, ensure some unhandled transaction to be handled, default 10).
@@ -52,6 +52,8 @@ pub struct ExecutionOracle<B: BlockT> {
     pub round_tx: usize,
     /// expected block execute time(default 200 millis, g.e than slot_duration).
     pub block_duration: Arc<Mutex<Duration>>,
+    /// extra reserve time wasted for block process manage.
+    pub reserve_time: Arc<Mutex<Duration>>,
     /// max time for get transactions from pool(default 15%).
     pub pool_permill: Arc<Mutex<Permill>>,
     /// `max_block_duration * execution_permill` estimates `linear_execution_time`(default 55%).
@@ -125,6 +127,7 @@ impl<B: BlockT> ExecutionOracle<B> {
             min_single_tx,
             round_tx,
             block_duration: Arc::new(Mutex::new(Duration::from_millis(block_duration))),
+            reserve_time: Arc::new(Mutex::new(Duration::default())),
             pool_permill: Arc::new(Mutex::new(pool_permill)),
             execution_permill: Arc::new(Mutex::new(execution_permill)),
             merge_permill: Arc::new(Mutex::new(merge_permill)),
@@ -188,7 +191,7 @@ impl<B: BlockT> ExecutionOracle<B> {
         let full_time = info.time.as_nanos() + info.import.as_nanos();
         let import_permill = Permill::from_rational(info.import.as_nanos(), full_time);
         let mut update_import = false;
-        if full_time >= self.block_duration.lock().unwrap().as_nanos() / 5 {
+        if full_time >= self.block_duration.lock().unwrap().as_nanos() / 2 {
             *self.import_permill.lock().unwrap() = import_permill;
             update_import = true;
         }
@@ -231,33 +234,42 @@ impl<B: BlockT> BlockOracle<B> for ExecutionOracle<B> {
         debug!(target: "oracle_exec", "[Update] block_duration {:?}μs", time.as_micros());
     }
 
-    fn update_execute_info(&self, info: &BlockExecuteInfo<B>) {
-        // 1. update average transaction execute time.
-        let update_avg = self.update_execute_time_per_tx(&info);
-        // 2. updated pool_permill/execute_permill/merge_permill by execute info
-        let update_permill = self.update_permills(&info).unwrap_or_default();
+    fn update_execute_info(&self, info: BlockExecuteInfo<B>) {
+        let oracle = self.clone();
+        std::thread::spawn(move || {
+            // 1. update average transaction execute time.
+            let update_avg = oracle.update_execute_time_per_tx(&info);
+            // 2. updated pool_permill/execute_permill/merge_permill by execute info
+            let update_permill = oracle.update_permills(&info).unwrap_or_default();
 
-        // debug info
-        let mut update_info = "".to_string();
-        if let Some((exe_avg, new_avg_tx)) = update_avg {
-            update_info += &format!(" exe_avg {}μs, new_avg_tx {}μs", exe_avg.as_micros(), new_avg_tx.as_micros());
-        }
-        if !update_permill.is_empty() || !update_info.is_empty() {
-            let full_millis = info.time.as_millis() + info.import.as_millis();
-            let block_duration = self.block_duration().as_millis();
-            let (mth_t, mth_n) = info.mth_applied();
-            let mth_info = if mth_t > 0 || mth_n > 0 {
-                format!(" {mth_n}({mth_t})")
-            } else {
-                "".to_string()
-            };
-            let single_info = if let Some(applied) = info.single_applied() {
-                format!(" {applied}")
-            } else {
-                "".to_string()
-            };
-            debug!(target: "oracle_exec", "[Update] Block {} ({full_millis}/{block_duration} ms{mth_info}{single_info}{update_permill}){update_info}", info.number);
-        }
+            // debug info
+            let mut update_info = "".to_string();
+            if let Some((exe_avg, new_avg_tx)) = update_avg {
+                update_info += &format!(" exe_avg {}μs, new_avg_tx {}μs", exe_avg.as_micros(), new_avg_tx.as_micros());
+            }
+            if !update_permill.is_empty() || !update_info.is_empty() {
+                let executor_full_millis = info.time_by_executor.as_millis() + info.import.as_millis();
+                let full_millis = info.time.as_millis() + info.import.as_millis();
+                let block_duration = oracle.block_duration().as_millis();
+                if executor_full_millis > block_duration {
+                    // update reserve time.
+                    let new_reserve_time = Duration::from_millis(executor_full_millis.saturating_sub(full_millis) as u64);
+                    *oracle.reserve_time.lock().unwrap() = new_reserve_time;
+                }
+                let (mth_t, mth_n) = info.mth_applied();
+                let mth_info = if mth_t > 0 || mth_n > 0 {
+                    format!(" {mth_n}({mth_t})")
+                } else {
+                    "".to_string()
+                };
+                let single_info = if let Some(applied) = info.single_applied() {
+                    format!(" {applied}")
+                } else {
+                    "".to_string()
+                };
+                debug!(target: "oracle_exec", "[Update] Block {} ({full_millis}/{block_duration} ms{mth_info}{single_info}{update_permill}){update_info}", info.number);
+            }
+        });
     }
 
     fn block_duration(&self) -> Duration {
@@ -268,10 +280,10 @@ impl<B: BlockT> BlockOracle<B> for ExecutionOracle<B> {
 
     fn round_tx(&self) -> usize { self.round_tx }
 
-    /// we allow full block execution time is slot_duration * 2.
-    /// and default 80 percent block time to execute extrinsic.
     fn linear_execute_time(&self) -> Duration {
-        let execute_time = self.block_duration().as_micros().saturating_sub(self.import_permill.lock().unwrap().mul_floor(self.block_duration().as_micros()));
+        let execute_time = self.block_duration().as_micros()
+            .saturating_sub(self.reserve_time.lock().unwrap().as_micros())
+            .saturating_sub(self.import_permill.lock().unwrap().mul_floor(self.block_duration().as_micros()));
         Duration::from_micros(self.execution_permill.lock().unwrap().mul_floor(execute_time) as u64)
     }
 

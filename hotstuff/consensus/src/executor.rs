@@ -3,9 +3,9 @@ pub mod types;
 use std::collections::HashMap;
 use std::marker::PhantomData;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 use log::{debug, error, trace, warn};
-use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
+use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::sync::RwLock;
 use hotstuff_primitives::digests::CompatibleDigestItem;
 use sc_basic_authorship::{BlockOracle, BlockPropose};
@@ -21,12 +21,12 @@ use sp_runtime::traits::NumberFor;
 use sp_timestamp::Timestamp;
 use types::{BlockMission, ExecutorMission, ImportMission, SafeImportMission};
 use crate::client::ClientForHotstuff;
-use crate::error::ViewNumber;
-use crate::executor::types::{ExecutorMessage, SafeWrap};
+use crate::executor::types::SafeWrap;
 use crate::find_block_commit;
 use crate::import::ImportLock;
 use crate::message::{BlockCommit, Round};
 use crate::oracle::HotsOracle;
+use crate::trace::IntervalTrace;
 
 const LOG_TARGET: &str = "hots_executor";
 
@@ -57,7 +57,7 @@ pub struct BlockExecutor<C: ClientForHotstuff<B, BE>, B: BlockT, I, PF, L: sc_co
     /// Block confirms that decide the block can be imported.
     pub confirms: HashMap<NumberFor<B>, BlockCommit<B>>,
     pub block_size_limit: Option<usize>,
-    executor_msg_tx: UnboundedSender<ExecutorMessage<B>>,
+    interval_trace: Arc<RwLock<IntervalTrace<B>>>,
     phantom_data: PhantomData<BE>,
 }
 
@@ -86,7 +86,6 @@ where
         create_inherent_data_providers: CIDP,
         select_chain: SC,
         executor_rx: UnboundedReceiver<ExecutorMission<B>>,
-        executor_msg_tx: UnboundedSender<ExecutorMessage<B>>,
     ) -> Self {
         let mut commit_hash = HashMap::new();
         let best_info = client.info();
@@ -98,6 +97,7 @@ where
                 .expect("best block header no block commit");
             commit_hash.insert(best_info.best_number, (best_block_commit.round(), best_block_commit.commit_hash()));
         }
+        let trace_interval = std::env::var("TRACE_INTERVAL").unwrap_or("50".into()).parse().unwrap_or(50);
         Self {
             client,
             oracle,
@@ -114,7 +114,7 @@ where
             imports: HashMap::new(),
             confirms: HashMap::new(),
             block_size_limit: None,
-            executor_msg_tx,
+            interval_trace: Arc::new(RwLock::new(IntervalTrace::new(trace_interval))),
             phantom_data: PhantomData,
         }
     }
@@ -198,9 +198,13 @@ where
                 // remove confirm.
                 self.confirms.remove(header.number());
                 self.on_imported(header.number(), confirm.round(), confirm.commit_hash());
-                self.oracle.update_execute_info(&import.info);
-                self.notify_worker_block_imported(header);
-                import.info.set_import_time(Instant::now().duration_since(full_import_start).saturating_sub(Duration::from_millis(wait)));
+                let trace = self.interval_trace.clone();
+                let now = SystemTime::now();
+                tokio::spawn(async move {
+                     trace.write().await.on_import(now, header);
+                });
+                import.info.set_import_time(full_import_start.elapsed().saturating_sub(Duration::from_millis(wait)));
+                self.oracle.update_execute_info(import.info.clone());
                 Ok(true)
             },
             Err(err) => {
@@ -338,8 +342,15 @@ where
                 return Err(format!("Propose block {mission_block} get block_import_params failed for {e:?}"));
             }
         };
+        let trace = self.interval_trace.clone();
+        let view = mission.view();
         info.set_time_by_executor(execute_start.elapsed());
-        self.notify_worker_block_executed(mission_block, mission.view(), info.time_by_executor);
+        let time_by_executor = info.time_by_executor;
+        let txs = info.applied();
+        let now = SystemTime::now();
+        tokio::spawn(async move {
+            trace.write().await.on_executed(now, mission_block, view, time_by_executor, txs);
+        });
         // try import block
         self.try_import_block(ImportMission::new(mission, slot, block_import_params, info)).await?;
         Ok(())
@@ -366,18 +377,6 @@ where
                     break;
                 }
             }
-        }
-    }
-
-    fn notify_worker_block_executed(&self, block: NumberFor<B>, view: ViewNumber, time: Duration) {
-        if let Err(e) = self.executor_msg_tx.send(ExecutorMessage::ExecuteFinish(block, view, time)) {
-            warn!(target: LOG_TARGET, "can't inform self `BlockImport` for {e:?}.");
-        }
-    }
-
-    fn notify_worker_block_imported(&self, header: B::Header) {
-        if let Err(e) = self.executor_msg_tx.send(ExecutorMessage::ImportFinish(header)) {
-            warn!(target: LOG_TARGET, "can't inform self `BlockImport` for {e:?}.");
         }
     }
 
@@ -417,10 +416,19 @@ where
                                     continue;
                                 }
                             }
+                            if let Some(commit) = mission.block_commit() {
+                                let trace = self.interval_trace.clone();
+                                let now = SystemTime::now();
+                                tokio::spawn(async move {
+                                    trace.write().await.on_commit(now, commit);
+                                });
+                            }
                             if let Some(pre_mission) = self.missions.get_mut(&block) {
                                 if mission.view() >= pre_mission.view() {
                                     trace!(target: LOG_TARGET, "Receive {:?} #{block} with view {} -> {}", mission.mode(), pre_mission.view(), mission.view());
                                     *pre_mission = mission;
+                                } else {
+                                    continue;
                                 }
                             } else {
                                 trace!(target: LOG_TARGET, "Receive {:?} #{block} with view {}", mission.mode(), mission.view());
@@ -430,6 +438,13 @@ where
                         ExecutorMission::Confirm(view, confirm) => {
                             let block = confirm.block_number();
                             if block <= self.client.info().finalized_number { continue; }
+                            let trace = self.interval_trace.clone();
+                            let round = confirm.round();
+                            let commit_hash = confirm.commit_hash();
+                            let now = SystemTime::now();
+                            tokio::spawn(async move {
+                                trace.write().await.on_confirm(now, &round, &commit_hash, block);
+                            });
                             if let Some(pre_confirm) = self.confirms.get_mut(&block) {
                                 if confirm.view() > pre_confirm.view() {
                                     trace!(target: LOG_TARGET, "Receive confirm for #{block} with view {view}");

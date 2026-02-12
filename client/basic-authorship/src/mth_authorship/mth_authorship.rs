@@ -381,7 +381,7 @@ where
         )
             .await?;
         info.set_group_info(group_output.info);
-        self.oracle.update_execute_info(&info);
+        self.oracle.update_execute_info(info.clone());
         info!(target: LOG_TARGET, "🎁 [Propose] {}", info.info(true));
         telemetry!(
 			self.telemetry;
