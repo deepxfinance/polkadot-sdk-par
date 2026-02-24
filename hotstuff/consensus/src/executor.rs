@@ -153,12 +153,13 @@ where
     ///     `Ok(true)` if import success.
     ///     `Ok(false)` if not confirmed.
     ///     `Err(_)` if any other error.
-    async fn try_import_block(&mut self, mut import: ImportMission<B, C>) -> Result<bool, String> {
-        let full_import_start = Instant::now();
-        let best_block = self.client.info().best_number;
-        if import.mission.block_number() <= best_block {
+    async fn try_import_block(&mut self, start: SystemTime, mut import: ImportMission<B, C>) -> Result<bool, String> {
+        let target_block = self.client.info().best_number.saturating_add(1u32.into());
+        if import.mission.block_number() < target_block {
             // this may happen if block imported by Synchronization before we lock this.
             return Ok(true);
+        } else if import.mission.block_number() > target_block {
+            return Ok(false);
         }
         let confirm = match self.confirms.get(&import.mission.block_number()).cloned() {
             Some(confirm) => confirm,
@@ -176,10 +177,10 @@ where
         let import_time = self.oracle.import_time().as_millis() as u64;
         let import_start = commit_time.saturating_sub(import_time);
         let current = Timestamp::current().as_millis();
-        let mut wait = 0;
+        let mut wait = Default::default();
         if current < import_start {
-            wait = import_start - current;
-            tokio::time::sleep(Duration::from_millis(wait)).await;
+            wait = Duration::from_millis(import_start - current);
+            tokio::time::sleep(wait).await;
         }
         match self.block_lock.import_block(import.import).await {
             Ok(res) => {
@@ -200,11 +201,12 @@ where
                 self.on_imported(header.number(), confirm.round(), confirm.commit_hash());
                 let trace = self.interval_trace.clone();
                 let now = SystemTime::now();
-                tokio::spawn(async move {
-                     trace.write().await.on_import(now, header);
-                });
-                import.info.set_import_time(full_import_start.elapsed().saturating_sub(Duration::from_millis(wait)));
+                let import_time = now.duration_since(start).unwrap_or_default();
+                import.info.set_import_time(import_time.saturating_sub(wait));
                 self.oracle.update_execute_info(import.info.clone());
+                tokio::spawn(async move {
+                    trace.write().await.on_import(now, header);
+                });
                 Ok(true)
             },
             Err(err) => {
@@ -216,35 +218,38 @@ where
     async fn try_import_all(&mut self) {
         let mut mission_block = self.client.info().best_number.saturating_add(1u32.into());
         loop {
+            let start = SystemTime::now();
             let import = match self.imports.remove(&mission_block) {
                 Some(mission) => mission,
                 None => break,
             };
             self.block_lock.lock(BlockOrigin::ConsensusBroadcast, mission_block).await;
-            match self.try_import_block(import.into_inner()).await {
+            let result = self.try_import_block(start, import.into_inner()).await;
+            self.block_lock.unlock(BlockOrigin::ConsensusBroadcast, mission_block).await;
+            match result {
                 Ok(imported) => if !imported { break; }
                 Err(e) => {
                     error!(target: LOG_TARGET, "Block {mission_block} import failed for {e}");
                     break;
                 }
             }
-            self.block_lock.unlock(BlockOrigin::ConsensusBroadcast, mission_block).await;
             mission_block = mission_block.saturating_add(1u32.into());
         }
     }
 
     // Execute one block and try import, return execute info.
-    async fn execute_mission(&mut self, mission: BlockMission<B>) -> Result<(), String> {
-        let execute_start = std::time::Instant::now();
+    async fn execute_mission(&mut self, mission_block: NumberFor<B>) -> Result<bool, String> {
+        let execute_start = Instant::now();
         let best_block = self.client.info().best_number;
         let best_hash = self.client.info().best_hash;
-        let mission_block = mission.block_number();
-        if best_block >= mission_block {
-            trace!(target: LOG_TARGET, "skip old block #{mission_block} for best_block #{best_block}");
-            return Ok(());
-        } else if mission_block != best_block.saturating_add(1u32.into()) {
-            return Err(format!("skip next block #{mission_block} for too far than best #{best_block}"));
+        // check block after locked.
+        if mission_block != best_block.saturating_add(1u32.into()) {
+            return Ok(false);
         }
+        let mission = match self.missions.remove(&mission_block) {
+            Some(mission) => mission.clone(),
+            None => return Ok(false),
+        };
         // check parent block's commit qc hash. ensure correct chain fork.
         if mission_block > 1u32.into() {
             let (parent_round, parent_commit_hash) = if let Some(parent) = self.commit_hash.get(&best_block) {
@@ -281,7 +286,7 @@ where
         let slot = inherent_data_providers.slot();// Never yield the same slot twice.
         if slot <= self.last_slot {
             error!(target: LOG_TARGET, "Best block number: {best_block}, next block number: {mission_block} Skipped for last_slot {}, current_slot {slot}", self.last_slot);
-            return Ok(());
+            return Ok(true);
         }
         let inherent_data = inherent_data_providers.create_inherent_data().await.expect("create_inherent_data");
 
@@ -320,6 +325,7 @@ where
         ).await {
             Ok(propose) => propose,
             Err(e) => {
+                self.missions.insert(mission_block, mission);
                 return Err(format!("Propose block {mission_block} failed for {e:?}"));
             }
         };
@@ -339,41 +345,35 @@ where
         ).await {
             Ok(import_params) => import_params,
             Err(e) => {
+                self.missions.insert(mission_block, mission);
                 return Err(format!("Propose block {mission_block} get block_import_params failed for {e:?}"));
             }
         };
         let trace = self.interval_trace.clone();
         let view = mission.view();
-        info.set_time_by_executor(execute_start.elapsed());
-        let time_by_executor = info.time_by_executor;
         let txs = info.applied();
         let now = SystemTime::now();
+        info.set_time_by_executor(execute_start.elapsed());
+        let time_by_executor = info.time_by_executor;
         tokio::spawn(async move {
             trace.write().await.on_executed(now, mission_block, view, time_by_executor, txs);
         });
         // try import block
-        self.try_import_block(ImportMission::new(mission, slot, block_import_params, info)).await?;
-        Ok(())
+        self.try_import_block(SystemTime::now(), ImportMission::new(mission, slot, block_import_params, info)).await?;
+        Ok(true)
     }
 
     async fn try_execute_all(&mut self) {
         loop  {
             let mission_block = self.client.info().best_number.saturating_add(1u32.into());
-            let mission = match self.missions.get(&mission_block) {
-                Some(mission) => mission.clone(),
-                None => break,
-            };
-
             // execute block and try import
             self.block_lock.lock(BlockOrigin::ConsensusBroadcast, mission_block).await;
-            let result = self.execute_mission(mission).await;
+            let result = self.execute_mission(mission_block).await;
             self.block_lock.unlock(BlockOrigin::ConsensusBroadcast, mission_block).await;
             match result {
-                Ok(()) => {
-                    self.missions.remove(&mission_block);
-                },
+                Ok(handled) => if !handled { break; },
                 Err(e) => {
-                    warn!(target: LOG_TARGET, "ExecuteFailed: {e}");
+                    warn!(target: LOG_TARGET, "ExecuteFailed for block {mission_block}: {e}");
                     break;
                 }
             }
@@ -408,7 +408,7 @@ where
                 }
                 for mission in missions {
                     match mission {
-                        ExecutorMission::Execute(mission) => {
+                        ExecutorMission::Execute(now, mission) => {
                             let block = mission.block_number();
                             if block <= self.client.info().finalized_number { continue; }
                             if let Some(import) = self.imports.get(&block) {
@@ -418,7 +418,6 @@ where
                             }
                             if let Some(commit) = mission.block_commit() {
                                 let trace = self.interval_trace.clone();
-                                let now = SystemTime::now();
                                 tokio::spawn(async move {
                                     trace.write().await.on_commit(now, commit);
                                 });
@@ -435,13 +434,12 @@ where
                                 self.missions.insert(block, mission);
                             }
                         }
-                        ExecutorMission::Confirm(view, confirm) => {
+                        ExecutorMission::Confirm(now, view, confirm) => {
                             let block = confirm.block_number();
                             if block <= self.client.info().finalized_number { continue; }
                             let trace = self.interval_trace.clone();
                             let round = confirm.round();
                             let commit_hash = confirm.commit_hash();
-                            let now = SystemTime::now();
                             tokio::spawn(async move {
                                 trace.write().await.on_confirm(now, &round, &commit_hash, block);
                             });

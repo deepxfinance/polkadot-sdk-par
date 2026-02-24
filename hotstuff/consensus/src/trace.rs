@@ -78,7 +78,7 @@ impl<B: BlockT> IntervalTrace<B> {
         }
     }
 
-    /// Consensus block N start when:
+    /// Consensus block N(Confirm block N-1) start when:
     ///     1.Import N-2 finish.
     ///     2.Commit(consensus) N-1 finish.
     pub fn commit_time(&self, block: NumberFor<B>) -> Option<(TraceStage<B>, TraceStage<B>)> {
@@ -121,7 +121,7 @@ impl<B: BlockT> IntervalTrace<B> {
         None
     }
 
-    /// Confirm block N start when:
+    /// Confirm block N(Consensus block N+1) start when:
     ///     1.Import N-1 finish.
     ///     2.Commit(consensus) N finish.
     /// Start rule is same with `execute`
@@ -193,7 +193,7 @@ impl<B: BlockT> IntervalTrace<B> {
             if let Some((_, commit_finish)) = &commit_info {
                 if start.time() > commit_finish.time() {
                     let gap_time = start.time().duration_since(*commit_finish.time()).unwrap_or_default();
-                    process += &format!("-G({:?})-{}({:?})", gap_time, finish.id(), time);
+                    process += &format!("-{}({:?})-{}({:?})", start.id(), gap_time, finish.id(), time);
                 } else {
                     process += &format!("-{}({:?})", finish.id(), time);
                 }
@@ -237,7 +237,7 @@ impl<B: BlockT> IntervalTrace<B> {
             if let Some((_, _, execute_finish)) = &execute_info {
                 if start.time() > execute_finish.time() {
                     let gap_time = start.time().duration_since(*execute_finish.time()).unwrap_or_default();
-                    process += &format!("-G({:?})-{}({:?})", gap_time, finish.id(), time);
+                    process += &format!("-{}({:?})-{}({:?})", start.id(), gap_time, finish.id(), time);
                 } else {
                     process += &format!("-{}({:?})", finish.id(), time);
                 }
@@ -278,7 +278,7 @@ impl<B: BlockT> IntervalTrace<B> {
                 .map(|pre| format!(" ({:?})", pre.1.elapsed().unwrap()))
                 .unwrap_or("".into()),
         );
-        if self.commit.len() > self.analyze_block_interval {
+        if self.commit.len() > self.analyze_block_interval + 2 {
             let last_analyze_block = block.saturating_sub((self.analyze_block_interval as u32).into());
             if let Some((last_view, last_time)) = self.commit.get(&last_analyze_block) {
                 info!(
@@ -288,7 +288,7 @@ impl<B: BlockT> IntervalTrace<B> {
                     commit.view(),
                 );
             }
-            let mut remove_block = last_analyze_block;
+            let mut remove_block = last_analyze_block.saturating_sub(2u32.into());
             let to_block = block.saturating_sub(2u32.into());
             loop {
                 if remove_block >= to_block { break; }
@@ -310,7 +310,7 @@ impl<B: BlockT> IntervalTrace<B> {
             self.execute.insert(block, (view, time, now, new_tx_count));
         }
         self.tx_count = new_tx_count;
-        if self.execute.len() > self.analyze_block_interval {
+        if self.execute.len() > self.analyze_block_interval + 2 {
             let last_analyze_block = block.saturating_sub((self.analyze_block_interval as u32).into());
             if let Some((_, _, last_time, last_tx_count)) = self.execute.get(&last_analyze_block) {
                 let total_tx = new_tx_count.saturating_sub(*last_tx_count) as u128;
@@ -322,7 +322,7 @@ impl<B: BlockT> IntervalTrace<B> {
                     total_tx * 1_000_000 / elapsed,
                 );
             }
-            let mut remove_block = last_analyze_block;
+            let mut remove_block = last_analyze_block.saturating_sub(2u32.into());
             let to_block = block.saturating_sub(2u32.into());
             loop {
                 if remove_block >= to_block { break; }
@@ -349,12 +349,10 @@ impl<B: BlockT> IntervalTrace<B> {
                 .map(|pre| format!(" ({:?})", pre.1.elapsed().unwrap()))
                 .unwrap_or("".into()),
         );
-        if log::log_enabled!(target: TRACE_LOG_TARGET, log::Level::Debug) {
-            if let Some(analyze_info) = self.analyze_consensus_process(block) {
-                debug!(target: TRACE_LOG_TARGET, "[Con] {block} {analyze_info}");
-            }
+        if let Some(analyze_info) = self.analyze_consensus_process(block) {
+            debug!(target: TRACE_LOG_TARGET, "[Con] {block} {analyze_info}");
         }
-        if self.confirm.len() > self.analyze_block_interval {
+        if self.confirm.len() > self.analyze_block_interval + 2 {
             let last_analyze_block = block.saturating_sub((self.analyze_block_interval as u32).into());
             if let Some((last_view, last_time)) = self.confirm.get(&last_analyze_block) {
                 info!(
@@ -364,7 +362,7 @@ impl<B: BlockT> IntervalTrace<B> {
                     round.view,
                 );
             }
-            let mut remove_block = last_analyze_block;
+            let mut remove_block = last_analyze_block.saturating_sub(2u32.into());
             let to_block = block.saturating_sub(2u32.into());
             loop {
                 if remove_block >= to_block { break; }
@@ -391,12 +389,10 @@ impl<B: BlockT> IntervalTrace<B> {
                 .map(|pre| format!(" ({:?})", pre.1.elapsed().unwrap()))
                 .unwrap_or("".into()),
         );
-        if log::log_enabled!(target: TRACE_LOG_TARGET, log::Level::Debug) {
-            if let Some(analyze_info) = self.analyze_exe_import_process(*block) {
-                debug!(target: TRACE_LOG_TARGET, "[Exe] {block} {analyze_info}");
-            }
+        if let Some(analyze_info) = self.analyze_exe_import_process(*block) {
+            debug!(target: TRACE_LOG_TARGET, "[Exe] {block} {analyze_info}");
         }
-        if self.import.len() > self.analyze_block_interval {
+        if self.import.len() > self.analyze_block_interval + 2 {
             let last_analyze_block = block.saturating_sub((self.analyze_block_interval as u32).into());
             if let Some((_, last_time)) = self.import.get(&last_analyze_block) {
                 info!(
@@ -405,7 +401,7 @@ impl<B: BlockT> IntervalTrace<B> {
                     now.duration_since(*last_time).unwrap_or_default().as_micros() / self.analyze_block_interval as u128 / 1000,
                 );
             }
-            let mut remove_block = last_analyze_block;
+            let mut remove_block = last_analyze_block.saturating_sub(2u32.into());
             let to_block = block.saturating_sub(2u32.into());
             loop {
                 if remove_block >= to_block { break; }

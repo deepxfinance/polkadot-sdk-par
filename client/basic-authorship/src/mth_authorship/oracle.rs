@@ -2,7 +2,7 @@ use std::env;
 use std::marker::PhantomData;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use log::{debug, warn};
+use log::{trace, debug, warn};
 use sp_api::BlockT;
 use sp_runtime::{PerThing, Permill, Rounding};
 use crate::BlockExecuteInfo;
@@ -14,6 +14,8 @@ pub const EXECUTE_WINDOW_SIZE: usize = 30000;
 pub trait BlockOracle<B: BlockT> {
     /// update block_duration.
     fn update_block_duration(&self, time: Duration);
+    /// update reserve time.
+    fn update_reserve_time(&self, time: Duration) -> Duration;
     /// update oracle by last block execute info.
     fn update_execute_info(&self, info: BlockExecuteInfo<B>);
     /// get expected block_duration.
@@ -230,8 +232,22 @@ impl<B: BlockT> ExecutionOracle<B> {
 
 impl<B: BlockT> BlockOracle<B> for ExecutionOracle<B> {
     fn update_block_duration(&self, time: Duration) {
+        trace!(target: "oracle_exec", "[Update] block_duration {:?}μs", time.as_micros());
         *self.block_duration.lock().unwrap() = time;
-        debug!(target: "oracle_exec", "[Update] block_duration {:?}μs", time.as_micros());
+    }
+
+    fn update_reserve_time(&self, time: Duration) -> Duration {
+        let pre_reserve_time = self.reserve_time.lock().unwrap().clone();
+        if pre_reserve_time > Duration::default() {
+            let new_reserve_time = (pre_reserve_time + time * 2) / 3;
+            // trace!(target: "oracle_exec", "[Update] reserve_time {:?}->{:?}μs", pre_reserve_time.as_micros(), new_reserve_time.as_micros());
+            *self.reserve_time.lock().unwrap() = new_reserve_time;
+            new_reserve_time
+        } else {
+            // trace!(target: "oracle_exec", "[Update] reserve_time {:?}μs", time.as_micros());
+            *self.reserve_time.lock().unwrap() = time;
+            time
+        }
     }
 
     fn update_execute_info(&self, info: BlockExecuteInfo<B>) {
@@ -248,14 +264,17 @@ impl<B: BlockT> BlockOracle<B> for ExecutionOracle<B> {
                 update_info += &format!(" exe_avg {}μs, new_avg_tx {}μs", exe_avg.as_micros(), new_avg_tx.as_micros());
             }
             if !update_permill.is_empty() || !update_info.is_empty() {
-                let executor_full_millis = info.time_by_executor.as_millis() + info.import.as_millis();
-                let full_millis = info.time.as_millis() + info.import.as_millis();
-                let block_duration = oracle.block_duration().as_millis();
-                if executor_full_millis > block_duration {
+                let executor_full_time = info.time_by_executor + info.import;
+                let full_time = info.time + info.import;
+                let block_duration = oracle.block_duration();
+                let update_reserve_time_info = if executor_full_time > block_duration {
                     // update reserve time.
-                    let new_reserve_time = Duration::from_millis(executor_full_millis.saturating_sub(full_millis) as u64);
-                    *oracle.reserve_time.lock().unwrap() = new_reserve_time;
-                }
+                    let new_reserve_time = executor_full_time.saturating_sub(full_time);
+                    let updated_reserve_time = oracle.update_reserve_time(new_reserve_time);
+                    format!(" reserve {new_reserve_time:?} new_reserve {updated_reserve_time:?}")
+                } else {
+                    "".to_string()
+                };
                 let (mth_t, mth_n) = info.mth_applied();
                 let mth_info = if mth_t > 0 || mth_n > 0 {
                     format!(" {mth_n}({mth_t})")
@@ -267,7 +286,7 @@ impl<B: BlockT> BlockOracle<B> for ExecutionOracle<B> {
                 } else {
                     "".to_string()
                 };
-                debug!(target: "oracle_exec", "[Update] Block {} ({full_millis}/{block_duration} ms{mth_info}{single_info}{update_permill}){update_info}", info.number);
+                debug!(target: "oracle_exec", "[Update] Block {} ({full_time:?}/{block_duration:?}{mth_info}{single_info}{update_permill}){update_info}{update_reserve_time_info}", info.number);
             }
         });
     }

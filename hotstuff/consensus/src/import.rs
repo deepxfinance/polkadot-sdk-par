@@ -237,7 +237,10 @@ where
 							warn!(target: LOG_TARGET, "FinalizeBlock #{} ({}) failed for {e:?}", header.number(), header.hash());
 						}
 					}
-					log::debug!(target: LOG_TARGET, "ImportBlock #{} in {:?}", header.number(), start.elapsed());
+					let import_time = start.elapsed();
+					log::debug!(target: LOG_TARGET, "ImportBlock #{} in {import_time:?}", header.number());
+					block_execute_info.as_mut()
+						.map(|info| info.set_import_time(import_time));
 					result
 				} else {
 					Ok(ImportResult::UnknownParent)

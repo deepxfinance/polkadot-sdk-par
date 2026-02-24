@@ -198,6 +198,10 @@ impl<B: BlockT, O: BlockOracle<B> + Clone + Send + Sync + 'static> BlockOracle<B
         self.inner.update_block_duration(time);
     }
 
+    fn update_reserve_time(&self, time: Duration) -> Duration {
+        self.inner.update_reserve_time(time)
+    }
+
     fn update_execute_info(&self, info: BlockExecuteInfo<B>) {
         let oracle = (*self).clone();
         std::thread::spawn(move || {

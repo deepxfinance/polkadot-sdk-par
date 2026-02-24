@@ -1,4 +1,5 @@
 use std::str::FromStr;
+use std::time::SystemTime;
 use sp_api::{BlockT, HeaderT, ProvideRuntimeApi, TransactionFor};
 use codec::{Encode, Decode};
 use hotstuff_primitives::digests::CompatibleDigestItem;
@@ -173,9 +174,9 @@ impl<B: BlockT, C: ProvideRuntimeApi<B>> ImportMission<B, C> {
 }
 pub enum ExecutorMission<B: BlockT> {
     /// A new block can be executed.
-    Execute(BlockMission<B>),
+    Execute(SystemTime, BlockMission<B>),
     /// A block can be imported.
-    Confirm(ViewNumber, BlockCommit<B>),
+    Confirm(SystemTime, ViewNumber, BlockCommit<B>),
 }
 
 /// We use this to wrap BlockImportParams since we ensure it is thread safe.

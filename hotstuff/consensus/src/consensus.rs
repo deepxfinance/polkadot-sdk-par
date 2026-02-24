@@ -7,7 +7,7 @@ use std::{
 use std::collections::{HashMap, HashSet};
 use std::marker::PhantomData;
 use std::str::FromStr;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 use async_recursion::async_recursion;
 use futures::{channel::mpsc::Receiver as Recv, Future, StreamExt};
 
@@ -722,7 +722,7 @@ where
         let block_number = proposal.payload.block_number();
         match (self.mode, proposal.payload.stage) {
             (ExecuteMode::Unchecked, ConsensusStage::Prepare) => {
-                let mission = ExecutorMission::Execute(BlockMission {
+                let mission = ExecutorMission::Execute(SystemTime::now(), BlockMission {
                     stage: ExecuteStage::Unchecked(PendingBlock {
                         parent_commit: self.commit.clone(),
                         view: proposal.view,
@@ -738,7 +738,7 @@ where
             (ExecuteMode::Checked, ConsensusStage::PreCommit) => {
                 let parent_proposal = self.aux_data.get_proposal_parent(&proposal)?
                     .ok_or(HotstuffError::GetProposal(format!("no parent_proposal for proposal {}", proposal.round())))?;
-                let mission = ExecutorMission::Execute(BlockMission {
+                let mission = ExecutorMission::Execute(SystemTime::now(), BlockMission {
                     stage: ExecuteStage::Checked(PendingBlock {
                         parent_commit: self.commit.clone(),
                         view: proposal.view,
@@ -779,7 +779,7 @@ where
                 // Prepare finished, we can confirm that commited parent block can be imported and finalized.
                 let confirm_block = self.commit.block_number();
                 if confirm_block > 0u32.into() && confirm_block.saturating_add(1u32.into()) == qc_proposal.payload.block_number() {
-                    let mission = ExecutorMission::Confirm(qc_proposal.view, self.commit.clone());
+                    let mission = ExecutorMission::Confirm(SystemTime::now(), qc_proposal.view, self.commit.clone());
                     if self.executor_tx.send(mission).is_err() {
                         warn!(target: CLIENT_LOG_TARGET, "~~ trigger_qc_mission({from}). block {confirm_block} confirm mission send failed");
                     }
@@ -812,7 +812,7 @@ where
                     // send execute block mission to a block execute queue and execute/import it.
                     let extrinsics = grandpa.payload.extrinsics.clone().unwrap();
                     // event not ExecuteMode is not Commit, we still notify executor `commit` for trace.
-                    let mission = ExecutorMission::Execute(BlockMission {
+                    let mission = ExecutorMission::Execute(SystemTime::now(), BlockMission {
                         stage: ExecuteStage::Commit(commit.clone()),
                         block: grandpa.payload.block.clone(),
                         extrinsics: extrinsics.clone(),
