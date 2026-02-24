@@ -1577,9 +1577,15 @@ impl<T: Config> Pallet<T> {
 	///
 	/// Should only be called if you know what you are doing and outside of the runtime block
 	/// execution else it can have a large impact on the PoV size of a block.
+	#[cfg(not(feature = "std"))]
 	pub fn read_events_no_consensus(
 	) -> impl sp_std::iter::Iterator<Item = Box<EventRecord<T::RuntimeEvent, T::Hash>>> {
 		Events::<T>::stream_iter()
+	}
+
+	#[cfg(feature = "std")]
+    pub fn read_events_no_consensus() -> impl sp_std::iter::Iterator<Item = Box<EventRecord<T::RuntimeEvent, T::Hash>>> {
+		Events::<T>::get_ref().map_value_query(|events| events.clone()).into_iter()
 	}
 
 	/// Set the block number to something in particular. Can be used as an alternative to
