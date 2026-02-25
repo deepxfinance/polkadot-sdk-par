@@ -161,7 +161,7 @@ where
         } else if import.mission.block_number() > target_block {
             return Ok(false);
         }
-        let confirm = match self.confirms.get(&import.mission.block_number()).cloned() {
+        let confirm = match self.confirms.remove(&import.mission.block_number()) {
             Some(confirm) => confirm,
             None => {
                 // not confirmed, insert back to import list.
@@ -197,7 +197,6 @@ where
                     }
                 }
                 // remove confirm.
-                self.confirms.remove(header.number());
                 self.on_imported(header.number(), confirm.round(), confirm.commit_hash());
                 let trace = self.interval_trace.clone();
                 let now = SystemTime::now();
@@ -210,6 +209,7 @@ where
                 Ok(true)
             },
             Err(err) => {
+                self.confirms.insert(*header.number(), confirm);
                 Err(format!("Import block {}:{} {err}", header.number(), header.hash()))
             },
         }
@@ -239,7 +239,7 @@ where
 
     // Execute one block and try import, return execute info.
     async fn execute_mission(&mut self, mission_block: NumberFor<B>) -> Result<bool, String> {
-        let execute_start = Instant::now();
+        let execute_start = SystemTime::now();
         let best_block = self.client.info().best_number;
         let best_hash = self.client.info().best_hash;
         // check block after locked.
@@ -353,13 +353,13 @@ where
         let view = mission.view();
         let txs = info.applied();
         let now = SystemTime::now();
-        info.set_time_by_executor(execute_start.elapsed());
+        info.set_time_by_executor(now.duration_since(execute_start).unwrap_or_default());
         let time_by_executor = info.time_by_executor;
         tokio::spawn(async move {
             trace.write().await.on_executed(now, mission_block, view, time_by_executor, txs);
         });
         // try import block
-        self.try_import_block(SystemTime::now(), ImportMission::new(mission, slot, block_import_params, info)).await?;
+        self.try_import_block(now, ImportMission::new(mission, slot, block_import_params, info)).await?;
         Ok(true)
     }
 

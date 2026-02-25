@@ -192,10 +192,10 @@ impl<B: BlockT> ExecutionOracle<B> {
         }
         let full_time = info.time.as_nanos() + info.import.as_nanos();
         let import_permill = Permill::from_rational(info.import.as_nanos(), full_time);
-        let mut update_import = false;
+        let mut update_import = "";
         if full_time >= self.block_duration.lock().unwrap().as_nanos() / 2 {
             *self.import_permill.lock().unwrap() = import_permill;
-            update_import = true;
+            update_import = "(*)";
         }
 
         let pool_permill = Permill::from_rational(info.group.time.as_micros(), info.time.as_micros());
@@ -208,20 +208,20 @@ impl<B: BlockT> ExecutionOracle<B> {
             let execute_permill = Permill::one() - except_execute_permill;
             if !pool_permill.is_zero() {
                 // *self.pool_permill.lock().unwrap() = pool_permill;
-                update += &format!(" pool {:?}", pool_permill * full_execute_permill);
+                update += &format!(" P {:?}", pool_permill * full_execute_permill);
             }
             if !execute_permill.is_zero() {
                 *self.execution_permill.lock().unwrap() = execute_permill;
-                update += &format!(" execute {:?}", execute_permill * full_execute_permill);
+                update += &format!(" E {:?}", execute_permill * full_execute_permill);
             }
             if !merge_permill.is_zero() {
                 *self.merge_permill.lock().unwrap() = merge_permill;
-                update += &format!(" merge {:?}", merge_permill * full_execute_permill);
+                update += &format!(" M {:?}", merge_permill * full_execute_permill);
             }
             if !update.is_empty() {
-                update += &format!(" finalize {:?}", finalize_permill * full_execute_permill);
+                update += &format!(" F {:?}", finalize_permill * full_execute_permill);
             }
-            update += &format!(" import {:?}({update_import})", import_permill);
+            update += &format!(" I{update_import} {:?}", import_permill);
             if !update.is_empty() { return Some(update); }
         } else {
             warn!(target: "oracle_exec", "[Update] Block {block} (pool({pool_permill:?}) + merge({merge_permill:?}) + finalize({finalize_permill:?})) > 100% with no time for execute!!!");
@@ -261,7 +261,7 @@ impl<B: BlockT> BlockOracle<B> for ExecutionOracle<B> {
             // debug info
             let mut update_info = "".to_string();
             if let Some((exe_avg, new_avg_tx)) = update_avg {
-                update_info += &format!(" exe_avg {}μs, new_avg_tx {}μs", exe_avg.as_micros(), new_avg_tx.as_micros());
+                update_info += &format!(" avg_exe ({} {}μs)", exe_avg.as_micros(), new_avg_tx.as_micros());
             }
             if !update_permill.is_empty() || !update_info.is_empty() {
                 let executor_full_time = info.time_by_executor + info.import;
@@ -271,7 +271,7 @@ impl<B: BlockT> BlockOracle<B> for ExecutionOracle<B> {
                     // update reserve time.
                     let new_reserve_time = executor_full_time.saturating_sub(full_time);
                     let updated_reserve_time = oracle.update_reserve_time(new_reserve_time);
-                    format!(" reserve {new_reserve_time:?} new_reserve {updated_reserve_time:?}")
+                    format!(" reserve ({new_reserve_time:?} {updated_reserve_time:?})")
                 } else {
                     "".to_string()
                 };

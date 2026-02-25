@@ -1,10 +1,10 @@
 use std::collections::HashMap;
 use std::time::{Duration, SystemTime};
-use log::{debug, info};
+use log::{debug, info, trace};
 use sp_api::BlockT;
 use sp_runtime::Saturating;
 use sp_runtime::traits::{Header, NumberFor};
-use crate::{CLIENT_LOG_TARGET, TRACE_LOG_TARGET};
+use crate::TRACE_LOG_TARGET;
 use crate::error::ViewNumber;
 use crate::message::{BlockCommit, Round};
 
@@ -267,15 +267,14 @@ impl<B: BlockT> IntervalTrace<B> {
         } else {
             self.commit.insert(block, (commit.view(), now));
         }
-        let parent_block = block.saturating_sub(1u32.into());
-        info!(
-            target: CLIENT_LOG_TARGET,
+        trace!(
+            target: TRACE_LOG_TARGET,
             "[Commit] block {block} by QC {}:{}{}",
             commit.round(),
             commit.commit_hash(),
             self.commit
-                .get(&parent_block)
-                .map(|pre| format!(" ({:?})", pre.1.elapsed().unwrap()))
+                .get(&block.saturating_sub(1u32.into()))
+                .map(|pre| format!(" ({:?})", now.duration_since(pre.1).unwrap_or_default()))
                 .unwrap_or("".into()),
         );
         if self.commit.len() > self.analyze_block_interval + 2 {
@@ -283,7 +282,7 @@ impl<B: BlockT> IntervalTrace<B> {
             if let Some((last_view, last_time)) = self.commit.get(&last_analyze_block) {
                 info!(
                     target: TRACE_LOG_TARGET,
-                    "[Commit] Avg {}ms(block #{last_analyze_block}->#{block} view {last_view}->{})",
+                    "[AvgCommit] {}ms(#{last_analyze_block}->#{block} view {last_view}->{})",
                     now.duration_since(*last_time).unwrap_or_default().as_micros() / self.analyze_block_interval as u128 / 1000,
                     commit.view(),
                 );
@@ -310,6 +309,14 @@ impl<B: BlockT> IntervalTrace<B> {
             self.execute.insert(block, (view, time, now, new_tx_count));
         }
         self.tx_count = new_tx_count;
+        trace!(
+            target: TRACE_LOG_TARGET,
+            "[Execute] block {block}{}",
+            self.execute
+                .get(&block.saturating_sub(1u32.into()))
+                .map(|pre| format!(" ({:?})", now.duration_since(pre.2).unwrap_or_default()))
+                .unwrap_or("".into()),
+        );
         if self.execute.len() > self.analyze_block_interval + 2 {
             let last_analyze_block = block.saturating_sub((self.analyze_block_interval as u32).into());
             if let Some((_, _, last_time, last_tx_count)) = self.execute.get(&last_analyze_block) {
@@ -317,7 +324,7 @@ impl<B: BlockT> IntervalTrace<B> {
                 let elapsed = now.duration_since(*last_time).unwrap_or_default().as_micros();
                 info!(
                     target: TRACE_LOG_TARGET,
-                    "[Execute] Avg {}ms tps {}(block #{last_analyze_block}->#{block})",
+                    "[AvgExecute] {}ms tps {}(#{last_analyze_block}->#{block})",
                     elapsed / self.analyze_block_interval as u128 / 1000,
                     total_tx * 1_000_000 / elapsed,
                 );
@@ -340,13 +347,12 @@ impl<B: BlockT> IntervalTrace<B> {
         } else {
             self.confirm.insert(block, (round.view, now));
         }
-        let parent_block = block.saturating_sub(1u32.into());
-        info!(
-            target: CLIENT_LOG_TARGET,
+        trace!(
+            target: TRACE_LOG_TARGET,
             "[Confirm] block {block} by QC {round}:{proposal_hash}{}",
             self.confirm
-                .get(&parent_block)
-                .map(|pre| format!(" ({:?})", pre.1.elapsed().unwrap()))
+                .get(&block.saturating_sub(1u32.into()))
+                .map(|pre| format!(" ({:?})", now.duration_since(pre.1).unwrap_or_default()))
                 .unwrap_or("".into()),
         );
         if let Some(analyze_info) = self.analyze_consensus_process(block) {
@@ -357,7 +363,7 @@ impl<B: BlockT> IntervalTrace<B> {
             if let Some((last_view, last_time)) = self.confirm.get(&last_analyze_block) {
                 info!(
                     target: TRACE_LOG_TARGET,
-                    "[Confirm] Avg {}ms(block #{last_analyze_block}->#{block} view {last_view}->{})",
+                    "[AvgConfirm] {}ms(#{last_analyze_block}->#{block} view {last_view}->{})",
                     now.duration_since(*last_time).unwrap_or_default().as_micros() / self.analyze_block_interval as u128 / 1000,
                     round.view,
                 );
@@ -380,13 +386,12 @@ impl<B: BlockT> IntervalTrace<B> {
         } else {
             self.import.insert(*block, (header.hash(), now));
         }
-        let parent_block = block.saturating_sub(1u32.into());
-        info!(
-            target: CLIENT_LOG_TARGET,
-            "[Imported] block {block}{}",
+        trace!(
+            target: TRACE_LOG_TARGET,
+            "[Import] block {block}{}",
             self.import
-                .get(&parent_block)
-                .map(|pre| format!(" ({:?})", pre.1.elapsed().unwrap()))
+                .get(&block.saturating_sub(1u32.into()))
+                .map(|pre| format!(" ({:?})", now.duration_since(pre.1).unwrap_or_default()))
                 .unwrap_or("".into()),
         );
         if let Some(analyze_info) = self.analyze_exe_import_process(*block) {
@@ -397,7 +402,7 @@ impl<B: BlockT> IntervalTrace<B> {
             if let Some((_, last_time)) = self.import.get(&last_analyze_block) {
                 info!(
                     target: TRACE_LOG_TARGET,
-                    "[Import] Avg {}ms(block #{last_analyze_block}->#{block})",
+                    "[AvgImport] {}ms(#{last_analyze_block}->#{block})",
                     now.duration_since(*last_time).unwrap_or_default().as_micros() / self.analyze_block_interval as u128 / 1000,
                 );
             }
