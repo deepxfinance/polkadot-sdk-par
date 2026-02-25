@@ -49,7 +49,7 @@ pub struct BlockExecutor<C: ClientForHotstuff<B, BE>, B: BlockT, I, PF, L: sc_co
     pub oracle: Arc<O>,
     pub executor_rx: UnboundedReceiver<ExecutorMission<B>>,
     /// Imported block `Round` and `commit hash`.
-    pub commit_hash: HashMap<NumberFor<B>, (Round, B::Hash)>,
+    pub imported: HashMap<NumberFor<B>, (Round, B::Hash)>,
     /// Block execution missions.
     pub missions: HashMap<NumberFor<B>, BlockMission<B>>,
     /// Block execution results to be imported.
@@ -87,7 +87,7 @@ where
         select_chain: SC,
         executor_rx: UnboundedReceiver<ExecutorMission<B>>,
     ) -> Self {
-        let mut commit_hash = HashMap::new();
+        let mut imported = HashMap::new();
         let best_info = client.info();
         if best_info.best_number > 0u32.into() {
             let best_header = client.header(best_info.best_hash)
@@ -95,7 +95,7 @@ where
                 .expect("no best block header");
             let best_block_commit = find_block_commit::<B>(&best_header)
                 .expect("best block header no block commit");
-            commit_hash.insert(best_info.best_number, (best_block_commit.round(), best_block_commit.commit_hash()));
+            imported.insert(best_info.best_number, (best_block_commit.round(), best_block_commit.commit_hash()));
         }
         let trace_interval = std::env::var("TRACE_INTERVAL").unwrap_or("50".into()).parse().unwrap_or(50);
         Self {
@@ -109,7 +109,7 @@ where
             last_slot: 0.into(),
             slot_duration,
             executor_rx,
-            commit_hash,
+            imported,
             missions: HashMap::new(),
             imports: HashMap::new(),
             confirms: HashMap::new(),
@@ -153,7 +153,7 @@ where
     ///     `Ok(true)` if import success.
     ///     `Ok(false)` if not confirmed.
     ///     `Err(_)` if any other error.
-    async fn try_import_block(&mut self, start: SystemTime, mut import: ImportMission<B, C>) -> Result<bool, String> {
+    async fn try_import(&mut self, start: SystemTime, mut import: ImportMission<B, C>) -> Result<bool, String> {
         let target_block = self.client.info().best_number.saturating_add(1u32.into());
         if import.mission.block_number() < target_block {
             // this may happen if block imported by Synchronization before we lock this.
@@ -224,7 +224,7 @@ where
                 None => break,
             };
             self.block_lock.lock(BlockOrigin::ConsensusBroadcast, mission_block).await;
-            let result = self.try_import_block(start, import.into_inner()).await;
+            let result = self.try_import(start, import.into_inner()).await;
             self.block_lock.unlock(BlockOrigin::ConsensusBroadcast, mission_block).await;
             match result {
                 Ok(imported) => if !imported { break; }
@@ -238,8 +238,7 @@ where
     }
 
     // Execute one block and try import, return execute info.
-    async fn execute_mission(&mut self, mission_block: NumberFor<B>) -> Result<bool, String> {
-        let execute_start = SystemTime::now();
+    async fn try_execute(&mut self, start: SystemTime, mission_block: NumberFor<B>) -> Result<bool, String> {
         let best_block = self.client.info().best_number;
         let best_hash = self.client.info().best_hash;
         // check block after locked.
@@ -252,7 +251,7 @@ where
         };
         // check parent block's commit qc hash. ensure correct chain fork.
         if mission_block > 1u32.into() {
-            let (parent_round, parent_commit_hash) = if let Some(parent) = self.commit_hash.get(&best_block) {
+            let (parent_round, parent_commit_hash) = if let Some(parent) = self.imported.get(&best_block) {
                 parent
             } else {
                 let parent_header = self.client.header(best_hash)
@@ -260,8 +259,8 @@ where
                     .ok_or(format!("skip next block #{mission_block} for no parent header"))?;
                 let parent_commit = find_block_commit::<B>(&parent_header)
                     .ok_or(format!("skip next block #{mission_block} for parent #{best_block} header have no commit!!!"))?;
-                self.commit_hash.insert(best_block, (parent_commit.round(), parent_commit.commit_hash()));
-                self.commit_hash.get(&best_block).unwrap()
+                self.imported.insert(best_block, (parent_commit.round(), parent_commit.commit_hash()));
+                self.imported.get(&best_block).unwrap()
             };
             if parent_commit_hash != &mission.parent_commit_hash() {
                 return Err(format!(
@@ -353,13 +352,13 @@ where
         let view = mission.view();
         let txs = info.applied();
         let now = SystemTime::now();
-        info.set_time_by_executor(now.duration_since(execute_start).unwrap_or_default());
+        info.set_time_by_executor(now.duration_since(start).unwrap_or_default());
         let time_by_executor = info.time_by_executor;
         tokio::spawn(async move {
             trace.write().await.on_executed(now, mission_block, view, time_by_executor, txs);
         });
         // try import block
-        self.try_import_block(now, ImportMission::new(mission, slot, block_import_params, info)).await?;
+        self.try_import(now, ImportMission::new(mission, slot, block_import_params, info)).await?;
         Ok(true)
     }
 
@@ -368,7 +367,7 @@ where
             let mission_block = self.client.info().best_number.saturating_add(1u32.into());
             // execute block and try import
             self.block_lock.lock(BlockOrigin::ConsensusBroadcast, mission_block).await;
-            let result = self.execute_mission(mission_block).await;
+            let result = self.try_execute(SystemTime::now(), mission_block).await;
             self.block_lock.unlock(BlockOrigin::ConsensusBroadcast, mission_block).await;
             match result {
                 Ok(handled) => if !handled { break; },
@@ -381,7 +380,7 @@ where
     }
 
     fn on_imported(&mut self, block: &NumberFor<B>, round: Round, commit_hash: B::Hash) {
-        self.commit_hash.insert(*block, (round, commit_hash));
+        self.imported.insert(*block, (round, commit_hash));
         self.missions.retain(|b, _| b > block);
         self.imports.retain(|b, _| b > block);
         self.confirms.retain(|b, _| b > block);
@@ -389,7 +388,7 @@ where
 
     fn retain(&mut self) {
         let best_number = self.client.info().best_number;
-        self.commit_hash.retain(|b, _| *b >= best_number);
+        self.imported.retain(|b, _| *b >= best_number);
         self.missions.retain(|b, _| *b > best_number);
         self.imports.retain(|b, _| *b > best_number);
         self.confirms.retain(|b, _| *b > best_number);
@@ -400,7 +399,7 @@ where
             if let Some(mission) = self.executor_rx.recv().await {
                 let mut missions = vec![mission];
                 loop {
-                    // try collect all mission to cancel mission before execute block.
+                    // try collect all missions before execute block.
                     match self.executor_rx.try_recv() {
                         Ok(mission) => missions.push(mission),
                         Err(_) => break,
