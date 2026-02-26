@@ -204,7 +204,7 @@ where
                 import.info.set_import_time(import_time.saturating_sub(wait));
                 self.oracle.update_execute_info(import.info.clone());
                 tokio::spawn(async move {
-                    trace.write().await.on_import(now, header);
+                    trace.write().await.on_import(now, wait, header);
                 });
                 Ok(true)
             },

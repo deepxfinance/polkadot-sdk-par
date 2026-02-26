@@ -193,7 +193,7 @@ impl<B: BlockT> ExecutionOracle<B> {
         let full_time = info.time.as_nanos() + info.import.as_nanos();
         let import_permill = Permill::from_rational(info.import.as_nanos(), full_time);
         let mut update_import = "";
-        if full_time >= self.block_duration.lock().unwrap().as_nanos() / 2 {
+        if full_time >= self.block_duration.lock().unwrap().as_nanos() * 4 / 5 {
             *self.import_permill.lock().unwrap() = import_permill;
             update_import = "(*)";
         }
