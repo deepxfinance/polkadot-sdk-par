@@ -3,7 +3,7 @@ pub mod types;
 use std::collections::HashMap;
 use std::marker::PhantomData;
 use std::sync::Arc;
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, SystemTime};
 use log::{debug, error, trace, warn};
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::sync::RwLock;
@@ -37,7 +37,7 @@ pub struct BestState<B: BlockT> {
     pub commit_hash: B::Hash,
 }
 
-pub struct BlockExecutor<C: ClientForHotstuff<B, BE>, B: BlockT, I, PF, L: sc_consensus::JustificationSyncLink<B>, BE: Backend<B>, CIDP, SC, O> {
+pub struct BlockExecutor<C: ClientForHotstuff<B, BE>, B: BlockT, I, PF: Environment<B>, L: sc_consensus::JustificationSyncLink<B>, BE: Backend<B>, CIDP, SC, O> {
     pub client: Arc<C>,
     pub proposer_factory: Arc<RwLock<PF>>,
     pub block_lock: I,
@@ -125,17 +125,15 @@ where
         body: Vec<B::Extrinsic>,
         storage_changes: StorageChanges<TransactionFor<C, B>, B>,
         groups: Vec<u32>,
-        commit: Option<BlockCommit<B>>,
+        commit: BlockCommit<B>,
         fork_choice: Option<ForkChoiceStrategy>,
     ) -> Result<BlockImportParams<B, TransactionFor<C, B>>, ConsensusError> {
         let mut import_block = BlockImportParams::new(BlockOrigin::ConsensusBroadcast, header);
         let groups_digest_item = <DigestItem as CompatibleDigestItem<Vec<u32>>>::hotstuff_seal(groups);
         import_block.post_digests.push(groups_digest_item);
         // claim for post_hash including `groups_digest_item`.
-        if let Some(commit) = commit {
-            let commit_digest_item = <DigestItem as CompatibleDigestItem<BlockCommit<B>>>::hotstuff_seal(commit);
-            import_block.post_digests.push(commit_digest_item);
-        }
+        let commit_digest_item = <DigestItem as CompatibleDigestItem<BlockCommit<B>>>::hotstuff_seal(commit);
+        import_block.post_digests.push(commit_digest_item);
         import_block.body = Some(body);
         import_block.state_action =
             StateAction::ApplyChanges(sc_consensus::StorageChanges::Changes(storage_changes));
@@ -161,19 +159,39 @@ where
         } else if import.mission.block_number() > target_block {
             return Ok(false);
         }
-        let confirm = match self.confirms.remove(&import.mission.block_number()) {
-            Some(confirm) => confirm,
-            None => {
-                // not confirmed, insert back to import list.
-                self.imports.insert(import.mission.block_number(), SafeWrap::new(import));
-                return Ok(false);
+        // ensure block confirmed before import.
+        match (import.mission.confirmed(), self.confirms.remove(&import.mission.block_number())) {
+            (false, confirm) => match confirm {
+                Some(confirm) => import.mission.confirm(confirm)?,
+                None => {
+                    // not confirmed, insert to import list.
+                    self.imports.insert(import.mission.block_number(), SafeWrap::new(import));
+                    return Ok(false);
+                }
+            }
+            _ => (),
+        }
+
+        // generate import params
+        let (header, body) = import.block.deconstruct();
+        let import_params = match self.block_import_params(
+            header,
+            body,
+            import.storage_changes,
+            import.info.groups(),
+            import.mission.commit_info().ok_or("block not confirmed".to_string())?,
+            Some(ForkChoiceStrategy::Custom(true)),
+        ).await {
+            Ok(import_params) => import_params,
+            Err(e) => {
+                return Err(format!("block {target_block} get block_import_params failed for {e:?}"));
             }
         };
-        import.confirm(&confirm)?;
-        let header = import.import.post_header();
+
+        let header = import_params.post_header();
 
         // We estimate import time to import block ahead of `commit_time` if possible
-        let commit_time = confirm.commit_time().as_millis();
+        let commit_time = import.mission.commit_time().as_millis();
         let import_time = self.oracle.import_time().as_millis() as u64;
         let import_start = commit_time.saturating_sub(import_time);
         let current = Timestamp::current().as_millis();
@@ -182,7 +200,7 @@ where
             wait = Duration::from_millis(import_start - current);
             tokio::time::sleep(wait).await;
         }
-        match self.block_lock.import_block(import.import).await {
+        match self.block_lock.import_block(import_params).await {
             Ok(res) => {
                 res.handle_justification(
                     &header.hash(),
@@ -196,8 +214,7 @@ where
                         warn!(target: LOG_TARGET, "FinalizeBlock #{} ({}) failed for {e:?}", header.number(), header.hash());
                     }
                 }
-                // remove confirm.
-                self.on_imported(header.number(), confirm.round(), confirm.commit_hash());
+                self.on_imported(header.number(), import.mission.info().round(), import.mission.commit_hash());
                 let trace = self.interval_trace.clone();
                 let now = SystemTime::now();
                 let import_time = now.duration_since(start).unwrap_or_default();
@@ -209,7 +226,6 @@ where
                 Ok(true)
             },
             Err(err) => {
-                self.confirms.insert(*header.number(), confirm);
                 Err(format!("Import block {}:{} {err}", header.number(), header.hash()))
             },
         }
@@ -245,8 +261,8 @@ where
         if mission_block != best_block.saturating_add(1u32.into()) {
             return Ok(false);
         }
-        let mission = match self.missions.remove(&mission_block) {
-            Some(mission) => mission.clone(),
+        let mut mission = match self.missions.remove(&mission_block) {
+            Some(mission) => mission,
             None => return Ok(false),
         };
         // check parent block's commit qc hash. ensure correct chain fork.
@@ -298,7 +314,8 @@ where
         let proposer = self.proposer_factory.write().await.init(&parent_header).await.expect("proposer init");
         let mut multi = vec![];
         let mut single = vec![];
-        let mut extrinsic = mission.extrinsics.clone();
+        // since we only use one time, just take extrinsics.
+        let mut extrinsic = mission.take_extrinsics();
         if extrinsic.len() >= 1 {
             multi = core::mem::take(&mut extrinsic[0]);
         }
@@ -317,37 +334,20 @@ where
             inherent_data,
             Digest { logs },
             (multi, single),
-            Some(mission.block.extrinsics_root),
+            Some(mission.extrinsics_root()),
             self.oracle.round_tx(),
             true,
             false,
         ).await {
             Ok(propose) => propose,
             Err(e) => {
-                self.missions.insert(mission_block, mission);
                 return Err(format!("Propose block {mission_block} failed for {e:?}"));
             }
         };
-        // generate import params
-        let (block, _storage_proof) = (proposal.block, proposal.proof);
-        let (header, body) = block.deconstruct();
+        let header = proposal.block.header();
         if *header.extrinsics_root() != mission.extrinsics_root() {
             return Err(format!("Propose block {mission_block} check extrinsics_root incorrect calculated {} expected {}", header.extrinsics_root(), mission.extrinsics_root()));
         }
-        let block_import_params = match self.block_import_params(
-            header,
-            body.clone(),
-            proposal.storage_changes,
-            info.groups(),
-            mission.block_commit(),
-            Some(ForkChoiceStrategy::Custom(true)),
-        ).await {
-            Ok(import_params) => import_params,
-            Err(e) => {
-                self.missions.insert(mission_block, mission);
-                return Err(format!("Propose block {mission_block} get block_import_params failed for {e:?}"));
-            }
-        };
         let trace = self.interval_trace.clone();
         let view = mission.view();
         let txs = info.applied();
@@ -358,7 +358,7 @@ where
             trace.write().await.on_executed(now, mission_block, view, time_by_executor, txs);
         });
         // try import block
-        self.try_import(now, ImportMission::new(mission, slot, block_import_params, info)).await?;
+        self.try_import(now, ImportMission::new(proposal.block, proposal.storage_changes, mission, slot, info)).await?;
         Ok(true)
     }
 
@@ -410,26 +410,22 @@ where
                         ExecutorMission::Execute(now, mission) => {
                             let block = mission.block_number();
                             if block <= self.client.info().finalized_number { continue; }
-                            if let Some(import) = self.imports.get(&block) {
-                                if import.inner().mission.view() >= mission.view() {
-                                    continue;
-                                }
-                            }
-                            if let Some(commit) = mission.block_commit() {
+                            if let Some(commit) = mission.commit_info() {
                                 let trace = self.interval_trace.clone();
                                 tokio::spawn(async move {
                                     trace.write().await.on_commit(now, commit);
                                 });
                             }
+                            self.imports.remove(&block);
                             if let Some(pre_mission) = self.missions.get_mut(&block) {
                                 if mission.view() >= pre_mission.view() {
-                                    trace!(target: LOG_TARGET, "Receive {:?} #{block} with view {} -> {}", mission.mode(), pre_mission.view(), mission.view());
+                                    trace!(target: LOG_TARGET, "Receive {:?} #{block} with view {} -> {}", mission.stage(), pre_mission.view(), mission.view());
                                     *pre_mission = mission;
                                 } else {
                                     continue;
                                 }
                             } else {
-                                trace!(target: LOG_TARGET, "Receive {:?} #{block} with view {}", mission.mode(), mission.view());
+                                trace!(target: LOG_TARGET, "Receive {:?} #{block} with view {}", mission.stage(), mission.view());
                                 self.missions.insert(block, mission);
                             }
                         }

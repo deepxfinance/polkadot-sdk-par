@@ -29,7 +29,7 @@ use sp_consensus::SelectChain;
 
 use crate::{
     client::{ClientForHotstuff, LinkHalf},
-    executor::{BlockExecutor, types::{BlockMission, ExecutorMission, ExecuteStage}},
+    executor::{BlockExecutor, types::{BlockMission, ExecutorMission}},
     import::{PendingFinalizeBlockQueue, ImportLock}, oracle::HotsOracle,
     message::{
         ConsensusMessage, Proposal, Timeout, Vote, QC, TC, BlockCommit, ConsensusStage, Payload,
@@ -52,7 +52,7 @@ use sp_runtime::traits::{NumberFor, Zero};
 use sp_runtime::transaction_validity::TransactionSource;
 use sp_timestamp::Timestamp;
 use std::time::Instant;
-use crate::executor::types::{PendingBlock, ExecuteMode};
+use crate::executor::types::ExeStage;
 
 #[cfg(test)]
 #[path = "tests/consensus_tests.rs"]
@@ -68,7 +68,7 @@ pub struct ConsensusWorker<
     Error: std::error::Error + Send + From<ConsensusError> + 'static,
     O: BlockOracle<B> + HotsOracle<B> + Sync + Send + 'static,
 > {
-    mode: ExecuteMode,
+    mode: ExeStage,
     state: ConsensusState<B, C>,
 
     network: HotstuffNetworkBridge<B, N, S>,
@@ -111,7 +111,7 @@ where
 {
     #![allow(clippy::too_many_arguments)]
     pub fn new(
-        mode: ExecuteMode,
+        mode: ExeStage,
         consensus_state: ConsensusState<B, C>,
         client: Arc<C>,
         sync: S,
@@ -721,32 +721,40 @@ where
         let from = if local { "local" } else { "network" };
         let block_number = proposal.payload.block_number();
         match (self.mode, proposal.payload.stage) {
-            (ExecuteMode::Unchecked, ConsensusStage::Prepare) => {
-                let mission = ExecutorMission::Execute(SystemTime::now(), BlockMission {
-                    stage: ExecuteStage::Unchecked(PendingBlock {
-                        parent_commit: self.commit.clone(),
-                        view: proposal.view,
-                        timestamp: proposal.payload.timestamp(),
-                    }),
-                    block: proposal.payload.block.clone(),
-                    extrinsics: proposal.payload.extrinsics.clone().unwrap(),
-                });
+            (ExeStage::Unchecked, ConsensusStage::Prepare) => {
+                let mission = ExecutorMission::execute(
+                    SystemTime::now(),
+                    BlockMission::new(
+                        ExeStage::Unchecked,
+                        BlockCommit::new_without_sig(
+                            self.commit.parent_commit_hash(),
+                            proposal.view,
+                            proposal.payload.block.clone(),
+                            proposal.payload.timestamp(),
+                        ),
+                        proposal.payload.extrinsics.clone().unwrap(),
+                    )
+                );
                 if self.executor_tx.send(mission).is_err() {
                     warn!(target: CLIENT_LOG_TARGET, "~~ trigger_execute_mission({from}). block {block_number} Unchecked execute mission send failed");
                 }
             },
-            (ExecuteMode::Checked, ConsensusStage::PreCommit) => {
+            (ExeStage::Checked, ConsensusStage::PreCommit) => {
                 let parent_proposal = self.aux_data.get_proposal_parent(&proposal)?
                     .ok_or(HotstuffError::GetProposal(format!("no parent_proposal for proposal {}", proposal.round())))?;
-                let mission = ExecutorMission::Execute(SystemTime::now(), BlockMission {
-                    stage: ExecuteStage::Checked(PendingBlock {
-                        parent_commit: self.commit.clone(),
-                        view: proposal.view,
-                        timestamp: proposal.payload.timestamp(),
-                    }),
-                    block: proposal.payload.block.clone(),
-                    extrinsics: parent_proposal.payload.extrinsics.clone().unwrap(),
-                });
+                let mission = ExecutorMission::execute(
+                    SystemTime::now(),
+                    BlockMission::new(
+                        ExeStage::Checked,
+                        BlockCommit::new_without_sig(
+                            self.commit.parent_commit_hash(),
+                            proposal.view,
+                            proposal.payload.block.clone(),
+                            proposal.payload.timestamp(),
+                        ),
+                        parent_proposal.payload.extrinsics.clone().unwrap(),
+                    ),
+                );
                 if self.executor_tx.send(mission).is_err() {
                     warn!(target: CLIENT_LOG_TARGET, "~~ trigger_execute_mission({from}). block {block_number} Checked execute mission send failed");
                 }
@@ -779,7 +787,7 @@ where
                 // Prepare finished, we can confirm that commited parent block can be imported and finalized.
                 let confirm_block = self.commit.block_number();
                 if confirm_block > 0u32.into() && confirm_block.saturating_add(1u32.into()) == qc_proposal.payload.block_number() {
-                    let mission = ExecutorMission::Confirm(SystemTime::now(), qc_proposal.view, self.commit.clone());
+                    let mission = ExecutorMission::confirm(SystemTime::now(), qc_proposal.view, self.commit.clone());
                     if self.executor_tx.send(mission).is_err() {
                         warn!(target: CLIENT_LOG_TARGET, "~~ trigger_qc_mission({from}). block {confirm_block} confirm mission send failed");
                     }
@@ -812,11 +820,10 @@ where
                     // send execute block mission to a block execute queue and execute/import it.
                     let extrinsics = grandpa.payload.extrinsics.clone().unwrap();
                     // event not ExecuteMode is not Commit, we still notify executor `commit` for trace.
-                    let mission = ExecutorMission::Execute(SystemTime::now(), BlockMission {
-                        stage: ExecuteStage::Commit(commit.clone()),
-                        block: grandpa.payload.block.clone(),
-                        extrinsics: extrinsics.clone(),
-                    });
+                    let mission = ExecutorMission::execute(
+                        SystemTime::now(),
+                        BlockMission::new(ExeStage::Commit, commit.clone(), extrinsics.clone())
+                    );
                     if self.executor_tx.send(mission).is_err() {
                         warn!(target: CLIENT_LOG_TARGET, "~~ trigger_qc_mission({from}). block {new_block_number} execute mission send failed");
                     }
@@ -1402,9 +1409,9 @@ where
 
     let queue = PendingFinalizeBlockQueue::<B>::new(client.clone()).expect("error");
 
-    let mut mode = ExecuteMode::Commit;
+    let mut mode = ExeStage::Commit;
     if let Ok(config_mode) = env::var("HOTSTUFF_EXECUTE_MODE") {
-        if let Ok(config_mode) = config_mode.parse::<ExecuteMode>() {
+        if let Ok(config_mode) = config_mode.parse::<ExeStage>() {
             mode = config_mode;
         }
     }

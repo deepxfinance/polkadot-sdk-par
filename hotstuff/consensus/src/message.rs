@@ -669,6 +669,21 @@ impl<B: BlockT> BlockCommit<B> {
         }
     }
 
+    pub fn new_without_sig(
+        parent_commit: B::Hash,
+        view: ViewNumber,
+        extrinsic_block: ExtrinsicBlock<B>,
+        timestamp: Timestamp
+    ) -> Self {
+        Self {
+            parent_commit,
+            view,
+            extrinsic_block,
+            signature: Default::default(),
+            timestamp,
+        }
+    }
+
     pub fn is_empty_block(&self) -> bool {
         self.extrinsics_root() == Default::default()
     }
