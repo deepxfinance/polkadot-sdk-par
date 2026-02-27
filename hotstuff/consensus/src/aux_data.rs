@@ -13,8 +13,10 @@ use sp_blockchain::{Error, HeaderBackend};
 use sp_core::{Decode, Encode};
 use sp_runtime::traits::Block as BlockT;
 
-use crate::{message::Proposal, error::HotstuffError, CLIENT_LOG_TARGET};
-use crate::message::{CommitQC, ProposalKey, Round};
+use crate::CLIENT_LOG_TARGET;
+use crate::consensus::error::HotstuffError;
+use crate::consensus::message::Proposal;
+use crate::consensus::message::{CommitQC, ProposalKey, Round};
 
 pub const HIGH_ROUND_KEY: &str = "hots_high_round";
 pub const ROUND_PREFIX: &str = "hots_round";

@@ -1,18 +1,16 @@
 use std::collections::HashMap;
 use std::marker::PhantomData;
-use codec::{Encode, Decode};
+use codec::{Decode, Encode};
 use w3f_bls::{
-	EngineBLS, Message, Signature as SingleSignature, Signed, PublicKey,
-	distinct::DistinctMessages, SignedMessage
+	distinct::DistinctMessages, EngineBLS, Message, PublicKey, Signature as SingleSignature,
+	Signed, SignedMessage
 };
 use w3f_bls::SerializableToBytes;
 use sp_runtime::traits::Block;
-use crate::{
-	AuthorityList, AuthoritySignature,
-	message::{Timeout, Vote, QC, TC},
-	error::{HotstuffError, HotstuffError::*, ViewNumber},
-};
-use crate::message::extend_message;
+use crate::{AuthorityList, AuthoritySignature};
+use crate::consensus::error::{HotstuffError, HotstuffError::*, ViewNumber};
+use crate::consensus::message::{Timeout, Vote, QC, TC};
+use crate::consensus::message::extend_message;
 
 const BUCKET_SIZE: usize = 8;
 

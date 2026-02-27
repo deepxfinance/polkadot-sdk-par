@@ -6,8 +6,8 @@ use sp_runtime::Saturating;
 use sp_runtime::traits::{Header, NumberFor};
 use sp_timestamp::Timestamp;
 use crate::TRACE_LOG_TARGET;
-use crate::error::ViewNumber;
-use crate::message::{BlockCommit, Round};
+use crate::consensus::error::ViewNumber;
+use crate::consensus::message::{BlockCommit, Round};
 
 pub enum TraceStage<B: BlockT> {
     Commit(NumberFor<B>, SystemTime),
