@@ -6,8 +6,8 @@ use sc_basic_authorship::BlockExecuteInfo;
 use sc_consensus_slots::StorageChanges;
 use sp_consensus_slots::Slot;
 use sp_timestamp::Timestamp;
-use crate::error::ViewNumber;
-use crate::message::BlockCommit;
+use crate::consensus::error::ViewNumber;
+use crate::consensus::message::BlockCommit;
 
 pub type SafeImportMission<B, C> = SafeWrap<ImportMission<B, C>>;
 

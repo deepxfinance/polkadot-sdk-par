@@ -26,9 +26,9 @@ use sp_api::TransactionFor;
 use sp_blockchain::BlockStatus;
 use sp_consensus::{BlockOrigin, Error as ConsensusError};
 use sp_runtime::{generic::BlockId, traits::{Block as BlockT, Header as HeaderT, NumberFor, One}, Digest, Justification, Saturating};
-use crate::{client::ClientForHotstuff, find_block_commit, find_consensus_logs, error::{HotstuffError, HotstuffError::*}};
+use crate::{client::ClientForHotstuff, find_block_commit, find_consensus_logs, Error};
 use crate::aux_schema::PersistentData;
-use crate::message::BlockCommit;
+use crate::consensus::message::BlockCommit;
 
 const LOG_TARGET: &str = "hots_import";
 
@@ -483,7 +483,7 @@ impl<B: BlockT> Default for BlockInfo<B> {
 }
 
 // A queue cache the best block from the client.
-pub(crate) struct PendingFinalizeBlockQueue<B: BlockT> {
+pub struct PendingFinalizeBlockQueue<B: BlockT> {
 	import_notification: ImportNotifications<B>,
 
 	// The finalize notification not guaranteed to be fired for every finalize block.
@@ -496,7 +496,7 @@ pub(crate) struct PendingFinalizeBlockQueue<B: BlockT> {
 impl<B: BlockT> PendingFinalizeBlockQueue<B> {
 	pub fn new<BE: Backend<B>, C: ClientForHotstuff<B, BE>>(
 		client: Arc<C>,
-	) -> Result<Self, HotstuffError> {
+	) -> Result<Self, Error<B>> {
 		let chain_info = client.info();
 		let mut block_number = chain_info.finalized_number.add(One::one());
 		let mut queue = VecDeque::new();
@@ -504,7 +504,7 @@ impl<B: BlockT> PendingFinalizeBlockQueue<B> {
 		while block_number <= chain_info.best_number {
 			let block_hash = client
 				.block_hash_from_id(&BlockId::Number(block_number))
-				.map_err(|e| ClientError(e.to_string()))?;
+				.map_err(|e| Error::Client(e))?;
 
 			queue.push_back((block_hash, block_number));
 			block_number += One::one();
