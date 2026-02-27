@@ -165,6 +165,7 @@ impl <'db, 'cache, H: Hasher> KVDBMut<'db, 'cache, H> {
         } else {
             let mut changes = Vec::new();
             for (prefix, value) in core::mem::take(&mut self.storage).into_iter() {
+                #[cfg(not(feature = "async-root"))]
                 changes.extend([prefix.0.as_slice(), &pad_encode(&prefix.1), &value].concat());
                 let key_hash = H::hash(prefix.0.as_slice());
                 if value == &NULL_DATA {
@@ -186,8 +187,12 @@ impl <'db, 'cache, H: Hasher> KVDBMut<'db, 'cache, H> {
         let db_handle_time = start.elapsed();
         #[cfg(feature = "std")]
         let changes_len = changes.len();
+        #[cfg(feature = "async-root")]
+        let changes_root = H::Out::default();
+        #[cfg(not(feature = "async-root"))]
         let changes_root = H::hash(&changes);
         // extra storage for state_root, which will be used with this special prefix.
+        #[cfg(not(feature = "async-root"))]
         self.db.emplace(changes_root, (&[], None), changes_root.as_ref().to_vec());
         #[cfg(feature = "std")]
         let hash_time = start.elapsed();
@@ -225,8 +230,8 @@ impl<'db, 'cache, H: Hasher> KVMut<'db, H> for KVDBMut<'db, 'cache, H> {
 
 fn pad_encode(pad: &Option<u8>) -> Vec<u8> {
     match pad {
-        Some(pad) => [1, *pad].to_vec(),
-        None => [0u8].to_vec(),
+        Some(pad) => [*pad].to_vec(),
+        None => [].to_vec(),
     }
 }
 

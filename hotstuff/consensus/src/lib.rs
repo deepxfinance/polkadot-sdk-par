@@ -4,6 +4,7 @@ pub mod authorities;
 pub mod client;
 pub mod config;
 pub mod consensus;
+pub mod finalize;
 pub mod network;
 pub mod aux_data;
 pub mod executor;

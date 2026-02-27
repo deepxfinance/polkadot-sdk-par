@@ -118,7 +118,7 @@ impl<B: BlockT> ExecutionOracle<B> {
                 execute_avg_window_num = num;
             }
         }
-        let mut execute_avg_window_size = 30000;
+        let mut execute_avg_window_size = EXECUTE_WINDOW_SIZE;
         if let Ok(size) = env::var("ORACLE_EXECUTE_WINDOW_SIZE") {
             if let Ok(size) = size.parse::<usize>() {
                 execute_avg_window_size = size;

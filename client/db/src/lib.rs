@@ -2529,7 +2529,8 @@ impl<Block: BlockT> sc_client_api::backend::Backend<Block> for Backend<Block> {
 	}
 
 	fn have_state_at(&self, hash: Block::Hash, number: NumberFor<Block>) -> bool {
-		return true;
+		#[cfg(feature = "kvdb")]
+		return self.blockchain.meta.read().best_number == number;
 		if self.is_archive {
 			match self.blockchain.header_metadata(hash) {
 				Ok(header) => sp_state_machine::Storage::get(
