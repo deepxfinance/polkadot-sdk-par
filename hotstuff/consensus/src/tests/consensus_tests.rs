@@ -18,6 +18,7 @@ use sp_runtime::traits::Header as HeaderT;
 use crate::client::AuthoritySetProvider;
 use hotstuff_primitives::HotstuffApi;
 use sc_network_common::role::Role;
+use crate::consensus::worker::ConsensusWorker;
 
 type TestLinkHalf =
 	LinkHalf<Block, PeersFullClient, LongestChain<substrate_test_runtime_client::Backend, Block>>;

@@ -1,62 +1,46 @@
-use std::{
-    env,
-    pin::Pin,
-    sync::Arc,
-    task::{Context, Poll},
-};
 use std::collections::{HashMap, HashSet};
+use std::env;
+use std::future::Future;
 use std::marker::PhantomData;
 use std::str::FromStr;
-use std::time::{Duration, SystemTime};
-use async_recursion::async_recursion;
-use futures::{channel::mpsc::Receiver as Recv, Future, StreamExt};
-
-use codec::{Decode, Encode};
-use log::{debug, error, info, trace, warn};
+use std::sync::Arc;
+use std::time::{Duration, Instant, SystemTime};
+use sc_basic_authorship::{BlockOracle, BlockPropose, GroupTransaction};
+use sc_client_api::{Backend, BlockConsensus};
+use sp_consensus::{Environment, Error as ConsensusError, Proposer, SelectChain};
+use sp_consensus_slots::SlotDuration;
+use sp_runtime::traits::{Block as BlockT, Header as HeaderT, NumberFor, Zero};
 use tokio::sync::mpsc::{channel, unbounded_channel, Receiver, Sender, UnboundedSender};
 use tokio::sync::RwLock;
+use hotstuff_primitives::{ConsensusLog, HotstuffApi, RuntimeAuthorityId};
+use log::{debug, error, info, trace, warn};
+use async_recursion::async_recursion;
+use codec::Encode;
 use frame_system::extrinsics_data_root;
-use sc_basic_authorship::{BlockPropose, GroupTransaction, BlockOracle};
-use sc_client_api::{Backend, CallExecutor, BlockConsensus, ExecutionStrategy};
-use sc_network::types::ProtocolName;
-use sc_network_gossip::TopicNotification;
-use sp_core::traits::CallContext;
-use sp_keystore::KeystorePtr;
-use sp_runtime::{generic::BlockId, traits, traits::{Block as BlockT, Header as HeaderT}, Saturating};
 use sc_consensus::BlockImport;
 use sc_consensus_slots::InherentDataProviderExt;
-use sp_consensus::SelectChain;
-
-use crate::{
-    client::{ClientForHotstuff, LinkHalf},
-    executor::{BlockExecutor, types::{BlockMission, ExecutorMission, ExecuteStage}},
-    import::{PendingFinalizeBlockQueue, ImportLock}, oracle::HotsOracle,
-    message::{
-        ConsensusMessage, Proposal, Timeout, Vote, QC, TC, BlockCommit, ConsensusStage, Payload,
-        PeerAuthority, ProposalKey, ProposalReq, ProposalRequest, CommitQC, Round,
-    },
-    network::{HotstuffNetworkBridge, Network as NetworkT, Syncing as SyncingT},
-    error::{HotstuffError, PayloadError, ViewNumber}, state::ConsensusState,
-    aux_data::{AuxDataStore, Timer}, revert::get_block_commit,
-    CLIENT_LOG_TARGET, AuthorityId, AuthorityList,
-    find_consensus_logs, find_block_commit,
-};
-use hotstuff_primitives::{ConsensusLog, HotstuffApi, RuntimeAuthorityId};
-use sc_network::PeerId;
+use sc_network::{PeerId, ProtocolName};
 use sc_network_common::sync::SyncState;
 use sp_api::TransactionFor;
-use sp_consensus::{Environment, Error as ConsensusError, Proposer};
-use sp_consensus_slots::SlotDuration;
 use sp_inherents::CreateInherentDataProviders;
-use sp_runtime::traits::{NumberFor, Zero};
+use sp_keystore::KeystorePtr;
+use sp_runtime::generic::BlockId;
+use sp_runtime::{traits, Saturating};
 use sp_runtime::transaction_validity::TransactionSource;
 use sp_timestamp::Timestamp;
-use std::time::Instant;
-use crate::executor::types::{PendingBlock, ExecuteMode};
-
-#[cfg(test)]
-#[path = "tests/consensus_tests.rs"]
-pub mod consensus_tests;
+use crate::aux_data::{AuxDataStore, Timer};
+use crate::client::ClientForHotstuff;
+use crate::consensus::error::{HotstuffError, PayloadError, ViewNumber};
+use crate::consensus::message::*;
+use crate::consensus::network::ConsensusNetwork;
+use crate::consensus::oracle::HotsOracle;
+use crate::consensus::state::ConsensusState;
+use crate::executor::types::{BlockMission, ExeStage, ExecutorMission};
+use crate::import::{ImportLock, PendingFinalizeBlockQueue};
+use crate::{find_block_commit, find_consensus_logs, AuthorityId, LinkHalf, CLIENT_LOG_TARGET};
+use crate::executor::BlockExecutor;
+use crate::network::{HotstuffNetworkBridge, Network as NetworkT, Syncing as SyncingT};
+use crate::revert::get_block_commit;
 
 pub struct ConsensusWorker<
     B: BlockT,
@@ -68,7 +52,7 @@ pub struct ConsensusWorker<
     Error: std::error::Error + Send + From<ConsensusError> + 'static,
     O: BlockOracle<B> + HotsOracle<B> + Sync + Send + 'static,
 > {
-    mode: ExecuteMode,
+    mode: ExeStage,
     state: ConsensusState<B, C>,
 
     network: HotstuffNetworkBridge<B, N, S>,
@@ -111,7 +95,7 @@ where
 {
     #![allow(clippy::too_many_arguments)]
     pub fn new(
-        mode: ExecuteMode,
+        mode: ExeStage,
         consensus_state: ConsensusState<B, C>,
         client: Arc<C>,
         sync: S,
@@ -721,32 +705,40 @@ where
         let from = if local { "local" } else { "network" };
         let block_number = proposal.payload.block_number();
         match (self.mode, proposal.payload.stage) {
-            (ExecuteMode::Unchecked, ConsensusStage::Prepare) => {
-                let mission = ExecutorMission::Execute(SystemTime::now(), BlockMission {
-                    stage: ExecuteStage::Unchecked(PendingBlock {
-                        parent_commit: self.commit.clone(),
-                        view: proposal.view,
-                        timestamp: proposal.payload.timestamp(),
-                    }),
-                    block: proposal.payload.block.clone(),
-                    extrinsics: proposal.payload.extrinsics.clone().unwrap(),
-                });
+            (ExeStage::Unchecked, ConsensusStage::Prepare) => {
+                let mission = ExecutorMission::execute(
+                    SystemTime::now(),
+                    BlockMission::new(
+                        ExeStage::Unchecked,
+                        BlockCommit::new_without_sig(
+                            self.commit.parent_commit_hash(),
+                            proposal.view,
+                            proposal.payload.block.clone(),
+                            proposal.payload.timestamp(),
+                        ),
+                        proposal.payload.extrinsics.clone().unwrap(),
+                    )
+                );
                 if self.executor_tx.send(mission).is_err() {
                     warn!(target: CLIENT_LOG_TARGET, "~~ trigger_execute_mission({from}). block {block_number} Unchecked execute mission send failed");
                 }
             },
-            (ExecuteMode::Checked, ConsensusStage::PreCommit) => {
+            (ExeStage::Checked, ConsensusStage::PreCommit) => {
                 let parent_proposal = self.aux_data.get_proposal_parent(&proposal)?
                     .ok_or(HotstuffError::GetProposal(format!("no parent_proposal for proposal {}", proposal.round())))?;
-                let mission = ExecutorMission::Execute(SystemTime::now(), BlockMission {
-                    stage: ExecuteStage::Checked(PendingBlock {
-                        parent_commit: self.commit.clone(),
-                        view: proposal.view,
-                        timestamp: proposal.payload.timestamp(),
-                    }),
-                    block: proposal.payload.block.clone(),
-                    extrinsics: parent_proposal.payload.extrinsics.clone().unwrap(),
-                });
+                let mission = ExecutorMission::execute(
+                    SystemTime::now(),
+                    BlockMission::new(
+                        ExeStage::Checked,
+                        BlockCommit::new_without_sig(
+                            self.commit.parent_commit_hash(),
+                            proposal.view,
+                            proposal.payload.block.clone(),
+                            proposal.payload.timestamp(),
+                        ),
+                        parent_proposal.payload.extrinsics.clone().unwrap(),
+                    ),
+                );
                 if self.executor_tx.send(mission).is_err() {
                     warn!(target: CLIENT_LOG_TARGET, "~~ trigger_execute_mission({from}). block {block_number} Checked execute mission send failed");
                 }
@@ -779,7 +771,7 @@ where
                 // Prepare finished, we can confirm that commited parent block can be imported and finalized.
                 let confirm_block = self.commit.block_number();
                 if confirm_block > 0u32.into() && confirm_block.saturating_add(1u32.into()) == qc_proposal.payload.block_number() {
-                    let mission = ExecutorMission::Confirm(SystemTime::now(), qc_proposal.view, self.commit.clone());
+                    let mission = ExecutorMission::confirm(SystemTime::now(), qc_proposal.view, self.commit.clone());
                     if self.executor_tx.send(mission).is_err() {
                         warn!(target: CLIENT_LOG_TARGET, "~~ trigger_qc_mission({from}). block {confirm_block} confirm mission send failed");
                     }
@@ -812,11 +804,10 @@ where
                     // send execute block mission to a block execute queue and execute/import it.
                     let extrinsics = grandpa.payload.extrinsics.clone().unwrap();
                     // event not ExecuteMode is not Commit, we still notify executor `commit` for trace.
-                    let mission = ExecutorMission::Execute(SystemTime::now(), BlockMission {
-                        stage: ExecuteStage::Commit(commit.clone()),
-                        block: grandpa.payload.block.clone(),
-                        extrinsics: extrinsics.clone(),
-                    });
+                    let mission = ExecutorMission::execute(
+                        SystemTime::now(),
+                        BlockMission::new(ExeStage::Commit, commit.clone(), extrinsics.clone())
+                    );
                     if self.executor_tx.send(mission).is_err() {
                         warn!(target: CLIENT_LOG_TARGET, "~~ trigger_qc_mission({from}). block {new_block_number} execute mission send failed");
                     }
@@ -1243,97 +1234,6 @@ where
     }
 }
 
-pub struct ConsensusNetwork<
-    B: BlockT,
-    N: NetworkT<B> + Sync + 'static,
-    S: SyncingT<B> + Sync + 'static,
-> {
-    network: HotstuffNetworkBridge<B, N, S>,
-    message_recv: Recv<TopicNotification>,
-    consensus_msg_tx: Sender<(bool, ConsensusMessage<B>)>,
-    pending_queue: PendingFinalizeBlockQueue<B>,
-}
-
-impl<B, N, S> Future for ConsensusNetwork<B, N, S>
-where
-    B: BlockT,
-    N: NetworkT<B> + Sync + 'static,
-    S: SyncingT<B> + Sync + 'static,
-{
-    type Output = ();
-
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        loop {
-            match StreamExt::poll_next_unpin(&mut self.message_recv, cx) {
-                Poll::Ready(None) => break,
-                Poll::Ready(Some(notification)) => {
-                    if let Err(e) = self.incoming_message_handler(notification) {
-                        error!("process incoming message error: {:#?}", e)
-                    }
-                }
-                Poll::Pending => break,
-            };
-        }
-
-        match Future::poll(Pin::new(&mut self.pending_queue), cx) {
-            Poll::Ready(notification) => {
-                if let Err(e) = self
-                    .consensus_msg_tx
-                    .try_send((false, ConsensusMessage::BlockImport(notification.header.clone())))
-                {
-                    error!("process incoming block error: {:#?}", e)
-                }
-            }
-            Poll::Pending => {}
-        };
-
-        match Future::poll(Pin::new(&mut self.network), cx) {
-            Poll::Ready(_) => {}
-            Poll::Pending => {}
-        };
-
-        Poll::Pending
-    }
-}
-
-impl<B, N, S> ConsensusNetwork<B, N, S>
-where
-    B: BlockT,
-    N: NetworkT<B> + Sync + 'static,
-    S: SyncingT<B> + Sync + 'static,
-{
-    fn new(
-        network: HotstuffNetworkBridge<B, N, S>,
-        consensus_msg_tx: Sender<(bool, ConsensusMessage<B>)>,
-        pending_queue: PendingFinalizeBlockQueue<B>,
-    ) -> Self {
-        let message_recv = network
-            .gossip_engine
-            .clone()
-            .lock()
-            .messages_for(ConsensusMessage::<B>::gossip_topic());
-
-        Self {
-            network,
-            consensus_msg_tx,
-            message_recv,
-            pending_queue,
-        }
-    }
-
-    pub fn incoming_message_handler(
-        &mut self,
-        notification: TopicNotification,
-    ) -> Result<(), HotstuffError> {
-        let message: ConsensusMessage<B> =
-            Decode::decode(&mut &notification.message[..]).map_err(|e| HotstuffError::Other(e.to_string()))?;
-
-        self.consensus_msg_tx
-            .try_send((false, message))
-            .map_err(|e| HotstuffError::Other(e.to_string()))
-    }
-}
-
 impl<B, BE, C, N, S, PF, Error, O> Unpin for ConsensusWorker<B, BE, C, N, S, PF, Error, O>
 where
     B: BlockT,
@@ -1389,7 +1289,7 @@ where
     O: BlockOracle<B> + HotsOracle<B> + Sync + Send + 'static,
 {
     let LinkHalf { client, select_chain: _, persistent_data } = link;
-    let authorities = get_authorities_from_client::<B, BE, C>(client.clone());
+    let authorities = crate::consensus::get_authorities_from_client::<B, BE, C>(client.clone());
 
     let aux_data = AuxDataStore::<B, C>::new(client.clone());
     let commit_qc = aux_data.get_commit_qc().unwrap();
@@ -1402,9 +1302,9 @@ where
 
     let queue = PendingFinalizeBlockQueue::<B>::new(client.clone()).expect("error");
 
-    let mut mode = ExecuteMode::Commit;
+    let mut mode = ExeStage::Commit;
     if let Ok(config_mode) = env::var("HOTSTUFF_EXECUTE_MODE") {
-        if let Ok(config_mode) = config_mode.parse::<ExecuteMode>() {
+        if let Ok(config_mode) = config_mode.parse::<ExeStage>() {
             mode = config_mode;
         }
     }
@@ -1447,35 +1347,4 @@ where
         executor_rx,
     );
     Ok((async { consensus_worker.run().await }, consensus_network, async move { block_executor.run().await }))
-}
-
-pub fn get_authorities_from_client<
-    B: BlockT,
-    BE: Backend<B>,
-    C: ClientForHotstuff<B, BE>,
->(
-    client: Arc<C>,
-) -> AuthorityList {
-    let block_id = BlockId::hash(client.info().best_hash);
-    let block_hash = client
-        .expect_block_hash_from_id(&block_id)
-        .expect("get genesis block hash from client failed");
-
-    let authorities_data = client
-        .executor()
-        .call(
-            block_hash,
-            "HotstuffApi_authorities",
-            &[],
-            ExecutionStrategy::NativeElseWasm,
-            CallContext::Offchain,
-        )
-        .expect("call runtime failed");
-
-    let authorities: Vec<RuntimeAuthorityId> = Decode::decode(&mut &authorities_data[..]).expect("");
-
-    authorities
-        .iter()
-        .map(|id| (id.clone().into(), 0))
-        .collect::<AuthorityList>()
 }

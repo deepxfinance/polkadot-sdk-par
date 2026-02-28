@@ -4,9 +4,10 @@ use log::{debug, info, trace};
 use sp_api::BlockT;
 use sp_runtime::Saturating;
 use sp_runtime::traits::{Header, NumberFor};
+use sp_timestamp::Timestamp;
 use crate::TRACE_LOG_TARGET;
-use crate::error::ViewNumber;
-use crate::message::{BlockCommit, Round};
+use crate::consensus::error::ViewNumber;
+use crate::consensus::message::{BlockCommit, Round};
 
 pub enum TraceStage<B: BlockT> {
     Commit(NumberFor<B>, SystemTime),
@@ -60,10 +61,10 @@ impl<B: BlockT> TraceStage<B> {
 pub struct IntervalTrace<B: BlockT> {
     analyze_block_interval: usize,
     tx_count: usize,
-    commit: HashMap<NumberFor<B>, (ViewNumber, SystemTime)>,
+    commit: HashMap<NumberFor<B>, (ViewNumber, SystemTime, Timestamp)>,
     execute: HashMap<NumberFor<B>, (ViewNumber, Duration, SystemTime, usize)>,
     confirm: HashMap<NumberFor<B>, (ViewNumber, SystemTime)>,
-    import: HashMap<NumberFor<B>, (B::Hash, SystemTime)>,
+    import: HashMap<NumberFor<B>, (B::Hash, Duration, SystemTime)>,
 }
 
 impl<B: BlockT> IntervalTrace<B> {
@@ -84,14 +85,14 @@ impl<B: BlockT> IntervalTrace<B> {
     pub fn commit_time(&self, block: NumberFor<B>) -> Option<(TraceStage<B>, TraceStage<B>)> {
         let parent_block = block.saturating_sub(1u32.into());
         let grand_parent_block = block.saturating_sub(2u32.into());
-        if let Some((_, grand_parent_import_time)) = self.import.get(&grand_parent_block) {
-            if let Some((_, parent_commit_time)) = self.commit.get(&parent_block) {
+        if let Some((_, _, grand_parent_import_time)) = self.import.get(&grand_parent_block) {
+            if let Some((_, parent_commit_time, _)) = self.commit.get(&parent_block) {
                 let start_at = if grand_parent_import_time >= parent_commit_time {
                     TraceStage::Imported(grand_parent_block, *grand_parent_import_time)
                 } else {
                     TraceStage::Commit(parent_block, *parent_commit_time)
                 };
-                if let Some((_, block_commit_time)) = self.commit.get(&block) {
+                if let Some((_, block_commit_time, _)) = self.commit.get(&block) {
                     let finish_at = TraceStage::Commit(block, *block_commit_time);
                     return Some((start_at, finish_at));
                 }
@@ -105,8 +106,8 @@ impl<B: BlockT> IntervalTrace<B> {
     ///     2.Commit(consensus) N finish.
     pub fn execute_time(&self, block: NumberFor<B>) -> Option<(TraceStage<B>, Duration, TraceStage<B>)> {
         let parent_block = block.saturating_sub(1u32.into());
-        if let Some((_, block_commit_time)) = self.commit.get(&block) {
-            if let Some((_, parent_imported_time)) = self.import.get(&parent_block) {
+        if let Some((_, block_commit_time, _)) = self.commit.get(&block) {
+            if let Some((_, _, parent_imported_time)) = self.import.get(&parent_block) {
                 let start_at = if parent_imported_time >= block_commit_time {
                     TraceStage::Imported(parent_block, *parent_imported_time)
                 } else {
@@ -127,8 +128,8 @@ impl<B: BlockT> IntervalTrace<B> {
     /// Start rule is same with `execute`
     pub fn confirm_time(&self, block: NumberFor<B>) -> Option<(TraceStage<B>, TraceStage<B>)> {
         let parent_block = block.saturating_sub(1u32.into());
-        if let Some((_, block_commit_time)) = self.commit.get(&block) {
-            if let Some((_, parent_imported_time)) = self.import.get(&parent_block) {
+        if let Some((_, block_commit_time, _)) = self.commit.get(&block) {
+            if let Some((_, _, parent_imported_time)) = self.import.get(&parent_block) {
                 let start_at = if parent_imported_time >= block_commit_time {
                     TraceStage::Imported(parent_block, *parent_imported_time)
                 } else {
@@ -146,7 +147,7 @@ impl<B: BlockT> IntervalTrace<B> {
     /// Import block N start when:
     ///     1.Confirm N finish.
     ///     2.Execute N finish.
-    pub fn import_time(&self, block: NumberFor<B>) -> Option<(TraceStage<B>, TraceStage<B>)> {
+    pub fn import_time(&self, block: NumberFor<B>) -> Option<(TraceStage<B>, Duration, TraceStage<B>)> {
         if let Some((_, block_confirm_time)) = self.confirm.get(&block) {
             if let Some((_, _, block_execute_time, _)) = self.execute.get(&block) {
                 let start_at = if block_confirm_time >= block_execute_time {
@@ -154,9 +155,9 @@ impl<B: BlockT> IntervalTrace<B> {
                 } else {
                     TraceStage::Executed(block, *block_execute_time)
                 };
-                if let Some((_, block_import_time)) = self.import.get(&block) {
+                if let Some((_, wait, block_import_time)) = self.import.get(&block) {
                     let finish_at = TraceStage::Imported(block, *block_import_time);
-                    return Some((start_at, finish_at));
+                    return Some((start_at, *wait, finish_at));
                 }
             }
         }
@@ -231,15 +232,16 @@ impl<B: BlockT> IntervalTrace<B> {
             process += &format!("E:{}(*)", block);
         }
         // handle import process
-        if let Some((start, finish)) = &import_info {
+        if let Some((start, wait, finish)) = &import_info {
             full_finish = Some(finish.time().clone());
             let time = finish.time().duration_since(*start.time()).unwrap_or_default();
             if let Some((_, _, execute_finish)) = &execute_info {
+                let time_without_wait = if !wait.is_zero() { format!("{:?}/", time.saturating_sub(*wait)) } else { "".into() };
                 if start.time() > execute_finish.time() {
                     let gap_time = start.time().duration_since(*execute_finish.time()).unwrap_or_default();
-                    process += &format!("-{}({:?})-{}({:?})", start.id(), gap_time, finish.id(), time);
+                    process += &format!("-{}({:?})-{}({}{:?})", start.id(), gap_time, finish.id(), time_without_wait, time);
                 } else {
-                    process += &format!("-{}({:?})", finish.id(), time);
+                    process += &format!("-{}({}{:?})", finish.id(), time_without_wait, time);
                 }
             }
         } else {
@@ -260,30 +262,36 @@ impl<B: BlockT> IntervalTrace<B> {
 
     pub fn on_commit(&mut self, now: SystemTime, commit: BlockCommit<B>) {
         let block = commit.block_number();
-        if let Some((pre_view, prev_time)) = self.commit.get_mut(&block) {
+        if let Some((pre_view, prev_time, pre_commit_time)) = self.commit.get_mut(&block) {
             if commit.view() > *pre_view {
                 *prev_time = now;
+                *pre_commit_time = *commit.commit_time();
             }
         } else {
-            self.commit.insert(block, (commit.view(), now));
+            self.commit.insert(block, (commit.view(), now, *commit.commit_time()));
         }
         trace!(
             target: TRACE_LOG_TARGET,
-            "[Commit] block {block} by QC {}:{}{}",
+            "[Commit] {block} QC {}:{}{}",
             commit.round(),
             commit.commit_hash(),
             self.commit
                 .get(&block.saturating_sub(1u32.into()))
-                .map(|pre| format!(" ({:?})", now.duration_since(pre.1).unwrap_or_default()))
+                .map(|pre| format!(
+                    " ({:?} {}ms)",
+                    now.duration_since(pre.1).unwrap_or_default(),
+                    commit.commit_time().as_millis().saturating_sub(pre.2.as_millis()),
+                ))
                 .unwrap_or("".into()),
         );
         if self.commit.len() > self.analyze_block_interval + 2 {
             let last_analyze_block = block.saturating_sub((self.analyze_block_interval as u32).into());
-            if let Some((last_view, last_time)) = self.commit.get(&last_analyze_block) {
+            if let Some((last_view, last_time, last_commit_time)) = self.commit.get(&last_analyze_block) {
                 info!(
                     target: TRACE_LOG_TARGET,
-                    "[AvgCommit] {}ms(#{last_analyze_block}->#{block} view {last_view}->{})",
+                    "[AvgCommit] {}ms commit_time {}ms(#{last_analyze_block}->#{block} view {last_view}->{})",
                     now.duration_since(*last_time).unwrap_or_default().as_micros() / self.analyze_block_interval as u128 / 1000,
+                    commit.commit_time().as_millis().saturating_sub(last_commit_time.as_millis()) / self.analyze_block_interval as u64,
                     commit.view(),
                 );
             }
@@ -311,7 +319,7 @@ impl<B: BlockT> IntervalTrace<B> {
         self.tx_count = new_tx_count;
         trace!(
             target: TRACE_LOG_TARGET,
-            "[Execute] block {block}{}",
+            "[Execute] {block}{}",
             self.execute
                 .get(&block.saturating_sub(1u32.into()))
                 .map(|pre| format!(" ({:?})", now.duration_since(pre.2).unwrap_or_default()))
@@ -349,7 +357,7 @@ impl<B: BlockT> IntervalTrace<B> {
         }
         trace!(
             target: TRACE_LOG_TARGET,
-            "[Confirm] block {block} by QC {round}:{proposal_hash}{}",
+            "[Confirm] {block} QC {round}:{proposal_hash}{}",
             self.confirm
                 .get(&block.saturating_sub(1u32.into()))
                 .map(|pre| format!(" ({:?})", now.duration_since(pre.1).unwrap_or_default()))
@@ -378,20 +386,25 @@ impl<B: BlockT> IntervalTrace<B> {
         }
     }
 
-    pub fn on_import(&mut self, now: SystemTime, header: B::Header) -> bool {
+    pub fn on_import(&mut self, now: SystemTime, wait: Duration, header: B::Header) -> bool {
         let block = header.number();
-        if let Some((pre_hash, prev_time)) = self.import.get_mut(&block) {
+        if let Some((pre_hash, pre_wait, prev_time)) = self.import.get_mut(&block) {
             if header.hash() == *pre_hash { return false; }
+            *pre_wait = wait;
             *prev_time = now;
         } else {
-            self.import.insert(*block, (header.hash(), now));
+            self.import.insert(*block, (header.hash(), wait, now));
         }
         trace!(
             target: TRACE_LOG_TARGET,
-            "[Import] block {block}{}",
+            "[Import] {block}{}",
             self.import
                 .get(&block.saturating_sub(1u32.into()))
-                .map(|pre| format!(" ({:?})", now.duration_since(pre.1).unwrap_or_default()))
+                .map(|pre| format!(
+                    " ({:?}{})",
+                    now.duration_since(pre.2).unwrap_or_default(),
+                    if !wait.is_zero() { format!(" W {wait:?}") } else { "".into() }
+                ))
                 .unwrap_or("".into()),
         );
         if let Some(analyze_info) = self.analyze_exe_import_process(*block) {
@@ -399,7 +412,7 @@ impl<B: BlockT> IntervalTrace<B> {
         }
         if self.import.len() > self.analyze_block_interval + 2 {
             let last_analyze_block = block.saturating_sub((self.analyze_block_interval as u32).into());
-            if let Some((_, last_time)) = self.import.get(&last_analyze_block) {
+            if let Some((_, _, last_time)) = self.import.get(&last_analyze_block) {
                 info!(
                     target: TRACE_LOG_TARGET,
                     "[AvgImport] {}ms(#{last_analyze_block}->#{block})",

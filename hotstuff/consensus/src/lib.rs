@@ -1,29 +1,34 @@
+pub mod agg_signature;
 pub mod aux_schema;
 pub mod import;
-pub mod message;
-
-pub mod aggregator;
 pub mod authorities;
 pub mod client;
 pub mod config;
 pub mod consensus;
+pub mod finalize;
 pub mod network;
-pub mod error;
 pub mod aux_data;
-pub mod import_queue;
 pub mod executor;
 pub mod revert;
-pub mod oracle;
-pub mod state;
-pub mod trace;
 
+#[cfg(test)]
+#[path = "tests/consensus_tests.rs"]
+pub mod consensus_tests;
+
+#[cfg(test)]
+#[path = "tests/message_tests.rs"]
+pub mod message_tests;
+
+pub use consensus::oracle;
 pub use client::{block_import, LinkHalf};
-pub use import::HotstuffBlockImport;
+pub use import::import::HotstuffBlockImport;
+pub use import::import_queue;
 use std::fmt::Debug;
 use codec::Codec;
 use log::trace;
+use consensus::error;
 use hotstuff_primitives::{ConsensusLog, HotstuffApi, RuntimeAuthorityId, HOTSTUFF_ENGINE_ID};
-use hotstuff_primitives::{SlotDuration, digests::CompatibleDigestItem};
+use hotstuff_primitives::{digests::CompatibleDigestItem, SlotDuration};
 use sc_client_api::{AuxStore, UsageProvider};
 use sp_api::{BlockT, Core, ProvideRuntimeApi};
 use sp_blockchain::HeaderBackend;
@@ -33,7 +38,7 @@ use sp_core::Pair;
 use sp_runtime::DigestItem;
 use sp_runtime::traits::{Header, NumberFor, Zero};
 use crate::aux_schema::PersistentData;
-use crate::message::BlockCommit;
+use consensus::message::BlockCommit;
 
 pub const LOG_TARGET: &str = "hots";
 pub const CLIENT_LOG_TARGET: &str = "hotstuff";
@@ -110,6 +115,9 @@ pub enum Error<B: BlockT> {
     /// Client Error
     #[error(transparent)]
     Client(sp_blockchain::Error),
+    /// Consensus Error
+    #[error(transparent)]
+    Consensus(error::HotstuffError),
     /// Unknown inherent error for identifier
     #[error("Unknown inherent error for identifier: {}", String::from_utf8_lossy(.0))]
     UnknownInherentError(sp_inherents::InherentIdentifier),
@@ -130,6 +138,12 @@ impl<B: BlockT> From<PreDigestLookupError> for Error<B> {
             PreDigestLookupError::MultipleHeaders => Error::MultipleHeaders,
             PreDigestLookupError::NoDigestFound => Error::NoDigestFound,
         }
+    }
+}
+
+impl<B: BlockT> From<error::HotstuffError> for Error<B> {
+    fn from(error: error::HotstuffError) -> Self {
+        Self::Consensus(error)
     }
 }
 

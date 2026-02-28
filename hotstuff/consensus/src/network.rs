@@ -1,3 +1,4 @@
+#![allow(clippy::borrowed_box)]
 use std::{
 	marker::PhantomData,
 	pin::Pin,
@@ -20,9 +21,11 @@ use sp_core::Decode;
 use sp_runtime::traits::{Block as BlockT, Hash as HashT, Header as HeaderT, NumberFor};
 
 use crate::{AuthorityId, AuthorityList};
-use crate::{import::PeerReport, message::ConsensusMessage, error::ViewNumber};
-use crate::message::PeerAuthority;
-use crate::error::HotstuffError;
+use crate::consensus::error::ViewNumber;
+use crate::consensus::message::ConsensusMessage;
+use crate::consensus::message::PeerAuthority;
+use crate::consensus::error::HotstuffError;
+use crate::import::import::PeerReport;
 
 /// A handle to the network.
 ///

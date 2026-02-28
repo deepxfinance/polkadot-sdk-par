@@ -76,9 +76,10 @@ try-runtime-cli = { version = "0.10.0-dev", optional = true, path = "../../../ut
 substrate-build-script-utils = { version = "3.0.0", path = "../../../utils/build-script-utils" }
 
 [features]
-default = ["kvdb"]
+default = ["kvdb", "async-root"]
 dev-time = ["sc-basic-authorship/dev-time", "frame-support/dev-time"]
 kvdb = ["sc-basic-authorship/kvdb", "sc-service/kvdb"]
+async-root = ["sc-basic-authorship/async-root", "hotstuff-consensus/async-root"]
 # Dependencies that are only required if runtime benchmarking should be build.
 runtime-benchmarks = [
 	"node-template-runtime/runtime-benchmarks",
