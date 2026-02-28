@@ -235,13 +235,12 @@ where
     async fn try_import_all(&mut self) {
         let mut mission_block = self.client.info().best_number.saturating_add(1u32.into());
         loop {
-            let start = SystemTime::now();
             let import = match self.imports.remove(&mission_block) {
                 Some(mission) => mission,
                 None => break,
             };
             self.block_lock.lock(BlockOrigin::ConsensusBroadcast, mission_block).await;
-            let result = self.try_import(start, import.into_inner()).await;
+            let result = self.try_import(SystemTime::now(), import.into_inner()).await;
             self.block_lock.unlock(BlockOrigin::ConsensusBroadcast, mission_block).await;
             match result {
                 Ok(imported) => if !imported { break; }
