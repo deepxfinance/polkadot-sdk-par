@@ -89,7 +89,7 @@ use frame_support::{
 		extract_actual_pays_fee, extract_actual_weight, DispatchClass, DispatchInfo,
 		DispatchResult, DispatchResultWithPostInfo, PerDispatchClass,
 	},
-	storage::{self, StorageStreamIter},
+	storage,
 	traits::{
 		ConstU32, Contains, EnsureOrigin, Get, HandleLifetime, OnKilledAccount, OnNewAccount,
 		OriginTrait, PalletInfo, SortedMembers, StoredMap, TypedGet,
@@ -129,7 +129,7 @@ pub use extensions::{
 // Backward compatible re-export.
 pub use extensions::check_mortality::CheckMortality as CheckEra;
 pub use frame_support::dispatch::RawOrigin;
-use frame_support::storage::unhashed;
+use frame_support::storage::{unhashed, StorageStreamIter};
 pub use weights::WeightInfo;
 
 const LOG_TARGET: &str = "runtime::system";
@@ -1491,13 +1491,14 @@ impl<T: Config> Pallet<T> {
 		#[cfg(feature = "std")]
 		{
 			let mut events_ref = Events::<T>::get_ref();
-			if events_ref.try_mutate(|e| if let Some(events) = e {
-				let thread = <Threads<T>>::get(number);
-				storage::unhashed::put_raw(&EventsMap::<T>::hashed_key_for(number, thread), &events.encode());
-				Ok(())
-			} else {
-				Err(())
-			}).is_ok() {
+			if events_ref.try_mutate(|e|
+				e.take().map(|events| {
+					EventsMap::<T>::get_ref(number, <Threads<T>>::get(number))
+						.mutate_value_query(|e| *e = events);
+					Ok::<(), ()>(())
+				})
+					.ok_or(())
+			).is_ok() {
 				events_ref.clear_muted();
 			};
 		}

@@ -875,7 +875,10 @@ impl<'a, S: 'a + TrieBackendStorage<H>, H: Hasher> HashDBRef<H, DBValue> for Eph
 /// Key-value pairs storage that is used by trie backend essence.
 pub trait TrieBackendStorage<H: Hasher>: Send + Sync {
 	/// Type of in-memory overlay.
+	#[cfg(not(feature = "async-root"))]
 	type Overlay: HashDB<H, DBValue> + Default + Consolidate;
+	#[cfg(feature = "async-root")]
+	type Overlay: HashDB<H, DBValue> + Default + Consolidate + Clone;
 
 	/// Get the value stored at key.
 	fn get(&self, key: &H::Out, prefix: Prefix) -> Result<Option<DBValue>>;

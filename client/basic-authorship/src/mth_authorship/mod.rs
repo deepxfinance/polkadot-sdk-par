@@ -51,7 +51,10 @@ pub trait GroupTransaction<Block: BlockT> {
 /// Get extrinsic by grouped.
 #[async_trait::async_trait]
 pub trait BlockPropose<Block: BlockT> {
+    #[cfg(not(feature = "async-root"))]
     type Transaction;
+    #[cfg(feature = "async-root")]
+    type Transaction: Clone;
     type Proof;
     type Error;
 

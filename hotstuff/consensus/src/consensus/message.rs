@@ -638,8 +638,10 @@ pub enum ConsensusMessage<B: BlockT> {
 
 impl<Block: BlockT> ConsensusMessage<Block> {
     pub fn gossip_topic() -> Block::Hash {
-        // TODO maybe use Lazy then just call hash once.
-        <<Block::Header as HeaderT>::Hashing as HashT>::hash(b"hotstuff/consensus")
+        static TOPIC: std::sync::OnceLock<Vec<u8>> = std::sync::OnceLock::new();
+        Decode::decode(&mut TOPIC.get_or_init(|| {
+            <<Block::Header as HeaderT>::Hashing as HashT>::hash(b"hotstuff/consensus").encode()
+        }).as_slice()).unwrap()
     }
 }
 

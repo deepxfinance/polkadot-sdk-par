@@ -348,6 +348,8 @@ where
         if *header.extrinsics_root() != mission.extrinsics_root() {
             return Err(format!("Propose block {mission_block} check extrinsics_root incorrect calculated {} expected {}", header.extrinsics_root(), mission.extrinsics_root()));
         }
+        #[cfg(feature = "async-root")]
+        let _ = proposal.storage_changes.transaction.clone();
         let trace = self.interval_trace.clone();
         let view = mission.view();
         let txs = info.applied();

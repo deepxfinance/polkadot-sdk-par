@@ -177,7 +177,10 @@ pub trait Backend<H: Hasher>: sp_std::fmt::Debug {
 	type Error: super::Error;
 
 	/// Storage changes to be applied if committing
+	#[cfg(not(feature = "async-root"))]
 	type Transaction: Consolidate + Default + Send;
+	#[cfg(feature = "async-root")]
+	type Transaction: Consolidate + Default + Send + Clone;
 
 	/// Type of trie backend storage.
 	type TrieBackendStorage: TrieBackendStorage<H, Overlay = Self::Transaction>;
