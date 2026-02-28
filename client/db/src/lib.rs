@@ -102,10 +102,8 @@ pub use sp_database::Database;
 
 pub use bench::BenchmarkingState;
 
-use std::sync::mpsc::{self, Sender};
+use tokio::sync::mpsc::{self, Sender};
 use std::sync::OnceLock;
-use std::thread;
-use std::time::Duration;
 
 static GLOBAL_SENDER: OnceLock<Sender<Transaction<sp_core::H256>>> = OnceLock::new();
 
@@ -1478,6 +1476,8 @@ impl<Block: BlockT> Backend<Block> {
 			last_finalized_num = *block_header.number();
 		}
 
+		let mut genesis = false;
+
 		#[cfg(feature = "kvdb")]
 		let kv_cache = self.shared_trie_cache.as_ref().map(|cache| cache.local_cache());
 		let imported = if let Some(pending_block) = operation.pending_block {
@@ -1529,6 +1529,7 @@ impl<Block: BlockT> Backend<Block> {
 			}
 
 			if number.is_zero() {
+				genesis = true;
 				transaction.set(columns::META, meta_keys::GENESIS_HASH, hash.as_ref());
 
 				if operation.commit_state {
@@ -1781,8 +1782,11 @@ impl<Block: BlockT> Backend<Block> {
 			debug!(target:"commit-time", "⌛️ The time before to commit basic state & header data {:?}", start.elapsed());
 		}
 
-		self.storage.db.commit(transaction.clone())?;
-
+		if !print || genesis {
+			debug!(target:"commit-time", "⌛️ transaction numbers {}", transaction.0.len() );
+			self.storage.db.commit(transaction.clone())?;
+		}
+		
 		if let Some((header, hash)) = imported {
 			trace!(target: "db", "DB Commit done {:?}", hash);
 			let header_metadata = CachedHeaderMetadata::from(&header);
@@ -1793,7 +1797,7 @@ impl<Block: BlockT> Backend<Block> {
 		if print {
 			let lens_txs = transaction_state.0.len();
 			debug!(target:"commit-time", "⌛️ The time taken to commit basic state & header data {:?} and next {lens_txs}", start.elapsed());
-			self.commit_db_state_background().send(transaction_state);
+			let _ = self.commit_db_state_background().try_send(transaction_state);
 		}
 
 		#[cfg(feature = "kvdb")]
@@ -1814,6 +1818,8 @@ impl<Block: BlockT> Backend<Block> {
 		Ok(())
 	}
 
+	/// Returns a sender for background database state commits.
+	/// This allows committing state to the database asynchronously.
 	pub fn commit_db_state_background(&self) -> Sender<Transaction<sp_core::H256>> {
 
     	//let db = &self.storage.db.clone();
@@ -1821,13 +1827,14 @@ impl<Block: BlockT> Backend<Block> {
 		GLOBAL_SENDER.get_or_init(|| {
         	let db_clone = Arc::clone(&self.storage.db.clone());
 
-			let (sender, receiver) = mpsc::channel();
+			let (sender, mut receiver) = mpsc::channel(100);
 
-			thread::spawn(move || {				
-				while let Ok(msg) = receiver.recv() {
-					//std::thread::sleep(std::time::Duration::from_millis(5));
+			tokio::spawn(async move {				
+				while let Some(msg) = receiver.recv().await {
+					// Use spawn_blocking for the blocking database commit operation
+					let db_for_blocking = Arc::clone(&db_clone);
 					let start = std::time::Instant::now();
-                    let res = db_clone.commit(msg);
+					let res = db_for_blocking.commit(msg);
 					debug!(target:"commit-time", "⏳ Commit full State to DB success {:?} time {:?}", res, start.elapsed());
 				}
 			});
