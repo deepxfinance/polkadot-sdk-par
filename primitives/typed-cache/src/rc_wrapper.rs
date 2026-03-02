@@ -98,7 +98,7 @@ impl<T> RcT<T> {
     pub fn try_mutate<R, E>(&mut self, f: impl FnOnce(&mut Option<T>) -> Result<R, E>) -> Result<R, E> {
         let mut mut_inner = self.0.borrow_mut();
         let res = f(&mut mut_inner.deref_mut().inner);
-        mut_inner.muted = res.is_ok();
+        if res.is_ok() { mut_inner.muted = true; }
         res
     }
 
@@ -155,7 +155,7 @@ impl<T: Default> RcT<T> {
             res
         };
 
-        mut_inner.muted = res.is_ok();
+        if res.is_ok() { mut_inner.muted = true; }
         res
     }
 }
