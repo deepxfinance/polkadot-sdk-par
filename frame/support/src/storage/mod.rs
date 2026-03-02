@@ -39,10 +39,9 @@ pub use self::{
 pub use sp_runtime::TransactionOutcome;
 pub use types::Key;
 
+pub use typed_cache::TStorageOverlay;
 #[cfg(feature = "std")]
-pub use sp_state_machine::TStorage;
-#[cfg(feature = "std")]
-pub use typed_cache::RcT;
+pub use typed_cache::{RcT, TStorage};
 #[cfg(not(feature = "std"))]
 pub use no_std_rct::RcT;
 

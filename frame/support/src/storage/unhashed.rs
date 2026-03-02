@@ -17,10 +17,10 @@
 
 //! Operation on unhashed runtime storage.
 
-use codec::{Decode, Encode, FullCodec};
+use codec::{Decode, Encode};
 use sp_std::prelude::*;
 use typed_cache::QueryTransfer;
-use crate::storage::{TStorage, TypedAppend, RcT};
+use crate::storage::{TStorage, TStorageOverlay, TypedAppend, RcT};
 
 #[cfg(all(feature = "std", feature = "dev-time"))]
 lazy_static::lazy_static! {
@@ -88,7 +88,7 @@ fn parse_type<T: Decode>(key: &[u8], val: Vec<u8>) -> Option<T> {
 }
 
 #[cfg(feature = "std")]
-pub fn contains_key_cache<T: FullCodec + TStorage>(key: &[u8]) -> bool {
+pub fn contains_key_cache<T: TStorageOverlay>(key: &[u8]) -> bool {
 	match sp_io::mut_typed_cache(|o| o.contains_key::<T>(key_prefix(key), &key)) {
 		Some(Some(contains)) => contains,
 		Some(None) => {
@@ -103,7 +103,7 @@ pub fn contains_key_cache<T: FullCodec + TStorage>(key: &[u8]) -> bool {
 }
 
 #[cfg(feature = "std")]
-pub fn put_cache<T: FullCodec + TStorage>(key: &[u8], val: T) {
+pub fn put_cache<T: TStorageOverlay>(key: &[u8], val: T) {
 	if sp_io::mut_typed_cache(|_| ()).is_none() {
 		put(key, &val);
 	} else {
@@ -116,7 +116,7 @@ pub fn non_f<T>(_k: &[u8]) -> Option<T> { None }
 pub fn non_t<T>() -> Option<T> { None }
 
 #[cfg(feature = "std")]
-pub fn get_cache_ref<T: FullCodec + TStorage, F>(key: &[u8], _f: F) -> RcT<T>
+pub fn get_cache_ref<T: TStorageOverlay, F>(key: &[u8], _f: F) -> RcT<T>
 where
 	F: FnOnce() -> Option<T>
 {
@@ -140,7 +140,7 @@ pub fn get_cache_ref<T: Decode + Sized>(key: &[u8]) -> RcT<T> {
 }
 
 #[cfg(feature = "std")]
-pub fn get_cache<T: FullCodec + TStorage, F>(key: &[u8], _f: F) -> Option<T> where F: Fn(&[u8]) -> Option<T> {
+pub fn get_cache<T: TStorageOverlay, F>(key: &[u8], _f: F) -> Option<T> where F: Fn(&[u8]) -> Option<T> {
 	match sp_io::mut_typed_cache(
 		|o| o.get::<T, F>(key_prefix(key), key, None),
 	) {
@@ -157,7 +157,7 @@ pub fn get_cache<T: FullCodec + TStorage, F>(key: &[u8], _f: F) -> Option<T> whe
 /// If `f` used, return `true`.
 /// If `f` not used, return `false`. Then we should try raw cache.
 #[cfg(feature = "std")]
-pub fn mutate_cache<QT: QueryTransfer<T>, T: FullCodec + TStorage, Ini, F, R, E>(key: &[u8], _ini: Ini, f: F) -> Result<R, E>
+pub fn mutate_cache<QT: QueryTransfer<T>, T: TStorageOverlay, Ini, F, R, E>(key: &[u8], _ini: Ini, f: F) -> Result<R, E>
 where
 	Ini: FnOnce() -> Option<T>,
 	F: FnOnce(&mut QT::Query) -> Result<R, E>
@@ -191,7 +191,7 @@ where
 }
 
 #[cfg(feature = "std")]
-pub fn take_cache<T: FullCodec + TStorage>(key: &[u8]) -> Option<T> {
+pub fn take_cache<T: TStorageOverlay>(key: &[u8]) -> Option<T> {
 	match sp_io::mut_typed_cache(
 		|o| o.take::<T>(key_prefix(key), key),
 	) {
@@ -210,7 +210,7 @@ pub fn take_cache<T: FullCodec + TStorage>(key: &[u8]) -> Option<T> {
 }
 
 #[cfg(feature = "std")]
-pub fn kill_cache<T: FullCodec + TStorage>(key: &[u8]) {
+pub fn kill_cache<T: TStorageOverlay>(key: &[u8]) {
 	if sp_io::mut_typed_cache(|_| ()).is_none() {
 		kill(key);
 	} else {
@@ -219,7 +219,7 @@ pub fn kill_cache<T: FullCodec + TStorage>(key: &[u8]) {
 }
 
 #[cfg(feature = "std")]
-pub fn append_cache<T: FullCodec + TStorage, Item: Encode + Clone>(key: &[u8], item: Item)
+pub fn append_cache<T: TStorageOverlay, Item: Encode + Clone>(key: &[u8], item: Item)
 where
 	T: TypedAppend<Item> + TStorage
 {

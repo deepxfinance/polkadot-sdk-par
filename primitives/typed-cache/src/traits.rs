@@ -1,24 +1,17 @@
-#[cfg(feature = "std")]
+use codec::FullCodec;
 use downcast_rs::{impl_downcast, DowncastSync};
 use sp_std::collections::btree_map::BTreeMap;
 use sp_std::vec::Vec;
-use crate::changeset::ExecutionMode;
 use crate::{RcT, Set, StorageKey};
 
-#[cfg(not(feature = "std"))]
-/// Default no requirements for `no_std`
-pub trait TStorage {}
-
-#[cfg(not(feature = "std"))]
-impl<S> TStorage for S {}
-
-#[cfg(feature = "std")]
 pub trait TStorage: Clone + 'static {}
 
-#[cfg(feature = "std")]
 impl<S: Clone + 'static> TStorage for S {}
 
-#[cfg(feature = "std")]
+pub trait TStorageOverlay: TStorage + FullCodec {}
+
+impl<S: TStorage + FullCodec> TStorageOverlay for S {}
+
 /// Manager for all storage types with overlay management.
 pub trait StorageApi: DowncastSync {
     /// Enter runtime.
@@ -47,7 +40,6 @@ pub trait StorageApi: DowncastSync {
     fn try_kill(&mut self, first_write_in_tx: bool, key: &[u8]);
 }
 
-#[cfg(feature = "std")]
 impl_downcast!(sync StorageApi);
 
 /// For all storage types including Value/Map/DoubleMap/NMap

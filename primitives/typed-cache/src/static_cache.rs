@@ -2,37 +2,26 @@
 use codec::{FullCodec, Output};
 use log::warn;
 use sp_std::boxed::Box;
-use sp_std::collections::btree_map::{BTreeMap, Entry::{Vacant, Occupied}};
+use sp_std::collections::btree_map::BTreeMap;
 use sp_std::sync::Arc;
-#[cfg(feature = "std")]
-use sp_std::sync::RwLock;
 use sp_std::any::Any;
-use crate::{QueryTransfer, RcT, StorageIO, StorageKey};
-#[cfg(feature = "std")]
+use crate::{TStorageOverlay, QueryTransfer, RcT, StorageIO, StorageKey};
 use crate::StorageApi;
-#[cfg(feature = "std")]
 use crate::changeset::StorageOverlay;
 use crate::changeset::{ExecutionMode, NoOpenTransaction};
 
-#[cfg(feature = "std")]
 pub type AnyStorage = Box<dyn StorageApi>;
-#[cfg(feature = "std")]
-pub type Overlay = std::collections::HashMap<Vec<u8>, AnyStorage>;
+pub type Overlay = Map<Vec<u8>, AnyStorage>;
 use sp_std::vec::Vec;
 
 #[cfg(not(feature = "std"))]
-#[derive(Clone, Default)]
-pub struct OverlayCache;
-
-#[cfg(not(feature = "std"))]
-pub use sp_std::collections::{btree_set::BTreeSet as Set, btree_map::BTreeMap as Map};
+pub use sp_std::collections::{btree_set::BTreeSet as Set, btree_map::{BTreeMap as Map, Entry::{Vacant, Occupied}}};
 #[cfg(feature = "std")]
-pub use std::collections::{HashSet as Set, HashMap as Map};
+pub use std::collections::{HashSet as Set, HashMap as Map, hash_map::Entry::{Vacant, Occupied}};
 use smallvec::SmallVec;
 
 pub type DirtyKeysSets<K> = SmallVec<[Map<Vec<u8>, Set<K>>; 5]>;
 
-#[cfg(feature = "std")]
 #[derive(Default)]
 pub struct OverlayCache {
     // pub cache: SharedCache,
@@ -50,16 +39,15 @@ pub struct OverlayCache {
     pub closed: bool,
 }
 
-#[cfg(feature = "std")]
 impl OverlayCache {
     /// Handle with `f` for mutable reference with create default space if not exist.
-    pub fn handle_mut_or_default<V: Clone + FullCodec + 'static, F, O>(&mut self, space: &[u8], f: F) -> O
+    pub fn handle_mut_or_default<V: TStorageOverlay, F, O>(&mut self, space: &[u8], f: F) -> O
     where
         F: FnOnce(&mut AnyStorage) -> O
     {
         match self.inner.entry(space.to_vec()) {
-            std::collections::hash_map::Entry::Occupied(entry) => { return f(&mut entry.into_mut()) },
-            std::collections::hash_map::Entry::Vacant(e) => {
+            Occupied(entry) => { return f(&mut entry.into_mut()) },
+            Vacant(e) => {
                 e.insert(Box::new(StorageOverlay::<Vec<u8>, V>::new()));
             }
         }
@@ -83,9 +71,8 @@ impl OverlayCache {
     }
 }
 
-#[cfg(feature = "std")]
 impl OverlayCache {
-    pub fn put<V: Clone + FullCodec + 'static>(&mut self, space: &[u8], key: &[u8], value: V) {
+    pub fn put<V: TStorageOverlay>(&mut self, space: &[u8], key: &[u8], value: V) {
         let first_write_in_tx = self.first_write_in_tx(space, key);
         let f = |storage: &mut AnyStorage| {
             storage.downcast_mut::<StorageOverlay<Vec<u8>, V>>()
@@ -108,7 +95,7 @@ impl OverlayCache {
         self.handle_mut(space, f);
     }
 
-    pub fn contains_key<V: Clone + FullCodec + 'static>(&self, space: &[u8], key: &[u8]) -> Option<bool> {
+    pub fn contains_key<V: TStorageOverlay>(&self, space: &[u8], key: &[u8]) -> Option<bool> {
         let f = |storage: &AnyStorage| {
             storage.downcast_ref::<StorageOverlay<Vec<u8>, V>>()
                 .map(|overlay| overlay.contains(key))
@@ -117,7 +104,7 @@ impl OverlayCache {
         self.handle_ref::<_, _>(space, f).unwrap_or(None)
     }
 
-    pub fn get<V: Clone + FullCodec + 'static, F>(&mut self, space: &[u8], key: &[u8], init: Option<F>) -> Option<Option<V>>
+    pub fn get<V: TStorageOverlay, F>(&mut self, space: &[u8], key: &[u8], init: Option<F>) -> Option<Option<V>>
     where
         F: Fn(&[u8]) -> Option<V>
     {
@@ -128,7 +115,7 @@ impl OverlayCache {
         self.handle_mut_or_default::<V, _, _>(space, f).unwrap_or(None)
     }
 
-    pub fn get_ref<V: Clone + FullCodec + 'static, F>(&mut self, space: &[u8], key: &[u8], init: Option<F>) -> Option<RcT<V>>
+    pub fn get_ref<V: TStorageOverlay, F>(&mut self, space: &[u8], key: &[u8], init: Option<F>) -> Option<RcT<V>>
     where
         F: FnOnce() -> Option<V>,
     {
@@ -145,7 +132,7 @@ impl OverlayCache {
         self.handle_ref::<_, _>(space, f)?
     }
 
-    pub fn get_change<V: Clone + FullCodec + 'static>(&self, space: &[u8], key: &[u8]) -> Option<Option<V>> {
+    pub fn get_change<V: TStorageOverlay>(&self, space: &[u8], key: &[u8]) -> Option<Option<V>> {
         let f = |storage: &AnyStorage| {
             storage.downcast_ref::<StorageOverlay<Vec<u8>, V>>()
                 .map(|overlay| overlay.get_change(key))
@@ -153,7 +140,7 @@ impl OverlayCache {
         self.handle_ref::<_, _>(space, f)?.unwrap_or(None)
     }
 
-    pub fn get_change_ref<V: Clone + FullCodec + 'static>(&self, space: &[u8], key: &[u8]) -> Option<RcT<V>> {
+    pub fn get_change_ref<V: TStorageOverlay>(&self, space: &[u8], key: &[u8]) -> Option<RcT<V>> {
         let f = |storage: &AnyStorage| {
             storage.downcast_ref::<StorageOverlay<Vec<u8>, V>>()
                 .map(|overlay| overlay.get_change_ref(key))
@@ -161,7 +148,7 @@ impl OverlayCache {
         self.handle_ref::<_, _>(space, f)?.unwrap_or(None)
     }
 
-    pub fn take<V: Clone + FullCodec + 'static>(&mut self, space: &[u8], key: &[u8]) -> Option<Option<V>> {
+    pub fn take<V: TStorageOverlay>(&mut self, space: &[u8], key: &[u8]) -> Option<Option<V>> {
         let f = |storage: &mut AnyStorage| {
             storage.downcast_mut::<StorageOverlay<Vec<u8>, V>>()
                 .map(|overlay| overlay.take(key))
@@ -169,7 +156,7 @@ impl OverlayCache {
         self.handle_mut_or_default::<V, _, _>(space, f).unwrap_or(None)
     }
 
-    pub fn pop_ref<V: Clone + FullCodec + 'static>(&mut self, space: &[u8], key: &[u8]) -> Option<RcT<V>> {
+    pub fn pop_ref<V: TStorageOverlay>(&mut self, space: &[u8], key: &[u8]) -> Option<RcT<V>> {
         let f = |storage: &mut AnyStorage| {
             storage.downcast_mut::<StorageOverlay<Vec<u8>, V>>()
                 .map(|overlay| overlay.pop_ref(key))
@@ -178,7 +165,7 @@ impl OverlayCache {
         self.handle_mut::<_, _>(space, f).unwrap_or(None)
     }
 
-    pub fn kill<V: Clone + FullCodec + 'static>(&mut self, space: &[u8], key: &[u8]) {
+    pub fn kill<V: TStorageOverlay>(&mut self, space: &[u8], key: &[u8]) {
         let first_write_in_tx = self.first_write_in_tx(space, key);
         let f = |storage: &mut AnyStorage| {
             storage.downcast_mut::<StorageOverlay<Vec<u8>, V>>()
@@ -187,7 +174,7 @@ impl OverlayCache {
         self.handle_mut_or_default::<V, _, _>(space, f);
     }
 
-    pub fn mutate<QT: QueryTransfer<V>, V: Clone + FullCodec + 'static, F, M, R, E>(&mut self, space: &[u8], key: &[u8], init: Option<F>, mutate: M) -> Option<Result<R, E>>
+    pub fn mutate<QT: QueryTransfer<V>, V: TStorageOverlay, F, M, R, E>(&mut self, space: &[u8], key: &[u8], init: Option<F>, mutate: M) -> Option<Result<R, E>>
     where
         F: FnOnce() -> Option<V>,
         M: FnOnce(&mut QT::Query) -> Result<R, E>,
@@ -200,7 +187,7 @@ impl OverlayCache {
         self.handle_mut_or_default::<V, _, _>(space, f).unwrap_or(None)
     }
 
-    pub fn append<V: Clone + FullCodec + 'static, F, M>(&mut self, space: &[u8], key: &[u8], init: F, mutate: M) -> bool
+    pub fn append<V: TStorageOverlay, F, M>(&mut self, space: &[u8], key: &[u8], init: F, mutate: M) -> bool
     where
         F: FnOnce() -> V,
         M: FnOnce(&mut Option<V>)
@@ -213,7 +200,7 @@ impl OverlayCache {
         self.handle_mut_or_default::<V, _, _>(space, f).unwrap_or(false)
     }
 
-    pub fn init<V: Clone + FullCodec + 'static>(&mut self, space: &[u8], key: &[u8], value: Option<V>) {
+    pub fn init<V: TStorageOverlay>(&mut self, space: &[u8], key: &[u8], value: Option<V>) {
         let f = |storage: &mut AnyStorage| {
             storage.downcast_mut::<StorageOverlay<Vec<u8>, V>>()
                 .map(|overlay| overlay.init(key, value));
@@ -221,7 +208,7 @@ impl OverlayCache {
         self.handle_mut_or_default::<V, _, _>(space, f);
     }
 
-    pub fn cached<V: Clone + FullCodec + 'static>(&self, space: &[u8], key: &[u8]) -> bool {
+    pub fn cached<V: TStorageOverlay>(&self, space: &[u8], key: &[u8]) -> bool {
         let f = |storage: &AnyStorage| {
             storage.downcast_ref::<StorageOverlay<Vec<u8>, V>>()
                 .map(|overlay| overlay.cached(key))
@@ -248,7 +235,6 @@ fn insert_dirty(set: &mut DirtyKeysSets<StorageKey>, space: &[u8], key: &[u8]) -
         .unwrap_or_default()
 }
 
-#[cfg(feature = "std")]
 impl OverlayCache {
     pub fn refresh(&mut self) {
         self.inner.clear();

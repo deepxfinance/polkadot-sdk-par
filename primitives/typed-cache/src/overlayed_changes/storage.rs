@@ -2,8 +2,8 @@ use sp_std::boxed::Box;
 use sp_std::collections::btree_map::BTreeMap;
 use sp_std::hash::Hash;
 use sp_std::vec::Vec;
-use codec::{Encode, FullCodec};
-use crate::{StorageIO, StorageApi, StorageKey, QueryTransfer, RcT};
+use codec::Encode;
+use crate::{StorageIO, StorageApi, StorageKey, QueryTransfer, RcT, TStorageOverlay};
 use crate::changeset::StorageOverlay;
 
 #[cfg(not(feature = "std"))]
@@ -17,7 +17,7 @@ pub type DirtyKeysSets<K> = SmallVec<[Set<K>; 5]>;
 unsafe impl<K: Ord + Hash + Clone, V: Clone> Send for StorageOverlay<K, V> {}
 unsafe impl<K: Ord + Hash + Clone, V: Clone> Sync for StorageOverlay<K, V> {}
 
-impl<V: Clone + FullCodec + 'static> StorageApi for StorageOverlay<StorageKey, V> {
+impl<V: TStorageOverlay> StorageApi for StorageOverlay<StorageKey, V> {
     fn enter_runtime(&mut self) {
         self.enter_runtime();
     }
@@ -164,7 +164,7 @@ impl<V: Clone> StorageIO<V> for StorageOverlay<StorageKey, V> {
     fn take(&mut self, key: &[u8]) -> Option<Option<V>> {
         self.changes
             .get_mut(key)
-            .map(|entry| entry.value_mut().mutate(|v| std::mem::take(v)))
+            .map(|entry| entry.value_mut().mutate(|v| core::mem::take(v)))
     }
 
     fn pop_ref(&mut self, key: &[u8]) -> Option<RcT<V>> {
