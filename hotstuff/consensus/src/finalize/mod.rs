@@ -6,6 +6,7 @@ use std::sync::Arc;
 use tokio::sync::mpsc::Receiver;
 use sc_client_api::Backend;
 use sp_api::{BlockT, TransactionFor};
+use crate::aux_schema::Store;
 use crate::client::ClientForHotstuff;
 use crate::network::{HotstuffNetworkBridge, Network, Syncing};
 
@@ -17,6 +18,7 @@ pub struct Finalizer<
     S: Syncing<B> + Sync + 'static,
 > {
     client: Arc<C>,
+    aux_data: Store<C>,
     network: HotstuffNetworkBridge<B, N, S>,
     /// finalize interval.
     interval: usize,
@@ -39,6 +41,7 @@ where
         rx: Receiver<(B::Header, TransactionFor<C, B>)>,
     ) -> Self {
         Self {
+            aux_data: Store::new(client.clone()),
             client,
             network,
             interval: interval.unwrap_or(1).max(1),

@@ -28,7 +28,7 @@ use sp_runtime::generic::BlockId;
 use sp_runtime::{traits, Saturating};
 use sp_runtime::transaction_validity::TransactionSource;
 use sp_timestamp::Timestamp;
-use crate::aux_data::{AuxDataStore, Timer};
+use crate::consensus::aux_data::{AuxDataStore, Timer};
 use crate::client::ClientForHotstuff;
 use crate::consensus::error::{HotstuffError, PayloadError, ViewNumber};
 use crate::consensus::message::*;
@@ -1289,7 +1289,7 @@ where
     O: BlockOracle<B> + HotsOracle<B> + Sync + Send + 'static,
 {
     let LinkHalf { client, select_chain: _, persistent_data } = link;
-    let authorities = crate::consensus::get_authorities_from_client::<B, BE, C>(client.clone());
+    let authorities = crate::get_authorities_from_client::<B, BE, C>(client.clone());
 
     let aux_data = AuxDataStore::<B, C>::new(client.clone());
     let commit_qc = aux_data.get_commit_qc().unwrap();

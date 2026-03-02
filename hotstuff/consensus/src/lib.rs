@@ -7,7 +7,6 @@ pub mod config;
 pub mod consensus;
 pub mod finalize;
 pub mod network;
-pub mod aux_data;
 pub mod executor;
 pub mod revert;
 
@@ -20,16 +19,17 @@ pub mod consensus_tests;
 pub mod message_tests;
 
 pub use consensus::oracle;
-pub use client::{block_import, LinkHalf};
+pub use client::LinkHalf;
 pub use import::import::HotstuffBlockImport;
-pub use import::import_queue;
+pub use import::{import_queue, block_import};
 use std::fmt::Debug;
-use codec::Codec;
+use std::sync::Arc;
+use codec::{Codec, Decode};
 use log::trace;
 use consensus::error;
 use hotstuff_primitives::{ConsensusLog, HotstuffApi, RuntimeAuthorityId, HOTSTUFF_ENGINE_ID};
 use hotstuff_primitives::{digests::CompatibleDigestItem, SlotDuration};
-use sc_client_api::{AuxStore, UsageProvider};
+use sc_client_api::{AuxStore, Backend, CallExecutor, ExecutionStrategy, ExecutorProvider, UsageProvider};
 use sp_api::{BlockT, Core, ProvideRuntimeApi};
 use sp_blockchain::HeaderBackend;
 use sp_consensus::Error as ConsensusError;
@@ -39,6 +39,9 @@ use sp_runtime::DigestItem;
 use sp_runtime::traits::{Header, NumberFor, Zero};
 use crate::aux_schema::PersistentData;
 use consensus::message::BlockCommit;
+use sp_core::traits::CallContext;
+use sp_runtime::generic::BlockId;
+use crate::client::ClientForHotstuff;
 
 pub const LOG_TARGET: &str = "hots";
 pub const CLIENT_LOG_TARGET: &str = "hotstuff";
@@ -352,4 +355,35 @@ where
         }
         Ok((header, slot, seal_groups, seal_commit))
     }
+}
+
+pub fn get_authorities_from_client<
+    B: BlockT,
+    BE: Backend<B>,
+    C: ClientForHotstuff<B, BE>,
+>(
+    client: Arc<C>,
+) -> AuthorityList {
+    let block_id = BlockId::hash(client.info().best_hash);
+    let block_hash = client
+        .expect_block_hash_from_id(&block_id)
+        .expect("get genesis block hash from client failed");
+
+    let authorities_data = client
+        .executor()
+        .call(
+            block_hash,
+            "HotstuffApi_authorities",
+            &[],
+            ExecutionStrategy::NativeElseWasm,
+            CallContext::Offchain,
+        )
+        .expect("call runtime failed");
+
+    let authorities: Vec<RuntimeAuthorityId> = Decode::decode(&mut &authorities_data[..]).expect("");
+
+    authorities
+        .iter()
+        .map(|id| (id.clone().into(), 0))
+        .collect::<AuthorityList>()
 }
