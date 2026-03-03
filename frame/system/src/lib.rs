@@ -359,7 +359,7 @@ pub mod pallet {
 
 		/// The maximum number of consumers allowed on a single account.
 		type MaxConsumers: ConsumerLimits;
-		
+
 		/// Get all call limits for account.
 		type CallLimits: CallLimits;
 
@@ -368,6 +368,7 @@ pub mod pallet {
 	}
 
 	#[pallet::pallet]
+	#[pallet::without_storage_info]
 	pub struct Pallet<T>(_);
 
 	#[pallet::hooks]
@@ -407,8 +408,9 @@ pub mod pallet {
 		#[pallet::weight((T::SystemWeightInfo::set_code(), DispatchClass::Operational))]
 		pub fn set_code(origin: OriginFor<T>, code: Vec<u8>) -> DispatchResultWithPostInfo {
 			ensure_root(origin)?;
-			Self::can_set_code(&code)?;
+			let new_version = Self::can_set_code(&code)?;
 			T::OnSetCode::set_code(code)?;
+			RuntimeUpgrade::<T>::mutate(|v| v.push((new_version, Self::block_number())));
 			// consume the rest of the block to prevent further transactions
 			Ok(Some(T::BlockWeights::get().max_block).into())
 		}
@@ -662,6 +664,11 @@ pub mod pallet {
 	#[pallet::storage]
 	#[pallet::whitelist_storage]
 	pub(super) type ExecutionPhase<T: Config> = StorageValue<_, Phase>;
+
+	/// Record for runtime upgrade.
+	#[pallet::storage]
+	#[pallet::getter(fn runtime_upgrade)]
+	pub(super) type RuntimeUpgrade<T: Config> = StorageValue<_, Vec<(RuntimeVersion, T::BlockNumber)>, ValueQuery>;
 
 	#[derive(Default)]
 	#[pallet::genesis_config]
@@ -1685,7 +1692,7 @@ impl<T: Config> Pallet<T> {
 	/// Checks the given code if it is a valid runtime wasm blob by instantianting
 	/// it and extracting the runtime version of it. It checks that the runtime version
 	/// of the old and new runtime has the same spec name and that the spec version is increasing.
-	pub fn can_set_code(code: &[u8]) -> Result<(), sp_runtime::DispatchError> {
+	pub fn can_set_code(code: &[u8]) -> Result<RuntimeVersion, sp_runtime::DispatchError> {
 		let current_version = T::Version::get();
 		let new_version = sp_io::misc::runtime_version(code)
 			.and_then(|v| RuntimeVersion::decode(&mut &v[..]).ok())
@@ -1705,7 +1712,7 @@ impl<T: Config> Pallet<T> {
 					return Err(Error::<T>::SpecVersionNeedsToIncrease.into())
 				}
 
-				Ok(())
+				Ok(new_version)
 			}
 		}
 	}
