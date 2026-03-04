@@ -1,4 +1,4 @@
-use codec::Encode;
+use codec::{Decode, Encode};
 use sp_std::fmt::{self, Debug};
 use sp_std::ops::{Deref, DerefMut};
 use sp_std::cell::RefCell;
@@ -152,5 +152,24 @@ impl<T: Encode> RcT<T> {
             }
         }
         res
+    }
+
+    pub fn get_raw(&self, _cache_raw: bool) -> Option<Vec<u8>> {
+        let mut mut_inner = self.0.borrow_mut();
+        if let Some(raw_value) = mut_inner.inner.as_ref().map(|t| t.encode()) {
+            Some(raw_value)
+        } else {
+            None
+        }
+    }
+}
+
+impl<T: Decode> RcT<T> {
+    pub fn put_raw(&self, value: Vec<u8>, _cache_raw: bool) -> Result<(), codec::Error> {
+        let mut mut_inner = self.0.borrow_mut();
+        // `inner` is the main data, we `MUST` update it.
+        mut_inner.inner = Some(T::decode(&mut value.as_slice())?);
+        super::unhashed::put_raw(&mut_inner.key, &value);
+        Ok(())
     }
 }

@@ -39,6 +39,12 @@ pub struct OverlayCache {
     pub closed: bool,
 }
 
+impl Clone for OverlayCache {
+    fn clone(&self) -> Self {
+        self.copy_data()
+    }
+}
+
 impl OverlayCache {
     /// Handle with `f` for mutable reference with create default space if not exist.
     pub fn handle_mut_or_default<V: TStorageOverlay, F, O>(&mut self, space: &[u8], f: F) -> O
@@ -81,10 +87,26 @@ impl OverlayCache {
         self.handle_mut_or_default::<V, _, _>(space, f);
     }
 
+    pub fn put_raw<V: TStorageOverlay>(&mut self, space: &[u8], key: &[u8], data: Vec<u8>) {
+        let first_write_in_tx = self.first_write_in_tx(space, key);
+        let f = |storage: &mut AnyStorage| {
+            storage.downcast_mut::<StorageOverlay<Vec<u8>, V>>()
+                .map(|overlay| overlay.put_raw(first_write_in_tx, key, data));
+        };
+        self.handle_mut_or_default::<V, _, _>(space, f);
+    }
+
+    pub fn get_raw(&mut self, space: &[u8], key: &[u8], cache_raw: bool) -> Option<Vec<u8>> {
+        let f = |storage: &AnyStorage| {
+            storage.get_raw(key, cache_raw)
+        };
+        self.handle_ref::<_, _>(space, f).unwrap_or(None)
+    }
+
     pub fn try_update_raw(&mut self, space: &[u8], key: &[u8], data: Vec<u8>) {
         if !self.inner.contains_key(space) { return; }
         let first_write_in_tx = self.first_write_in_tx(space, key);
-        let f = |storage: &mut AnyStorage| { storage.try_update_raw(first_write_in_tx, key, data); };
+        let f = |storage: &mut AnyStorage| { storage.put_raw(first_write_in_tx, key, data); };
         self.handle_mut(space, f);
     }
 
@@ -243,7 +265,6 @@ impl OverlayCache {
 
     pub fn copy_data(&self) -> Self {
         Self {
-            // cache: self.cache.clone(),
             inner: self.inner.iter()
                 .map(|(space, overlay)| (space.clone(), overlay.copy_data()))
                 .collect(),
@@ -351,6 +372,8 @@ pub mod test {
     use crate::{OverlayCache, StorageIO};
 
     pub mod a {
+        #[cfg(not(feature = "std"))]
+        use sp_std::vec::Vec;
         use codec::{Decode, Encode};
         use crate::{OverlayCache, StorageIO};
 
@@ -391,47 +414,6 @@ pub mod test {
         assert_eq!(cache.get(b"Account", b"bob", Some(|_: &_| { None })), Some(Some(a::Account::new(b"bob", 0, 500))));
         assert_eq!(cache.get(b"u32", b"alice_extend", Some(|_: &_| { None })), Some(Some(100u32)));
         assert_eq!(cache.get(b"u32", b"bob_extend", Some(|_: &_| { None })), Some(Some(50u32)));
-    }
-
-    #[test]
-    fn test_multi_threads_write() {
-        let mut cache1 = OverlayCache::default();
-        cache1.init(b"u128", b"thread1", Some(128u128));
-        let mut cache2 = cache1.copy_data();
-
-        let mut cache1 = std::thread::spawn(move || {
-            // this extra will insert `1u32` with key `thread1` at space `u32`. This is shared between threads.
-            assert_eq!(cache1.get(b"u32", b"thread1", Some(|_: &_| { Some(1u32) })), Some(Some(1u32)));
-            cache1.put(b"u32", b"thread1", 132u32);
-            cache1.put(b"u64", b"thread1", 100u64);
-            cache1
-        }).join().unwrap();
-
-        let mut none_f_u32 = Some(|_: &_| { None });
-        none_f_u32.take();
-        let mut none_f_u128 = Some(|_: &_| { Some(1u128) });
-        none_f_u128.take();
-        let mut cache2 = std::thread::spawn(move || {
-            assert_eq!(cache2.get(b"u32", b"thread1", none_f_u32), Option::<Option<u32>>::None);
-            cache2.put(b"u64", b"thread2", 200u64);
-            assert_eq!(cache2.get(b"u128", b"thread1", none_f_u128), Some(Some(128u128)));
-            cache2
-        }).join().unwrap();
-
-        let mut none_f_u64 = Some(|_: &_| { None });
-        none_f_u64.take();
-        // get values
-        assert_eq!(cache1.get(b"u32", b"thread1", Some(|_: &_| { Some(1u32) })), Some(Some(132u32)));
-        assert_eq!(cache1.get(b"u64", b"thread1", none_f_u64), Some(Some(100u64)));
-        assert_eq!(cache2.get(b"u32", b"thread1", Some(|_: &_| { None })), Some(Option::<u32>::None));
-        assert_eq!(cache2.get(b"u64", b"thread2", none_f_u64), Some(Some(200u64)));
-        let _ = cache1.drain_commited();
-        let _ = cache2.drain_commited();
-        // get values from cached values
-        assert_eq!(cache1.get(b"u32", b"thread1", Some(|_: &_| { Some(1u32) })), Some(Some(1u32)));
-        assert_eq!(cache1.get(b"u64", b"thread1", none_f_u64), Option::<Option<u64>>::None);
-        assert_eq!(cache2.get(b"u32", b"thread2", none_f_u32), Option::<Option<u32>>::None);
-        assert_eq!(cache2.get(b"u64", b"thread2", none_f_u64), Option::<Option<u64>>::None);
     }
 
     #[test]

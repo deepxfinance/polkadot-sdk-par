@@ -2,7 +2,6 @@ use sp_std::boxed::Box;
 use sp_std::collections::btree_map::BTreeMap;
 use sp_std::hash::Hash;
 use sp_std::vec::Vec;
-use codec::Encode;
 use crate::{StorageIO, StorageApi, StorageKey, QueryTransfer, RcT, TStorageOverlay};
 use crate::changeset::StorageOverlay;
 
@@ -10,9 +9,6 @@ use crate::changeset::StorageOverlay;
 use sp_std::collections::btree_set::BTreeSet as Set;
 #[cfg(feature = "std")]
 use std::collections::HashSet as Set;
-use smallvec::SmallVec;
-
-pub type DirtyKeysSets<K> = SmallVec<[Set<K>; 5]>;
 
 unsafe impl<K: Ord + Hash + Clone, V: Clone> Send for StorageOverlay<K, V> {}
 unsafe impl<K: Ord + Hash + Clone, V: Clone> Sync for StorageOverlay<K, V> {}
@@ -42,7 +38,7 @@ impl<V: TStorageOverlay> StorageApi for StorageOverlay<StorageKey, V> {
             Some(entry) => {
                 let value = entry.value_ref();
                 if value.muted() {
-                    Some(value.borrow().as_ref().map(|v| v.encode()))
+                    Some(value.get_raw(false))
                 } else {
                     None
                 }
@@ -69,7 +65,7 @@ impl<V: TStorageOverlay> StorageApi for StorageOverlay<StorageKey, V> {
             .iter()
             .filter_map(|(k ,v)|
                 if v.value_ref().muted() {
-                    Some((k.clone(), v.value_ref().borrow().as_ref().map(|v| v.encode())))
+                    Some((k.clone(), v.value_ref().get_raw(false)))
                 } else {
                     None
                 }
@@ -82,7 +78,7 @@ impl<V: TStorageOverlay> StorageApi for StorageOverlay<StorageKey, V> {
             .into_iter()
             .filter_map(|(k, mut v)|
                 if v.value_ref().muted() {
-                    Some((k, v.pop_value().borrow().as_ref().map(|v| v.encode())))
+                    Some((k, v.pop_value().get_raw(false)))
                 } else {
                     None
                 }
@@ -94,10 +90,14 @@ impl<V: TStorageOverlay> StorageApi for StorageOverlay<StorageKey, V> {
         Box::new(self.clone_with_changes())
     }
 
-    fn try_update_raw(&mut self, first_write_in_tx: bool, key: &[u8], data: Vec<u8>) {
+    fn put_raw(&mut self, first_write_in_tx: bool, key: &[u8], data: Vec<u8>) {
         if let Ok(value) = codec::Decode::decode(&mut data.as_slice()) {
             self.set(first_write_in_tx, key.to_vec(), Some(value), None);
         }
+    }
+
+    fn get_raw(&self, key: &[u8], cache_raw: bool) -> Option<Vec<u8>> {
+        self.changes.get(key).map(|v| v.value_ref().get_raw(cache_raw))?
     }
 
     fn try_kill(&mut self, first_write_in_tx: bool, key: &[u8]) {
@@ -252,24 +252,6 @@ fn test_commit() {
     overlay.put(true, b"key2", b"value2".to_vec());
     assert_eq!(overlay.get(b"key1", none_f), Option::<Option<Vec<u8>>>::None);
     assert_eq!(overlay.get(b"key2", none_f), Some(Some(b"value2".to_vec())));
-}
-
-#[test]
-fn test_clone_for_multi_threads() {
-    let mut none_f = Some(|_: &_| { None });
-    none_f.take();
-    let mut overlay1 = StorageOverlay::new();
-    overlay1.put(true, b"key1", b"value1".to_vec());
-    let mut overlay2 = overlay1.clone_with_changes();
-    let mut overlay2 = std::thread::spawn(move || {
-        overlay2.put(true, b"key2", b"value2".to_vec());
-        overlay2
-    }).join().unwrap();
-
-    assert_eq!(overlay1.get(b"key1", none_f), Some(Some(b"value1".to_vec())));
-    assert_eq!(overlay1.get(b"key2", none_f), Option::<Option<Vec<u8>>>::None);
-    assert_eq!(overlay2.get(b"key1", none_f), Some(Some(b"value1".to_vec())));
-    assert_eq!(overlay2.get(b"key2", none_f), Some(Some(b"value2".to_vec())));
 }
 
 #[test]

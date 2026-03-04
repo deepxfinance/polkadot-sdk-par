@@ -1,11 +1,15 @@
+use codec::{Decode, Encode};
 use sp_std::fmt::{self, Debug};
 use sp_std::ops::{Deref, DerefMut};
 use sp_std::cell::RefCell;
 use sp_std::rc::Rc;
+#[cfg(not(feature = "std"))]
+use sp_std::vec::Vec;
 
 #[derive(Clone)]
 pub struct MutT<T> {
     inner: Option<T>,
+    raw: Option<Vec<u8>>,
     muted: bool,
 }
 
@@ -60,7 +64,7 @@ pub struct Never;
 
 impl<T> RcT<T> {
     pub fn new(t: Option<T>, muted: bool) -> Self {
-        RcT(Rc::new(RefCell::new(MutT { inner: t, muted })))
+        RcT(Rc::new(RefCell::new(MutT { inner: t, raw: None, muted })))
     }
 
     /// Mark storage as not changed.
@@ -98,7 +102,10 @@ impl<T> RcT<T> {
     pub fn try_mutate<R, E>(&mut self, f: impl FnOnce(&mut Option<T>) -> Result<R, E>) -> Result<R, E> {
         let mut mut_inner = self.0.borrow_mut();
         let res = f(&mut mut_inner.deref_mut().inner);
-        if res.is_ok() { mut_inner.muted = true; }
+        if res.is_ok() {
+            mut_inner.raw.take();
+            mut_inner.muted = true;
+        }
         res
     }
 
@@ -155,7 +162,10 @@ impl<T: Default> RcT<T> {
             res
         };
 
-        if res.is_ok() { mut_inner.muted = true; }
+        if res.is_ok() {
+            mut_inner.raw.take();
+            mut_inner.muted = true;
+        }
         res
     }
 }
@@ -163,5 +173,32 @@ impl<T: Default> RcT<T> {
 impl<T: Clone> RcT<T> {
     pub fn clone_inner(&self) -> Option<T> {
         self.0.borrow().inner.clone()
+    }
+}
+
+impl<T: Decode> RcT<T> {
+    pub fn put_raw(&self, value: Vec<u8>, cache_raw: bool) -> Result<(), codec::Error> {
+        let mut mut_inner = self.0.borrow_mut();
+        // `inner` is the main data, we `MUST` update it.
+        mut_inner.inner = Some(T::decode(&mut value.as_slice())?);
+        if cache_raw {
+            mut_inner.raw = Some(value);
+        }
+        mut_inner.muted = true;
+        Ok(())
+    }
+}
+
+impl<T: Encode> RcT<T> {
+    pub fn get_raw(&self, cache_raw: bool) -> Option<Vec<u8>> {
+        let mut mut_inner = self.0.borrow_mut();
+        if let Some(raw_value) = &mut_inner.raw {
+            Some(raw_value.clone())
+        } else if let Some(raw_value) = mut_inner.inner.as_ref().map(|t| t.encode()) {
+            if cache_raw { mut_inner.raw = Some(raw_value.clone()); }
+            Some(raw_value)
+        } else {
+            None
+        }
     }
 }
