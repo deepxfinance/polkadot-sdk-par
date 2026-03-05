@@ -87,7 +87,7 @@ pub mod opaque {
 
 	impl_opaque_keys! {
 		pub struct SessionKeys {
-			pub hotstuff: Hotstuff,
+			pub hots: Hotstuff,
 		}
 	}
 }

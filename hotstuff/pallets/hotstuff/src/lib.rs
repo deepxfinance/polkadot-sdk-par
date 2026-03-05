@@ -26,7 +26,7 @@ use frame_support::{
 	traits::{DisabledValidators, FindAuthor, Get, OnTimestampSet, OneSessionHandler},
 	BoundedVec, ConsensusEngineId, Parameter,
 };
-use hotstuff_primitives::{AuthorityIndex, ConsensusLog, Slot, HOTSTUFF_ENGINE_ID};
+use hotstuff_primitives::{AuthorityIndex, ConsensusLog, Slot, HOTSTUFF_ENGINE_ID, HOTSTUFF_KEY_TYPE};
 use log;
 use frame_support::dispatch::DispatchResultWithPostInfo;
 use frame_system::pallet_prelude::{BlockNumberFor, OriginFor};
@@ -37,6 +37,7 @@ use sp_runtime::{
 };
 use sp_std::prelude::*;
 pub use pallet::*;
+
 pub mod weights;
 pub use weights::*;
 
@@ -79,6 +80,7 @@ pub mod pallet {
 			+ RuntimeAppPublic
 			+ MaybeSerializeDeserialize
 			+ MaxEncodedLen;
+
 		/// The maximum number of authorities that the pallet can hold.
 		type MaxAuthorities: Get<u32>;
 
@@ -277,10 +279,21 @@ impl<T: pallet::Config> Pallet<T> {
 	/// The authorities length must be equal or less than T::MaxAuthorities.
 	pub fn initialize_authorities(authorities: &[T::AuthorityId]) {
 		if !authorities.is_empty() {
-			assert!(<Authorities<T>>::get().is_empty(), "Authorities are already initialized!");
-			let bounded = <BoundedVec<_, T::MaxAuthorities>>::try_from(authorities.to_vec())
-				.expect("Initial authority set must be less than T::MaxAuthorities");
-			<Authorities<T>>::put(bounded);
+			let last_authorities = Self::authorities();
+			if &last_authorities.into_inner() != authorities {
+				if authorities.len() as u32 > T::MaxAuthorities::get() {
+					log::warn!(
+						target: LOG_TARGET,
+						"genesis authorities list larger than {}, truncating",
+						T::MaxAuthorities::get(),
+					);
+				}
+				let mut authorities = authorities.to_vec();
+				authorities.truncate(T::MaxAuthorities::get() as usize);
+				let bounded = <BoundedVec<_, T::MaxAuthorities>>::try_from(authorities.to_vec())
+					.expect("Initial authority set must be less than T::MaxAuthorities");
+				<Authorities<T>>::put(bounded);
+			}
 		}
 	}
 
@@ -377,7 +390,9 @@ impl<T: pallet::Config> OneSessionHandler<T::AccountId> for Pallet<T> {
 	where
 		I: Iterator<Item = (&'a T::AccountId, T::AuthorityId)>,
 	{
-		let authorities = validators.map(|(_, k)| k).collect::<Vec<_>>();
+		let authorities = validators
+			.map(|(_, k)| k)
+			.collect::<Vec<_>>();
 		Self::initialize_authorities(&authorities);
 	}
 
@@ -387,7 +402,9 @@ impl<T: pallet::Config> OneSessionHandler<T::AccountId> for Pallet<T> {
 	{
 		// instant changes
 		if changed {
-			let next_authorities = validators.map(|(_, k)| k).collect::<Vec<_>>();
+			let next_authorities = validators
+				.map(|(_, k)| k)
+				.collect::<Vec<_>>();
 			let last_authorities = Self::authorities();
 			if last_authorities != next_authorities {
 				if next_authorities.len() as u32 > T::MaxAuthorities::get() {
