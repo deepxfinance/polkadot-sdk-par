@@ -102,7 +102,7 @@ pub struct Timepoint<BlockNumber> {
 }
 
 /// An open multisig operation.
-#[derive(Clone, Eq, PartialEq, Encode, Decode, Default, RuntimeDebug, TypeInfo, MaxEncodedLen)]
+#[derive(Eq, PartialEq, Encode, Decode, Default, RuntimeDebug, TypeInfo, MaxEncodedLen)]
 #[scale_info(skip_type_params(MaxApprovals))]
 pub struct Multisig<BlockNumber, Balance, AccountId, MaxApprovals>
 where
@@ -116,6 +116,23 @@ where
 	depositor: AccountId,
 	/// The approvals achieved so far, including the depositor. Always sorted.
 	approvals: BoundedVec<AccountId, MaxApprovals>,
+}
+
+impl<BlockNumber, Balance, AccountId, MaxApprovals> Clone for Multisig<BlockNumber, Balance, AccountId, MaxApprovals>
+where
+	BlockNumber: Clone,
+	Balance: Clone,
+	AccountId: Clone,
+	MaxApprovals: Get<u32>,
+{
+	fn clone(&self) -> Self {
+		Self {
+			when: self.when.clone(),
+			deposit: self.deposit.clone(),
+			depositor: self.depositor.clone(),
+			approvals: self.approvals.clone(),
+		}
+	}
 }
 
 type CallHash = [u8; 32];
@@ -184,6 +201,14 @@ pub mod pallet {
 		Blake2_128Concat,
 		[u8; 32],
 		Multisig<T::BlockNumber, BalanceOf<T>, T::AccountId, T::MaxSignatories>,
+	>;
+
+	/// Technical-Committee id list for multisig.
+	#[pallet::storage]
+	pub type TechnicalCommittee<T: Config> = StorageValue<
+		_,
+		BoundedVec<T::AccountId, T::MaxSignatories>,
+		ValueQuery,
 	>;
 
 	#[pallet::error]
@@ -493,6 +518,19 @@ pub mod pallet {
 			});
 			Ok(())
 		}
+
+		#[pallet::call_index(4)]
+		#[pallet::weight(0)]
+		pub fn insert_committee_member(
+			origin: OriginFor<T>,
+			new: T::AccountId,
+		) -> DispatchResult {
+			ensure_root(origin)?;
+			TechnicalCommittee::<T>::try_mutate(|v|
+				v.try_push(new).map_err(|_| Error::<T>::TooManySignatories)
+			)?;
+			Ok(())
+		}
 	}
 }
 
@@ -645,7 +683,7 @@ impl<T: Config> Pallet<T> {
 	}
 
 	/// Check that signatories is sorted and doesn't contain sender, then insert sender.
-	fn ensure_sorted_and_insert(
+	pub fn ensure_sorted_and_insert(
 		other_signatories: Vec<T::AccountId>,
 		who: T::AccountId,
 	) -> Result<Vec<T::AccountId>, DispatchError> {
