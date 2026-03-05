@@ -32,7 +32,8 @@ use crate::{
 use codec::{Decode, Encode, EncodeLike, FullCodec, MaxEncodedLen};
 use sp_runtime::SaturatedConversion;
 use sp_std::prelude::*;
-use crate::storage::TypedAppend;
+use typed_cache::QueryTransfer;
+use crate::storage::{TypedAppend, RcT};
 
 /// A type that allow to store values for an arbitrary number of keys in the form of
 /// `(Key<Hasher1, key1>, Key<Hasher2, key2>, ..., Key<HasherN, keyN>)`.
@@ -61,6 +62,33 @@ pub struct StorageNMap<
 	MaxValues = GetDefault,
 >(core::marker::PhantomData<(Prefix, Key, Value, QueryKind, OnEmpty, MaxValues)>);
 
+impl<Prefix, Key, Value, QueryKind, OnEmpty, MaxValues> QueryTransfer<Value>
+	for StorageNMap<Prefix, Key, Value, QueryKind, OnEmpty, MaxValues>
+where
+	Prefix: StorageInstance,
+	Key: super::key::KeyGenerator,
+	Value: FullCodec + TStorage,
+	QueryKind: QueryKindTrait<Value, OnEmpty>,
+	OnEmpty: Get<QueryKind::Query> + 'static,
+	MaxValues: Get<Option<u32>>,
+{
+	type Query = QueryKind::Query;
+	fn from_optional_value_to_query(v: Option<Value>) -> QueryKind::Query {
+		QueryKind::from_optional_value_to_query(v)
+	}
+
+	fn mut_from_optional_value_to_query<M, R, E>(v: &mut Option<Value>, m: M) -> (Result<R, E>, Option<Value>)
+	where
+		M: FnOnce(&mut Self::Query) -> Result<R, E>
+	{
+		QueryKind::mut_from_optional_value_to_query(v, m)
+	}
+
+	fn from_query_to_optional_value(v: QueryKind::Query) -> Option<Value> {
+		QueryKind::from_query_to_optional_value(v)
+	}
+}
+
 impl<Prefix, Key, Value, QueryKind, OnEmpty, MaxValues>
 	crate::storage::generator::StorageNMap<Key, Value>
 	for StorageNMap<Prefix, Key, Value, QueryKind, OnEmpty, MaxValues>
@@ -72,18 +100,19 @@ where
 	OnEmpty: Get<QueryKind::Query> + 'static,
 	MaxValues: Get<Option<u32>>,
 {
-	type Query = QueryKind::Query;
 	fn module_prefix() -> &'static [u8] {
 		Prefix::pallet_prefix().as_bytes()
 	}
 	fn storage_prefix() -> &'static [u8] {
 		Prefix::STORAGE_PREFIX.as_bytes()
 	}
-	fn from_optional_value_to_query(v: Option<Value>) -> Self::Query {
-		QueryKind::from_optional_value_to_query(v)
+
+	fn module_prefix_hash() -> [u8; 16] {
+		Prefix::module_name_hash()
 	}
-	fn from_query_to_optional_value(v: Self::Query) -> Option<Value> {
-		QueryKind::from_query_to_optional_value(v)
+	
+	fn storage_prefix_hash() -> &'static [u8; 16] {
+		&Prefix::STORAGE_PREFIX_HASH
 	}
 }
 
@@ -132,6 +161,13 @@ where
 		key: KArg,
 	) -> QueryKind::Query {
 		<Self as crate::storage::StorageNMap<Key, Value>>::get(key)
+	}
+
+	/// Load the value associated with the given key from the map.
+	pub fn get_ref<KArg: EncodeLikeTuple<Key::KArg> + TupleToEncodedIter>(
+		key: KArg,
+	) -> RcT<Value> {
+		<Self as crate::storage::StorageNMap<Key, Value>>::get_ref(key)
 	}
 
 	/// Try to get the value for the given key from the map.
@@ -268,6 +304,15 @@ where
 		<Self as crate::storage::StorageNMap<Key, Value>>::mutate(key, f)
 	}
 
+	/// Mutate the value by reference under the given keys.
+	pub fn mutate_ref<KArg, R, F>(key: KArg, f: F) -> R
+	where
+		KArg: EncodeLikeTuple<Key::KArg> + TupleToEncodedIter,
+		F: FnOnce(&mut QueryKind::Query) -> R,
+	{
+		<Self as crate::storage::StorageNMap<Key, Value>>::mutate_ref(key, f)
+	}
+
 	/// Mutate the value under the given keys when the closure returns `Ok`.
 	pub fn try_mutate<KArg, R, E, F>(key: KArg, f: F) -> Result<R, E>
 	where
@@ -277,6 +322,15 @@ where
 		<Self as crate::storage::StorageNMap<Key, Value>>::try_mutate(key, f)
 	}
 
+	/// Mutate the value by reference under the given keys when the closure returns `Ok`.
+	pub fn try_mutate_ref<KArg, R, E, F>(key: KArg, f: F) -> Result<R, E>
+	where
+		KArg: EncodeLikeTuple<Key::KArg> + TupleToEncodedIter,
+		F: FnOnce(&mut QueryKind::Query) -> Result<R, E>,
+	{
+		<Self as crate::storage::StorageNMap<Key, Value>>::try_mutate_ref(key, f)
+	}
+
 	/// Mutate the value under the given keys. Deletes the item if mutated to a `None`.
 	pub fn mutate_exists<KArg, R, F>(key: KArg, f: F) -> R
 	where
@@ -284,6 +338,15 @@ where
 		F: FnOnce(&mut Option<Value>) -> R,
 	{
 		<Self as crate::storage::StorageNMap<Key, Value>>::mutate_exists(key, f)
+	}
+
+	/// Mutate the value by reference under the given keys. Deletes the item if mutated to a `None`.
+	pub fn mutate_exists_ref<KArg, R, F>(key: KArg, f: F) -> R
+	where
+		KArg: EncodeLikeTuple<Key::KArg> + TupleToEncodedIter,
+		F: FnOnce(&mut Option<Value>) -> R,
+	{
+		<Self as crate::storage::StorageNMap<Key, Value>>::mutate_exists_ref(key, f)
 	}
 
 	/// Mutate the item, only if an `Ok` value is returned. Deletes the item if mutated to a `None`.

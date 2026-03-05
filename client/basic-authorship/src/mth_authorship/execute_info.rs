@@ -102,6 +102,8 @@ impl<B: BlockT> InfoRecorder<B> {
             max_time: self.max_time,
             finalize: self.finalize_start.take().expect("Finalize time not initialized").elapsed(),
             time: self.block_start.take().expect("BlockStart time not initialized").elapsed(),
+            time_by_executor: Default::default(),
+            import: Default::default(),
             group: self.group,
             inherent: self.inherent.unwrap_or_default(),
             threads: self.threads,
@@ -133,8 +135,12 @@ pub struct BlockExecuteInfo<B: BlockT> {
     pub max_time: Duration,
     /// block finalize time(finalize + build).
     pub finalize: Duration,
-    /// full block execute time.
+    /// block execute time by proposer.
     pub time: Duration,
+    /// full block execute time including check by executor(wait time before import, import time).
+    pub time_by_executor: Duration,
+    /// block import time by Client.
+    pub import: Duration,
     /// group transactions info from pool, not necessary.
     pub group: GroupInfo,
     pub inherent: ThreadExecutionInfo<B>,
@@ -149,6 +155,14 @@ pub struct BlockExecuteInfo<B: BlockT> {
 impl<B: BlockT> BlockExecuteInfo<B> {
     pub fn set_group_info(&mut self, group: GroupInfo) {
         self.group = group;
+    }
+
+    pub fn set_import_time(&mut self, import: Duration) {
+        self.import = import;
+    }
+
+    pub fn set_time_by_executor(&mut self, time: Duration) {
+        self.time_by_executor = time;
     }
 
     pub fn is_empty_block(&self) -> bool {
@@ -408,6 +422,7 @@ impl GroupTxInput {
     }
 }
 
+#[derive(Default)]
 pub struct GroupTxOutput<A: TransactionPool> {
     /// Parallel execute transactions.
     pub groups: Vec<Vec<(usize, Arc<<A as TransactionPool>::InPoolTransaction>)>>,
@@ -435,6 +450,10 @@ pub struct GroupInfo {
     pub wait: Duration,
     /// time for groups sort.
     pub sort: Duration,
+    /// pool ready info(`ready_at`/`ready` number, time)
+    pub ready_info: Option<(usize, Duration)>,
+    /// Extra info.
+    pub extra_debug_info: String,
 }
 
 impl GroupInfo {
@@ -447,8 +466,14 @@ impl GroupInfo {
         } else {
             "".to_string()
         };
+        let ready_info = if let Some((number, time)) = self.ready_info {
+            format!("(ready {number}({time:?}))")
+        } else {
+            "".to_string()
+        };
         format!(
-            "Group {}({}) tx in {}ms(W{}μs S{}μs){}(groups {}->{})(Input: {})",
+            "Group{} {}({}) tx in {}ms(W{}μs S{}μs){}(groups {}->{}){ready_info}(Input: {})",
+            self.extra_debug_info,
             self.tx_count,
             self.raw_tx_count,
             self.time.as_millis(),

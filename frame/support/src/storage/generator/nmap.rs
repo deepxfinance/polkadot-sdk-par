@@ -31,7 +31,7 @@
 
 use crate::{
 	storage::{
-		self, storage_prefix,
+		self, storage_prefix_with_const,
 		types::{
 			EncodeLikeTuple, HasKeyPrefix, HasReversibleKeyPrefix, KeyGenerator,
 			ReversibleKeyGenerator, TupleToEncodedIter,
@@ -43,7 +43,8 @@ use crate::{
 use codec::{Decode, Encode, EncodeLike, FullCodec};
 #[cfg(not(feature = "std"))]
 use sp_std::prelude::*;
-use crate::storage::TypedAppend;
+use typed_cache::{OptionQT, QueryTransfer};
+use crate::storage::{TypedAppend, RcT};
 
 /// Generator for `StorageNMap` used by `decl_storage` and storage types.
 ///
@@ -58,35 +59,32 @@ use crate::storage::TypedAppend;
 /// If the keys are not trusted (e.g. can be set by a user), a cryptographic `hasher` such as
 /// `blake2_256` must be used.  Otherwise, other values in storage with the same prefix can
 /// be compromised.
-pub trait StorageNMap<K: KeyGenerator, V: FullCodec + TStorage> {
-	/// The type that get/take returns.
-	type Query;
-
+pub trait StorageNMap<K: KeyGenerator, V: FullCodec + TStorage>: QueryTransfer<V> {
 	/// Module prefix. Used for generating final key.
 	fn module_prefix() -> &'static [u8];
 
 	/// Storage prefix. Used for generating final key.
 	fn storage_prefix() -> &'static [u8];
 
+	/// Module prefix hash. Used for generating final key.
+	fn module_prefix_hash() -> [u8; 16];
+
+	/// Storage prefix hash. Used for generating final key.
+	fn storage_prefix_hash() -> &'static [u8; 16];
+
 	/// The full prefix; just the hash of `module_prefix` concatenated to the hash of
 	/// `storage_prefix`.
 	fn prefix_hash() -> Vec<u8> {
-		let result = storage_prefix(Self::module_prefix(), Self::storage_prefix());
+		let result = storage_prefix_with_const(&Self::module_prefix_hash(), Self::storage_prefix_hash());
 		result.to_vec()
 	}
-
-	/// Convert an optional value retrieved from storage to the type queried.
-	fn from_optional_value_to_query(v: Option<V>) -> Self::Query;
-
-	/// Convert a query to an optional value into storage.
-	fn from_query_to_optional_value(v: Self::Query) -> Option<V>;
 
 	/// Generate a partial key used in top storage.
 	fn storage_n_map_partial_key<KP>(key: KP) -> Vec<u8>
 	where
 		K: HasKeyPrefix<KP>,
 	{
-		let storage_prefix = storage_prefix(Self::module_prefix(), Self::storage_prefix());
+		let storage_prefix = storage_prefix_with_const(&Self::module_prefix_hash(), Self::storage_prefix_hash());
 		let key_hashed = <K as HasKeyPrefix<KP>>::partial_key(key);
 
 		let mut final_key = Vec::with_capacity(storage_prefix.len() + key_hashed.len());
@@ -103,7 +101,7 @@ pub trait StorageNMap<K: KeyGenerator, V: FullCodec + TStorage> {
 		KG: KeyGenerator,
 		KArg: EncodeLikeTuple<KG::KArg> + TupleToEncodedIter,
 	{
-		let storage_prefix = storage_prefix(Self::module_prefix(), Self::storage_prefix());
+		let storage_prefix = storage_prefix_with_const(&Self::module_prefix_hash(), Self::storage_prefix_hash());
 		let key_hashed = KG::final_key(key);
 
 		let mut final_key = Vec::with_capacity(storage_prefix.len() + key_hashed.len());
@@ -130,11 +128,7 @@ where
 	fn contains_key<KArg: EncodeLikeTuple<K::KArg> + TupleToEncodedIter>(key: KArg) -> bool {
 		let final_key = Self::storage_n_map_final_key::<K, _>(key);
 		#[cfg(feature = "std")]
-		if sp_io::mut_typed_cache(|_| ()).is_none() {
-			unhashed::exists(&final_key)
-		} else {
-			unhashed::get_cache(&final_key, |_| { Option::<V>::None }).is_some()
-		}
+		{ unhashed::contains_key_cache::<V>(&final_key) }
 		#[cfg(not(feature = "std"))]
 		unhashed::exists(&final_key)
 	}
@@ -144,11 +138,18 @@ where
 		{
 			G::from_optional_value_to_query(unhashed::get_cache(
 				&Self::storage_n_map_final_key::<K, _>(key),
-				|_| { Option::<V>::None }
+				unhashed::non_f::<V>,
 			))
 		}
 		#[cfg(not(feature = "std"))]
 		G::from_optional_value_to_query(unhashed::get(&Self::storage_n_map_final_key::<K, _>(key)))
+	}
+
+	fn get_ref<KArg: EncodeLikeTuple<K::KArg> + TupleToEncodedIter>(key: KArg) -> RcT<V> {
+		unhashed::get_cache_ref(
+			&Self::storage_n_map_final_key::<K, _>(key),
+			#[cfg(feature = "std")] unhashed::non_t::<V>,
+		)
 	}
 
 	fn try_get<KArg: EncodeLikeTuple<K::KArg> + TupleToEncodedIter>(key: KArg) -> Result<V, ()> {
@@ -156,7 +157,7 @@ where
 		{
 			unhashed::get_cache(
 				&Self::storage_n_map_final_key::<K, _>(key),
-				|_| { Option::<V>::None }
+				unhashed::non_f::<V>,
 			)
 				.ok_or(())
 		}
@@ -174,7 +175,7 @@ where
 	fn take<KArg: EncodeLikeTuple<K::KArg> + TupleToEncodedIter>(key: KArg) -> Self::Query {
 		let final_key = Self::storage_n_map_final_key::<K, _>(key);
 		#[cfg(feature = "std")]
-		let value = unhashed::take_cache(&final_key, |_| { Option::<V>::None });
+		let value = unhashed::take_cache(&final_key);
 		#[cfg(not(feature = "std"))]
 		let value = unhashed::take(&final_key);
 		G::from_optional_value_to_query(value)
@@ -191,8 +192,8 @@ where
 
 		#[cfg(feature = "std")]
 		{
-			let v1 = unhashed::get_cache(&final_x_key, |_| { Option::<V>::None });
-			if let Some(val) = unhashed::get_cache(&final_y_key, |_| { Option::<V>::None }) {
+			let v1 = unhashed::get_cache(&final_x_key, unhashed::non_f::<V>);
+			if let Some(val) = unhashed::get_cache(&final_y_key, unhashed::non_f::<V>) {
 				unhashed::put_cache(&final_x_key, val);
 			} else {
 				unhashed::kill_cache::<V>(&final_x_key);
@@ -307,6 +308,15 @@ where
 			.expect("`Never` can not be constructed; qed")
 	}
 
+	fn mutate_ref<KArg, R, F>(key: KArg, f: F) -> R
+	where
+		KArg: EncodeLikeTuple<K::KArg> + TupleToEncodedIter,
+		F: FnOnce(&mut Self::Query) -> R
+	{
+		Self::try_mutate_ref(key, |v| Ok::<R, Never>(f(v)))
+			.expect("`Never` can not be constructed; qed")
+	}
+
 	fn try_mutate<KArg, R, E, F>(key: KArg, f: F) -> Result<R, E>
 	where
 		KArg: EncodeLikeTuple<K::KArg> + TupleToEncodedIter,
@@ -316,7 +326,7 @@ where
 		#[cfg(feature = "std")]
 		let mut val = G::from_optional_value_to_query(unhashed::get_cache(
 			final_key.as_ref(),
-			|_| { Option::<V>::None }
+			unhashed::non_f::<V>,
 		));
 		#[cfg(not(feature = "std"))]
 		let mut val = G::from_optional_value_to_query(unhashed::get(final_key.as_ref()));
@@ -341,11 +351,45 @@ where
 		ret
 	}
 
+	fn try_mutate_ref<KArg, R, E, F>(key: KArg, f: F) -> Result<R, E>
+	where
+		KArg: EncodeLikeTuple<K::KArg> + TupleToEncodedIter,
+		F: FnOnce(&mut Self::Query) -> Result<R, E>,
+	{
+		#[cfg(feature = "std")]
+		{
+			let final_key = Self::storage_n_map_final_key::<K, _>(key);
+			unhashed::mutate_cache::<G, V, _, _, _, _>(
+				&final_key,
+				|| { None::<V> },
+				|v| f(v),
+			)
+		}
+		#[cfg(not(feature = "std"))]
+		Self::try_mutate(key, |v| f(v))
+	}
+
 	fn mutate_exists<KArg, R, F>(key: KArg, f: F) -> R
 	where
 		KArg: EncodeLikeTuple<K::KArg> + TupleToEncodedIter,
 		F: FnOnce(&mut Option<V>) -> R,
 	{
+		Self::try_mutate_exists(key, |v| Ok::<R, Never>(f(v)))
+			.expect("`Never` can not be constructed; qed")
+	}
+
+	fn mutate_exists_ref<KArg, R, F>(key: KArg, f: F) -> R
+	where
+		KArg: EncodeLikeTuple<K::KArg> + TupleToEncodedIter,
+		F: FnOnce(&mut Option<V>) -> R
+	{
+		#[cfg(feature = "std")]
+		{
+			let final_key = Self::storage_n_map_final_key::<K, _>(key);
+			unhashed::mutate_cache::<OptionQT, V, _, _, _, _>(&final_key, || { None::<V> }, |v| Ok::<R, Never>(f(v)))
+				.expect("`Never` can not be constructed; qed")
+		}
+		#[cfg(not(feature = "std"))]
 		Self::try_mutate_exists(key, |v| Ok::<R, Never>(f(v)))
 			.expect("`Never` can not be constructed; qed")
 	}
@@ -357,7 +401,7 @@ where
 	{
 		let final_key = Self::storage_n_map_final_key::<K, _>(key);
 		#[cfg(feature = "std")]
-		let mut val = unhashed::get_cache(final_key.as_ref(), |_| { Option::<V>::None });
+		let mut val = unhashed::get_cache(final_key.as_ref(), unhashed::non_f::<V>);
 		#[cfg(not(feature = "std"))]
 		let mut val = unhashed::get(final_key.as_ref());
 
@@ -429,7 +473,7 @@ where
 		KArg: EncodeLikeTuple<K::KArg> + TupleToEncodedIter,
 	{
 		let old_key = {
-			let storage_prefix = storage_prefix(Self::module_prefix(), Self::storage_prefix());
+			let storage_prefix = storage_prefix_with_const(&Self::module_prefix_hash(), Self::storage_prefix_hash());
 			let key_hashed = K::migrate_key(&key, hash_fns);
 
 			let mut final_key = Vec::with_capacity(storage_prefix.len() + key_hashed.len());
@@ -441,7 +485,7 @@ where
 		};
 		#[cfg(feature = "std")]
 		{
-			unhashed::take_cache(&old_key, |_| { Option::<V>::None }).map(|value| {
+			unhashed::take_cache::<V>(&old_key).map(|value| {
 				unhashed::put_cache(Self::storage_n_map_final_key::<K, _>(key).as_ref(), value.clone());
 				value
 			})

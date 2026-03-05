@@ -50,7 +50,7 @@ pub fn get_timestamp() -> Option<u64> {
 	const TIMESTAMP: [u8; 32] = [240, 195, 101, 195, 207, 89, 214, 113, 235, 114, 218, 14, 122, 65, 19, 196, 159, 31, 5, 21, 244, 98, 205, 207, 132, 224, 241, 214, 4, 93, 252, 187];
 
 	#[cfg(feature = "std")]
-	{ frame_support::storage::unhashed::get_cache(&TIMESTAMP, |_| { Option::<u64>::None }) }
+	{ frame_support::storage::unhashed::get_cache(&TIMESTAMP, frame_support::storage::unhashed::non_f::<u64>) }
 	#[cfg(not(feature = "std"))]
 	frame_support::storage::unhashed::get::<u64>(&TIMESTAMP)
 }
@@ -77,18 +77,17 @@ where
 		info: &DispatchInfoOf<T::RuntimeCall>,
 		_len: usize,
 	) -> Result<(), TransactionValidityError> {
-		let mut account = crate::Account::<T>::get(who);
 		let timestamp_now = get_timestamp()
 			.ok_or(TransactionValidityError::Invalid(InvalidTransaction::AncientBirthBlock))?;
-		match info.call_type {
-			CallType::Nonce => account.apply_extrinsic_nonce::<T::CallLimits>(timestamp_now, self.0),
-			CallType::Timestamp => account.apply_extrinsic_time_nonce::<T::CallLimits>(timestamp_now, self.0),
-			CallType::NonceQuotaFree => account.apply_extrinsic_nonce_free(timestamp_now, self.0),
-			CallType::TimestampQuotaFree => account.apply_extrinsic_time_nonce_free::<T::CallLimits>(timestamp_now, self.0),
-		}
-			.map_err(|e| TransactionValidityError::Invalid(e))?;
-		crate::Account::<T>::insert(who, account);
-		Ok(())
+		crate::Account::<T>::get_ref(who).mutate_value_query(|account| {
+			match info.call_type {
+				CallType::Nonce => account.apply_extrinsic_nonce::<T::CallLimits>(timestamp_now, self.0),
+				CallType::Timestamp => account.apply_extrinsic_time_nonce::<T::CallLimits>(timestamp_now, self.0),
+				CallType::NonceQuotaFree => account.apply_extrinsic_nonce_free(timestamp_now, self.0),
+				CallType::TimestampQuotaFree => account.apply_extrinsic_time_nonce_free::<T::CallLimits>(timestamp_now, self.0),
+			}
+				.map_err(|e| TransactionValidityError::Invalid(e))
+		})
 	}
 
 	pub fn do_validate(
@@ -98,8 +97,6 @@ where
 		_len: usize,
 	) -> TransactionValidity {
 		// check index and quote
-		let account = crate::Account::<T>::get(who);
-
 		let mut priority2: Option<u64> = None;
 		#[cfg(feature = "std")]
 		let timestamp_now = sp_timestamp::Timestamp::current().as_millis();
@@ -107,33 +104,36 @@ where
 		let timestamp_now = get_timestamp()
 			.ok_or(TransactionValidityError::Invalid(InvalidTransaction::AncientBirthBlock))?;
 		let mut requires = Vec::new();
-		match info.call_type {
-			CallType::Nonce => {
-				account.check_extrinsic_nonce::<T::CallLimits>(timestamp_now, self.0)
-					.map_err(|e| TransactionValidityError::Invalid(e))?;
-				if account.nonce < self.0 {
-					requires = vec![Encode::encode(&(who, self.0 - One::one()))]
+		crate::Account::<T>::get_ref(who).map_value_query(|account| {
+			match info.call_type {
+				CallType::Nonce => {
+					account.check_extrinsic_nonce::<T::CallLimits>(timestamp_now, self.0)
+						.map_err(|e| TransactionValidityError::Invalid(e))?;
+					if account.nonce < self.0 {
+						requires = vec![Encode::encode(&(who, self.0 - One::one()))]
+					}
+				},
+				CallType::Timestamp => {
+					account.check_extrinsic_time_nonce::<T::CallLimits>(timestamp_now, self.0)
+						.map_err(|e| TransactionValidityError::Invalid(e))?;
+					priority2 = Some(self.0.saturated_into());
+				},
+				CallType::NonceQuotaFree => {
+					if self.0 < account.nonce {
+						return Err(TransactionValidityError::Invalid(InvalidTransaction::Stale));
+					}
+					if account.nonce < self.0 {
+						requires = vec![Encode::encode(&(who, self.0 - One::one()))]
+					}
 				}
-			},
-			CallType::Timestamp => {
-				account.check_extrinsic_time_nonce::<T::CallLimits>(timestamp_now, self.0)
-					.map_err(|e| TransactionValidityError::Invalid(e))?;
-				priority2 = Some(self.0.saturated_into());
-			},
-			CallType::NonceQuotaFree => {
-				if self.0 < account.nonce {
-					return Err(TransactionValidityError::Invalid(InvalidTransaction::Stale));
-				}
-				if account.nonce < self.0 {
-					requires = vec![Encode::encode(&(who, self.0 - One::one()))]
+				CallType::TimestampQuotaFree => {
+					account.check_time_nonce::<T::CallLimits>(timestamp_now, &self.0)
+						.map_err(|e| TransactionValidityError::Invalid(e))?;
+					priority2 = Some(self.0.saturated_into());
 				}
 			}
-			CallType::TimestampQuotaFree => {
-				account.check_time_nonce::<T::CallLimits>(timestamp_now, &self.0)
-					.map_err(|e| TransactionValidityError::Invalid(e))?;
-				priority2 = Some(self.0.saturated_into());
-			}
-		}
+			Ok(())
+		})?;
 
 		Ok(ValidTransaction {
 			groups: None,

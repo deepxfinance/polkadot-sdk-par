@@ -75,6 +75,12 @@ fn counter_prefix(prefix: &str) -> String {
 	format!("CounterFor{}", prefix)
 }
 
+/// Generate the counter_prefix_hash related to the storage.
+/// counter_prefix is used by counted storage map.
+fn counter_prefix_hash(prefix: &str) -> [u8; 16] {
+	sp_core_hashing::twox_128(counter_prefix(prefix).as_bytes())
+}
+
 /// Declares strongly-typed wrappers around codec-compatible types in storage.
 ///
 /// ## Example

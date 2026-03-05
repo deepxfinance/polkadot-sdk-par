@@ -89,7 +89,7 @@ use frame_support::{
 		extract_actual_pays_fee, extract_actual_weight, DispatchClass, DispatchInfo,
 		DispatchResult, DispatchResultWithPostInfo, PerDispatchClass,
 	},
-	storage::{self, StorageStreamIter},
+	storage,
 	traits::{
 		ConstU32, Contains, EnsureOrigin, Get, HandleLifetime, OnKilledAccount, OnNewAccount,
 		OriginTrait, PalletInfo, SortedMembers, StoredMap, TypedGet,
@@ -129,6 +129,7 @@ pub use extensions::{
 // Backward compatible re-export.
 pub use extensions::check_mortality::CheckMortality as CheckEra;
 pub use frame_support::dispatch::RawOrigin;
+use frame_support::storage::{unhashed, StorageStreamIter};
 pub use weights::WeightInfo;
 
 const LOG_TARGET: &str = "runtime::system";
@@ -544,7 +545,7 @@ pub mod pallet {
 	#[pallet::getter(fn account)]
 	pub type Account<T: Config> = StorageMap<
 		_,
-		Blake2_128Concat,
+		Identity,
 		T::AccountId,
 		AccountInfo<T::Index, T::AccountData>,
 		ValueQuery,
@@ -568,7 +569,7 @@ pub mod pallet {
 	#[pallet::storage]
 	#[pallet::getter(fn block_hash)]
 	pub type BlockHash<T: Config> =
-		StorageMap<_, Twox64Concat, T::BlockNumber, T::Hash, ValueQuery>;
+		StorageMap<_, Identity, T::BlockNumber, T::Hash, ValueQuery>;
 
 	/// Extrinsics data for the current block (maps an extrinsic's index to its data).
 	#[pallet::storage]
@@ -597,7 +598,7 @@ pub mod pallet {
 	/// Digest of the current block, also part of the block header.
 	#[pallet::storage]
 	#[pallet::getter(fn threads)]
-	pub(super) type Threads<T: Config> = StorageMap<_, Blake2_128, T::BlockNumber, u8, ValueQuery>;
+	pub(super) type Threads<T: Config> = StorageMap<_, Identity, T::BlockNumber, u8, ValueQuery>;
 
 	/// Events deposited for the current block.
 	///
@@ -1071,8 +1072,23 @@ impl<T: Config> Pallet<T> {
 	}
 
 	/// Increment the provider reference counter on an account.
-	pub fn inc_providers(who: &T::AccountId) -> IncRefStatus {
+	pub fn genesis_inc_providers(who: &T::AccountId) -> IncRefStatus {
 		Account::<T>::mutate(who, |a| {
+			if a.providers == 0 && a.sufficients == 0 {
+				// Account is being created.
+				a.providers = 1;
+				T::OnNewAccount::on_new_account(&who);
+				IncRefStatus::Created
+			} else {
+				a.providers = a.providers.saturating_add(1);
+				IncRefStatus::Existed
+			}
+		})
+	}
+
+	/// Increment the provider reference counter on an account.
+	pub fn inc_providers(who: &T::AccountId) -> IncRefStatus {
+		Account::<T>::get_ref(who).mutate_value_query(|a| {
 			if a.providers == 0 && a.sufficients == 0 {
 				// Account is being created.
 				a.providers = 1;
@@ -1089,7 +1105,7 @@ impl<T: Config> Pallet<T> {
 	///
 	/// This *MUST* only be done once for every time you called `inc_providers` on `who`.
 	pub fn dec_providers(who: &T::AccountId) -> Result<DecRefStatus, DispatchError> {
-		Account::<T>::try_mutate_exists(who, |maybe_account| {
+		Account::<T>::get_ref(who).mutate(|maybe_account| {
 			if let Some(mut account) = maybe_account.take() {
 				if account.providers == 0 {
 					// Logic error - cannot decrement beyond zero.
@@ -1130,7 +1146,7 @@ impl<T: Config> Pallet<T> {
 
 	/// Increment the self-sufficient reference counter on an account.
 	pub fn inc_sufficients(who: &T::AccountId) -> IncRefStatus {
-		Account::<T>::mutate(who, |a| {
+		Account::<T>::get_ref(who).mutate_value_query(|a| {
 			if a.providers + a.sufficients == 0 {
 				// Account is being created.
 				a.sufficients = 1;
@@ -1147,7 +1163,7 @@ impl<T: Config> Pallet<T> {
 	///
 	/// This *MUST* only be done once for every time you called `inc_sufficients` on `who`.
 	pub fn dec_sufficients(who: &T::AccountId) -> DecRefStatus {
-		Account::<T>::mutate_exists(who, |maybe_account| {
+		Account::<T>::get_ref(who).mutate(|maybe_account| {
 			if let Some(mut account) = maybe_account.take() {
 				if account.sufficients == 0 {
 					// Logic error - cannot decrement beyond zero.
@@ -1198,7 +1214,7 @@ impl<T: Config> Pallet<T> {
 	/// The account `who`'s `providers` must be non-zero and the current number of consumers must
 	/// be less than `MaxConsumers::max_consumers()` or this will return an error.
 	pub fn inc_consumers(who: &T::AccountId) -> Result<(), DispatchError> {
-		Account::<T>::try_mutate(who, |a| {
+		Account::<T>::try_mutate_ref(who, |a| {
 			if a.providers > 0 {
 				if a.consumers < T::MaxConsumers::max_consumers() {
 					a.consumers = a.consumers.saturating_add(1);
@@ -1216,7 +1232,7 @@ impl<T: Config> Pallet<T> {
 	///
 	/// The account `who`'s `providers` must be non-zero or this will return an error.
 	pub fn inc_consumers_without_limit(who: &T::AccountId) -> Result<(), DispatchError> {
-		Account::<T>::try_mutate(who, |a| {
+		Account::<T>::try_mutate_ref(who, |a| {
 			if a.providers > 0 {
 				a.consumers = a.consumers.saturating_add(1);
 				Ok(())
@@ -1229,7 +1245,7 @@ impl<T: Config> Pallet<T> {
 	/// Decrement the reference counter on an account. This *MUST* only be done once for every time
 	/// you called `inc_consumers` on `who`.
 	pub fn dec_consumers(who: &T::AccountId) {
-		Account::<T>::mutate(who, |a| {
+		Account::<T>::get_ref(who).mutate_value_query(|a| {
 			if a.consumers > 0 {
 				a.consumers -= 1;
 			} else {
@@ -1288,39 +1304,53 @@ impl<T: Config> Pallet<T> {
 	///
 	/// NOTE: Events not registered at the genesis block and quietly omitted.
 	pub fn deposit_event_indexed(topics: &[T::Hash], event: T::RuntimeEvent) {
-		let block_number = Self::block_number();
-		// Don't populate events on genesis.
-		if block_number.is_zero() {
-			return
+		let mut event_idx = 0;
+		let mut event_count = EventCount::<T>::get_ref();
+		if !topics.is_empty() {
+			event_idx = event_count.clone_inner().unwrap_or_default();
 		}
-
+		match event_count
+			.try_mutate(|count| {
+				if let Some(count) = count {
+					match count.checked_add(1) {
+						// We've reached the maximum number of events at this block, just
+						// don't do anything and leave the event_count unaltered.
+						None => Err(()),
+						Some(nc) => {
+							*count = nc;
+							Ok(())
+						},
+					}
+				} else {
+					*count = Some(1);
+					Ok(())
+				}
+			})
+		{
+			Ok(c) => c,
+			Err(_) => return,
+		};
 		let phase = ExecutionPhase::<T>::get().unwrap_or_default();
 		let event = EventRecord { phase, event, topics: topics.to_vec() };
-
-		// Index of the to be added event.
-		let event_idx = {
-			let old_event_count = EventCount::<T>::get();
-			let new_event_count = match old_event_count.checked_add(1) {
-				// We've reached the maximum number of events at this block, just
-				// don't do anything and leave the event_count unaltered.
-				None => return,
-				Some(nc) => nc,
-			};
-			EventCount::<T>::put(new_event_count);
-			old_event_count
-		};
-
+		#[cfg(feature = "std")]
+		Events::<T>::get_ref()
+			.mutate_value_query(|events| {
+				events.push(Box::new(event));
+			});
+		#[cfg(not(feature = "std"))]
 		storage::unhashed::append(&Events::<T>::hashed_key(), event);
-
-		for topic in topics {
-			<EventTopics<T>>::append(topic, (block_number, event_idx));
+		if !topics.is_empty() {
+			let block_number = <Number<T>>::get();
+			for topic in topics {
+				<EventTopics<T>>::append(topic, (block_number, event_idx));
+			}
 		}
 	}
 
 	/// Gets the index of extrinsic that is currently executing.
 	pub fn extrinsic_index() -> Option<u32> {
 		#[cfg(feature = "std")]
-		{ storage::unhashed::get_cache(well_known_keys::EXTRINSIC_INDEX, |_| { Option::<u32>::None }) }
+		{ storage::unhashed::get_cache(well_known_keys::EXTRINSIC_INDEX, unhashed::non_f::<u32>) }
 		#[cfg(not(feature = "std"))]
 		storage::unhashed::get(well_known_keys::EXTRINSIC_INDEX)
 	}
@@ -1350,7 +1380,7 @@ impl<T: Config> Pallet<T> {
 	///
 	/// Another potential use-case could be for the `on_initialize` and `on_finalize` hooks.
 	pub fn register_extra_weight_unchecked(weight: Weight, class: DispatchClass) {
-		BlockWeight::<T>::mutate(|current_weight| {
+		BlockWeight::<T>::mutate_ref(|current_weight| {
 			current_weight.accrue(weight, class);
 		});
 	}
@@ -1381,10 +1411,25 @@ impl<T: Config> Pallet<T> {
 	pub fn finish_thread(thread: u8) -> T::Hash {
 		let number = <Number<T>>::get();
 		// We have to store events by block number since `Events` keep change.
+		#[cfg(feature = "std")]
+		{
+			let mut events_ref = Events::<T>::get_ref();
+			if events_ref.try_mutate(|e| if let Some(events) = e {
+				let _ = EventsMap::<T>::get_ref(number, thread)
+					.mutate_value_query(|map_events| {
+						sp_std::mem::swap(events, map_events);
+					});
+				Ok(())
+			} else {
+				Err(())
+			}).is_ok() {
+				events_ref.clear_muted();
+			};
+		}
+		#[cfg(not(feature = "std"))]
 		if let Some(events_raw) = storage::unhashed::take_raw(&Events::<T>::hashed_key()) {
 			storage::unhashed::put_raw(&EventsMap::<T>::hashed_key_for(number, thread), &events_raw);
 		}
-
 		let version = T::Version::get().state_version();
 		let storage_root = T::Hash::decode(&mut &sp_io::storage::root(version)[..])
 			.expect("Node is configured to use the same hash; qed");
@@ -1450,6 +1495,21 @@ impl<T: Config> Pallet<T> {
 		let parent_hash = <ParentHash<T>>::get();
 		let digest = <Digest<T>>::get();
 		// We have to store events by block number since `Events` keep change.
+		#[cfg(feature = "std")]
+		{
+			let mut events_ref = Events::<T>::get_ref();
+			if events_ref.try_mutate(|e|
+				e.take().map(|events| {
+					EventsMap::<T>::get_ref(number, <Threads<T>>::get(number))
+						.mutate_value_query(|e| *e = events);
+					Ok::<(), ()>(())
+				})
+					.ok_or(())
+			).is_ok() {
+				events_ref.clear_muted();
+			};
+		}
+		#[cfg(not(feature = "std"))]
 		if let Some(events_raw) = storage::unhashed::take_raw(&Events::<T>::hashed_key()) {
 			let thread = <Threads<T>>::get(number);
 			storage::unhashed::put_raw(&EventsMap::<T>::hashed_key_for(number, thread), &events_raw);
@@ -1525,9 +1585,15 @@ impl<T: Config> Pallet<T> {
 	///
 	/// Should only be called if you know what you are doing and outside of the runtime block
 	/// execution else it can have a large impact on the PoV size of a block.
+	#[cfg(not(feature = "std"))]
 	pub fn read_events_no_consensus(
 	) -> impl sp_std::iter::Iterator<Item = Box<EventRecord<T::RuntimeEvent, T::Hash>>> {
 		Events::<T>::stream_iter()
+	}
+
+	#[cfg(feature = "std")]
+    pub fn read_events_no_consensus() -> impl sp_std::iter::Iterator<Item = Box<EventRecord<T::RuntimeEvent, T::Hash>>> {
+		Events::<T>::get_ref().map_value_query(|events| events.clone()).into_iter()
 	}
 
 	/// Set the block number to something in particular. Can be used as an alternative to
@@ -1556,7 +1622,7 @@ impl<T: Config> Pallet<T> {
 	/// Set the current block weight. This should only be used in some integration tests.
 	#[cfg(any(feature = "std", test))]
 	pub fn set_block_consumed_resources(weight: Weight, len: usize) {
-		BlockWeight::<T>::mutate(|current_weight| {
+		BlockWeight::<T>::mutate_ref(|current_weight| {
 			current_weight.set(weight, DispatchClass::Normal)
 		});
 		AllExtrinsicsLen::<T>::put(len as u32);
@@ -1608,7 +1674,7 @@ impl<T: Config> Pallet<T> {
 
 	/// Increment a particular account's nonce by 1.
 	pub fn inc_account_nonce(who: impl EncodeLike<T::AccountId>) {
-		Account::<T>::mutate(who, |a| a.nonce += T::Index::one());
+		Account::<T>::get_ref(who).mutate_value_query(|a| a.nonce += T::Index::one());
 	}
 
 	/// Note what the extrinsic data of the current extrinsic index is.
@@ -1647,10 +1713,24 @@ impl<T: Config> Pallet<T> {
 
 	/// Event can't apply extrinsic, we still record and add index.
 	pub fn note_next_extrinsic() {
-		let next_extrinsic_index = Self::extrinsic_index().unwrap_or_default() + 1u32;
-
 		#[cfg(feature = "std")]
-		storage::unhashed::put_cache(well_known_keys::EXTRINSIC_INDEX, next_extrinsic_index);
+		let next_extrinsic_index = {
+			let mut extrinsic_index_ref = unhashed::get_cache_ref(
+				well_known_keys::EXTRINSIC_INDEX,
+				unhashed::non_t::<u32>
+			);
+			extrinsic_index_ref.mutate(|index|
+				if let Some(index) = index {
+					*index += 1;
+					*index
+				} else {
+					*index = Some(1);
+					1
+				}
+			)
+		};
+		#[cfg(not(feature = "std"))]
+		let next_extrinsic_index = Self::extrinsic_index().unwrap_or_default() + 1u32;
 		#[cfg(not(feature = "std"))]
 		storage::unhashed::put(well_known_keys::EXTRINSIC_INDEX, &next_extrinsic_index);
 		ExecutionPhase::<T>::put(Phase::ApplyExtrinsic(next_extrinsic_index));
@@ -1661,7 +1741,7 @@ impl<T: Config> Pallet<T> {
 	pub fn note_finished_extrinsics() {
 		#[cfg(feature = "std")]
 		let extrinsic_index: u32 =
-			storage::unhashed::take_cache(well_known_keys::EXTRINSIC_INDEX, |_| { Option::<u32>::None }).unwrap_or_default();
+			storage::unhashed::take_cache(well_known_keys::EXTRINSIC_INDEX).unwrap_or_default();
 		#[cfg(not(feature = "std"))]
 		let extrinsic_index: u32 =
 			storage::unhashed::take(well_known_keys::EXTRINSIC_INDEX).unwrap_or_default();

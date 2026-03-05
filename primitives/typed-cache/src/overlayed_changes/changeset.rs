@@ -19,25 +19,17 @@
 
 use super::{Extrinsics, StorageKey};
 
-#[cfg(not(feature = "std"))]
-use sp_std::collections::btree_set::BTreeSet as Set;
-#[cfg(feature = "std")]
-use std::collections::HashSet as Set;
-use sp_std::sync::Arc;
-use codec::Encode;
-use once_cell::sync::OnceCell;
-use crate::warn;
+use crate::{RcT, Set};
 use smallvec::SmallVec;
 use sp_std::{
 	collections::{btree_map::BTreeMap, btree_set::BTreeSet},
-	hash::Hash, vec::Vec,
+	hash::Hash,
 };
 
 const PROOF_OVERLAY_NON_EMPTY: &str = "\
 	An OverlayValue is always created with at least one transaction and dropped as soon
 	as the last transaction is removed; qed";
 
-type DirtyKeysSets<K> = SmallVec<[Set<K>; 5]>;
 type Transactions<V> = SmallVec<[InnerValue<V>; 5]>;
 
 /// Error returned when trying to commit or rollback while no transaction is open or
@@ -75,12 +67,11 @@ struct InnerValue<V> {
 }
 
 /// An overlay that contains all versions of a value for a specific key.
-#[derive(Debug, Clone)]
-#[cfg_attr(test, derive(PartialEq))]
+#[derive(Clone)]
 pub struct OverlayedEntry<V> {
 	/// The individual versions of that value.
 	/// One entry per transactions during that the value was actually written.
-	transactions: Transactions<V>,
+	transactions: Transactions<RcT<V>>,
 }
 
 impl<V> Default for OverlayedEntry<V> {
@@ -89,31 +80,19 @@ impl<V> Default for OverlayedEntry<V> {
 	}
 }
 
-/// History of value, with removal support.
-pub type OverlayedValue<V> = OverlayedEntry<Option<V>>;
+impl<V> OverlayedEntry<V> {
+	pub fn empty(&self) -> bool {
+		self.transactions.is_empty()
+	}
+}
 
-/// Change set for basic key value with extrinsics index recording and removal support.
-pub type OverlayedChangeSet<V> = StorageOverlay<StorageKey, Option<V>>;
-
-pub type Cache<T> = Arc<OnceCell<T>>;
+// pub type Cache<T> = Arc<OnceCell<T>>;
 
 /// Holds a set of changes with the ability modify them using nested transactions.
 #[derive(Clone)]
 pub struct StorageOverlay<K: Ord + Hash + Clone, V: Clone> {
-	pub space: Vec<u8>,
-	/// Cached best value.
-	/// For cache, any value will only insert once(data should not change).
-	pub cache: BTreeMap<K, Cache<V>>,
 	/// Stores the changes that this overlay constitutes.
 	pub changes: BTreeMap<K, OverlayedEntry<V>>,
-	/// Stores which keys are dirty per transaction. Needed in order to determine which
-	/// values to merge into the parent transaction on commit. The length of this vector
-	/// therefore determines how many nested transactions are currently open (depth).
-	dirty_keys: DirtyKeysSets<K>,
-	/// The number of how many transactions beginning from the first transactions are started
-	/// by the client. Those transactions are protected against close (commit, rollback)
-	/// when in runtime mode.
-	num_client_transactions: usize,
 }
 
 impl Default for ExecutionMode {
@@ -123,13 +102,17 @@ impl Default for ExecutionMode {
 }
 
 impl<V> OverlayedEntry<V> {
+	pub fn take_ref(&mut self) -> RcT<V> {
+		self.transactions.pop().expect(PROOF_OVERLAY_NON_EMPTY).value
+	}
+
 	/// The value as seen by the current transaction.
-	pub fn value_ref(&self) -> &V {
+	pub fn value_ref(&self) -> &RcT<V> {
 		&self.transactions.last().expect(PROOF_OVERLAY_NON_EMPTY).value
 	}
 
 	/// The value as seen by the current transaction.
-	pub fn into_value(mut self) -> V {
+	pub fn into_value(mut self) -> RcT<V> {
 		self.transactions.pop().expect(PROOF_OVERLAY_NON_EMPTY).value
 	}
 
@@ -143,16 +126,16 @@ impl<V> OverlayedEntry<V> {
 	}
 
 	/// Mutable reference to the most recent version.
-	pub fn value_mut(&mut self) -> &mut V {
+	pub fn value_mut(&mut self) -> &mut RcT<V> {
 		&mut self.transactions.last_mut().expect(PROOF_OVERLAY_NON_EMPTY).value
 	}
 
-	pub fn pop_value(&mut self) -> V {
+	pub fn pop_value(&mut self) -> RcT<V> {
 		self.pop_transaction().value
 	}
 
 	/// Remove the last version and return it.
-	fn pop_transaction(&mut self) -> InnerValue<V> {
+	fn pop_transaction(&mut self) -> InnerValue<RcT<V>> {
 		self.transactions.pop().expect(PROOF_OVERLAY_NON_EMPTY)
 	}
 
@@ -161,74 +144,51 @@ impl<V> OverlayedEntry<V> {
 		&mut self.transactions.last_mut().expect(PROOF_OVERLAY_NON_EMPTY).extrinsics
 	}
 
+	/// Writes a new version of a cache value.
+	pub fn init_cache(&mut self, value: Option<V>) -> bool {
+		if self.transactions.is_empty() {
+			self.transactions.push(InnerValue { value: RcT::new(value, false), extrinsics: Default::default() });
+			true
+		} else {
+			false
+		}
+	}
+
 	/// Writes a new version of a value.
 	///
 	/// This makes sure that the old version is not overwritten and can be properly
 	/// rolled back when required.
-	pub fn set(&mut self, value: V, first_write_in_tx: bool, at_extrinsic: Option<u32>) {
+	pub fn set(&mut self, value: Option<V>, first_write_in_tx: bool, muted: bool, at_extrinsic: Option<u32>) {
 		if first_write_in_tx || self.transactions.is_empty() {
-			self.transactions.push(InnerValue { value, extrinsics: Default::default() });
+			self.transactions.push(InnerValue { value: RcT::new(value, muted), extrinsics: Default::default() });
 		} else {
-			*self.value_mut() = value;
+			self.value_mut().mutate(|t| *t = value);
 		}
 
 		if let Some(extrinsic) = at_extrinsic {
 			self.transaction_extrinsics_mut().insert(extrinsic);
 		}
 	}
-}
 
-impl<V> OverlayedEntry<Option<V>> {
-	/// The value as seen by the current transaction.
-	pub fn value(&self) -> Option<&V> {
-		self.value_ref().as_ref()
+	/// Insert a new transaction layer value.
+	pub fn new_transaction(&mut self, value: RcT<V>) {
+		self.transactions.push(InnerValue { value, extrinsics: Default::default() });
 	}
 }
 
-/// Inserts a key into the dirty set.
-///
-/// Returns true iff we are currently have at least one open transaction and if this
-/// is the first write to the given key that transaction.
-fn insert_dirty<K: Ord + Hash>(set: &mut DirtyKeysSets<K>, key: K) -> bool {
-	set.last_mut().map(|dk| dk.insert(key)).unwrap_or_default()
-}
-
-impl<K: Ord + Hash + Clone, V: Clone> StorageOverlay<K, V> {
-	pub fn new(space: &[u8], client_transactions: usize, runtime_transactions: usize) -> Self {
+impl<V: Clone> StorageOverlay<StorageKey, V> {
+	pub fn new() -> Self {
 		Self {
-			space: space.to_vec(),
-			cache: Default::default(),
 			changes: Default::default(),
-			dirty_keys: (0..client_transactions + runtime_transactions).map(|_| Default::default()).collect(),
-			num_client_transactions: client_transactions,
 		}
 	}
 
 	pub fn clone_with_changes(&self) -> Self {
 		Self {
-			space: self.space.clone(),
-			cache: self.cache.clone(),
 			// changes are different(if changed) between copies
 			changes: self.changes.clone(),
-			dirty_keys: self.dirty_keys.clone(),
-			num_client_transactions: self.num_client_transactions,
 		}
 	}
-
-	// /// Create a new changeset at the same transaction state but without any contents.
-	// ///
-	// /// This changeset might be created when there are already open transactions.
-	// /// We need to catch up here so that the child is at the same transaction depth.
-	// pub fn spawn_child(&self) -> Self {
-	// 	use sp_std::iter::repeat;
-	// 	Self {
-	// 		space: self.space.clone(),
-	// 		cache: Default::default(),
-	// 		changes: Default::default(),
-	// 		dirty_keys: repeat(Set::new()).take(self.transaction_depth()).collect(),
-	// 		num_client_transactions: self.num_client_transactions,
-	// 	}
-	// }
 
 	/// True if no changes at all are contained in the change set.
 	pub fn is_empty(&self) -> bool {
@@ -236,34 +196,35 @@ impl<K: Ord + Hash + Clone, V: Clone> StorageOverlay<K, V> {
 	}
 
 	/// Get an optional reference to the value stored for the specified key.
-	pub fn get_ref<Q>(&self, key: &Q) -> Option<&OverlayedEntry<V>>
-	where
-		K: sp_std::borrow::Borrow<Q>,
-		Q: Ord + ?Sized,
-	{
+	pub fn get_ref(&self, key: &StorageKey) -> Option<&OverlayedEntry<V>> {
 		self.changes.get(key)
+	}
+
+	/// Cache a new value for the specified key.
+	pub fn init_cache(&mut self, key: StorageKey, value: Option<V>) -> bool {
+		 self.changes.entry(key.clone()).or_default().init_cache(value)
 	}
 
 	/// Set a new value for the specified key.
 	///
 	/// Can be rolled back or committed when called inside a transaction.
-	pub fn set(&mut self, key: K, value: V, at_extrinsic: Option<u32>) {
-		let overlayed = self.changes.entry(key.clone()).or_default();
-		overlayed.set(value, insert_dirty(&mut self.dirty_keys, key), at_extrinsic);
+	pub fn set(&mut self, first_write_in_tx: bool, key: StorageKey, value: Option<V>, at_extrinsic: Option<u32>) {
+		let overlayed = self.changes.entry(key).or_default();
+		overlayed.set(value, first_write_in_tx, true, at_extrinsic);
 	}
 
 	/// Get a list of all changes as seen by current transaction.
-	pub fn changes(&self) -> impl Iterator<Item = (&K, &OverlayedEntry<V>)> {
+	pub fn changes(&self) -> impl Iterator<Item = (&StorageKey, &OverlayedEntry<V>)> {
 		self.changes.iter()
 	}
 
 	/// Get a list of all changes as seen by current transaction, consumes
 	/// the overlay.
-	pub fn into_changes(self) -> impl Iterator<Item = (K, OverlayedEntry<V>)> {
+	pub fn into_changes(self) -> impl Iterator<Item = (StorageKey, OverlayedEntry<V>)> {
 		self.changes.into_iter()
 	}
 
-	pub fn drain_changes(&mut self) -> BTreeMap<K, OverlayedEntry<V>> {
+	pub fn drain_changes(&mut self) -> BTreeMap<StorageKey, OverlayedEntry<V>> {
 		sp_std::mem::take(&mut self.changes)
 	}
 
@@ -271,81 +232,28 @@ impl<K: Ord + Hash + Clone, V: Clone> StorageOverlay<K, V> {
 	///
 	/// Panics:
 	/// Panics if there are open transactions: `transaction_depth() > 0`
-	pub fn drain_commited(self) -> impl Iterator<Item = (K, V)> {
-		assert!(self.transaction_depth() == 0, "Drain is not allowed with open transactions.");
+	pub fn drain_commited(self) -> impl Iterator<Item = (StorageKey, RcT<V>)> {
 		self.changes.into_iter().map(|(k, mut v)| (k, v.pop_transaction().value))
-	}
-
-	/// Returns the current nesting depth of the transaction stack.
-	///
-	/// A value of zero means that no transaction is open and changes are committed on write.
-	pub fn transaction_depth(&self) -> usize {
-		self.dirty_keys.len()
-	}
-
-	/// Call this before transfering control to the runtime.
-	///
-	/// This protects all existing transactions from being removed by the runtime.
-	/// Calling this while already inside the runtime will return an error.
-	pub fn enter_runtime(&mut self) {
-		self.num_client_transactions = self.transaction_depth();
-	}
-
-	/// Call this when control returns from the runtime.
-	///
-	/// This commits all dangling transaction left open by the runtime.
-	/// Calling this while already outside the runtime will return an error.
-	pub fn exit_runtime(&mut self) -> usize {
-		if self.has_open_runtime_transactions() {
-			warn!(
-				"{} storage transactions are left open by the runtime. Those will be rolled back.",
-				self.transaction_depth() - self.num_client_transactions,
-			);
-		}
-		while self.has_open_runtime_transactions() {
-			self.rollback_transaction(&ExecutionMode::Client)
-				.expect("The loop condition checks that the transaction depth is > 0; qed");
-		}
-		// depth should be equal than `num_client_transactions`
-		self.transaction_depth()
-	}
-
-	/// Start a new nested transaction.
-	///
-	/// This allows to either commit or roll back all changes that were made while this
-	/// transaction was open. Any transaction must be closed by either `commit_transaction`
-	/// or `rollback_transaction` before this overlay can be converted into storage changes.
-	///
-	/// Changes made without any open transaction are committed immediately.
-	pub fn start_transaction(&mut self) {
-		self.dirty_keys.push(Default::default());
 	}
 
 	/// Rollback the last transaction started by `start_transaction`.
 	///
 	/// Any changes made during that transaction are discarded. Returns an error if
 	/// there is no open transaction that can be rolled back.
-	pub fn rollback_transaction(&mut self, mode: &ExecutionMode) -> Result<(), NoOpenTransaction> {
-		self.close_transaction(true, mode)
+	pub fn rollback_transaction(&mut self, dirty_keys: Set<StorageKey>) -> Result<(), NoOpenTransaction> {
+		self.close_transaction(true, dirty_keys)
 	}
 
 	/// Commit the last transaction started by `start_transaction`.
 	///
 	/// Any changes made during that transaction are committed. Returns an error if
 	/// there is no open transaction that can be committed.
-	pub fn commit_transaction(&mut self, mode: &ExecutionMode) -> Result<(), NoOpenTransaction> {
-		self.close_transaction(false, mode)
+	pub fn commit_transaction(&mut self, dirty_keys: Set<StorageKey>) -> Result<(), NoOpenTransaction> {
+		self.close_transaction(false, dirty_keys)
 	}
 
-	fn close_transaction(&mut self, rollback: bool, mode: &ExecutionMode) -> Result<(), NoOpenTransaction> {
-		// runtime is not allowed to close transactions started by the client
-		if let ExecutionMode::Runtime = mode {
-			if !self.has_open_runtime_transactions() {
-				return Err(NoOpenTransaction)
-			}
-		}
-
-		for key in self.dirty_keys.pop().ok_or(NoOpenTransaction)? {
+	fn close_transaction(&mut self, rollback: bool, dirty_keys: Set<StorageKey>) -> Result<(), NoOpenTransaction> {
+		for key in dirty_keys {
 			let overlayed = self.changes.get_mut(&key).expect(
 				"\
 				A write to an OverlayedValue is recorded in the dirty key set. Before an
@@ -363,19 +271,9 @@ impl<K: Ord + Hash + Clone, V: Clone> StorageOverlay<K, V> {
 					self.changes.remove(&key);
 				}
 			} else {
-				let has_predecessor = if let Some(dirty_keys) = self.dirty_keys.last_mut() {
-					// Not the last tx: Did the previous tx write to this key?
-					!dirty_keys.insert(key)
-				} else {
-					// Last tx: Is there already a value in the committed set?
-					// Check against one rather than empty because the current tx is still
-					// in the list as it is popped later in this function.
-					overlayed.transactions.len() > 1
-				};
-
 				// We only need to merge if there is an pre-existing value. It may be a value from
 				// the previous transaction or a value committed without any open transaction.
-				if has_predecessor {
+				if overlayed.transactions.len() > 1 {
 					let dropped_tx = overlayed.pop_transaction();
 					*overlayed.value_mut() = dropped_tx.value;
 					overlayed.transaction_extrinsics_mut().extend(dropped_tx.extrinsics);
@@ -385,13 +283,9 @@ impl<K: Ord + Hash + Clone, V: Clone> StorageOverlay<K, V> {
 
 		Ok(())
 	}
-
-	fn has_open_runtime_transactions(&self) -> bool {
-		self.transaction_depth() > self.num_client_transactions
-	}
 }
 
-impl<V: Clone> OverlayedChangeSet<V> {
+impl<V: Clone> StorageOverlay<StorageKey, V> {
 	/// Get a mutable reference for a value.
 	///
 	/// Can be rolled back or committed when called inside a transaction.
@@ -399,47 +293,65 @@ impl<V: Clone> OverlayedChangeSet<V> {
 	pub fn modify(
 		&mut self,
 		key: StorageKey,
-		init: impl Fn() -> V,
+		init: Option<impl FnOnce() -> Option<V>>,
+		first_write_in_tx: bool,
 		at_extrinsic: Option<u32>,
-	) -> &mut Option<V> {
-		let overlayed = self.changes.entry(key.clone()).or_default();
-		let first_write_in_tx = insert_dirty(&mut self.dirty_keys, key);
+	) -> Option<&mut RcT<V>> {
+		let overlayed = self.changes.entry(key).or_default();
+		let mut muted = false;
 		let clone_into_new_tx = if let Some(tx) = overlayed.transactions.last() {
 			if first_write_in_tx {
-				Some(tx.value.clone())
+				muted = tx.value.muted();
+				Some(tx.value.clone_inner())
 			} else {
 				None
+			}
+		} else {
+			if let Some(init) = init {
+				Some(init())
+			} else {
+				return None;
+			}
+		};
+
+		if let Some(cloned) = clone_into_new_tx {
+			overlayed.set(cloned, first_write_in_tx, muted, at_extrinsic);
+		}
+		Some(overlayed.value_mut())
+	}
+
+	pub fn modify_append(
+		&mut self,
+		key: StorageKey,
+		init: impl FnOnce() -> V,
+		first_write_in_tx: bool,
+		at_extrinsic: Option<u32>,
+	) -> Option<&mut RcT<V>> {
+		let overlayed = self.changes.entry(key).or_default();
+		let mut muted = false;
+		let clone_into_new_tx = if let Some(tx) = overlayed.transactions.last() {
+			if tx.value.borrow().is_some() {
+				if first_write_in_tx {
+					muted = tx.value.muted();
+					Some(tx.value.clone_inner())
+				} else {
+					None
+				}
+			} else {
+				Some(Some(init()))
 			}
 		} else {
 			Some(Some(init()))
 		};
 
 		if let Some(cloned) = clone_into_new_tx {
-			overlayed.set(cloned, first_write_in_tx, at_extrinsic);
+			overlayed.set(cloned, first_write_in_tx, muted, at_extrinsic);
 		}
-		overlayed.value_mut()
-	}
-
-	/// Set all values to deleted which are matched by the predicate.
-	///
-	/// Can be rolled back or committed when called inside a transaction.
-	pub fn clear_where(
-		&mut self,
-		predicate: impl Fn(&[u8], &OverlayedValue<V>) -> bool,
-		at_extrinsic: Option<u32>,
-	) -> u32 {
-		let mut count = 0;
-		for (key, val) in self.changes.iter_mut().filter(|(k, v)| predicate(k, v)) {
-			if val.value_ref().is_some() {
-				count += 1;
-			}
-			val.set(None, insert_dirty(&mut self.dirty_keys, key.clone()), at_extrinsic);
-		}
-		count
+		Some(overlayed.value_mut())
 	}
 
 	/// Get the iterator over all changes that follow the supplied `key`.
-	pub fn changes_after(&self, key: &[u8]) -> impl Iterator<Item = (&[u8], &OverlayedValue<V>)> {
+	pub fn changes_after(&self, key: &[u8]) -> impl Iterator<Item = (&[u8], &OverlayedEntry<V>)> {
 		use sp_std::ops::Bound;
 		let range = (Bound::Excluded(key), Bound::Unbounded);
 		self.changes.range::<[u8], _>(range).map(|(k, v)| (k.as_slice(), v))

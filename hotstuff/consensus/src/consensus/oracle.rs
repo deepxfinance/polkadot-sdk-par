@@ -1,0 +1,266 @@
+use std::collections::{BTreeMap, HashSet};
+use std::env;
+use std::marker::PhantomData;
+use std::ops::Div;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+use sc_basic_authorship::{BlockExecuteInfo, BlockOracle, GroupInfo};
+use sp_api::{BlockT, HeaderT};
+use sp_runtime::Percent;
+
+pub trait HotsOracle<B: BlockT> {
+    /// update state by group info
+    fn update_group_info(&self, info: GroupInfo);
+    /// update verify speed by verify results(transaction number and time(micros)).
+    fn update_verify_times(&self, verify_times: Vec<(usize, Duration)>);
+    /// estimate verify transaction time limit.
+    fn verify_time_limit(&self) -> Duration;
+    /// estimate transaction verify number(which is used for transaction propose).
+    fn thread_verify_limit(&self) -> Option<usize>;
+    /// transactions hash should be filtered when proposed.
+    fn filter_transactions(&self) -> HashSet<B::Hash>;
+    /// estimate import time to import earlier.
+    fn import_time(&self) -> Duration;
+}
+
+#[derive(Default, Clone)]
+pub struct HotstuffOracle<B: BlockT, O: BlockOracle<B>> {
+    pub inner: Arc<O>,
+    /// max hotstuff time decide extrinsic verify time tolerance(default 200 millis).
+    pub hotstuff_duration: Duration,
+    /// `hotstuff_duration * verify_percent` estimates extrinsic verify time.
+    pub verify_percent: Arc<Mutex<Percent>>,
+    /// state recording last verify extrinsic speed.
+    pub verify_time_per_tx: Arc<Mutex<Duration>>,
+    /// rate for get `total_tx_limit`
+    pub pool_limit_rate: f32,
+    /// config filter blocks.
+    pub filter_blocks: u32,
+    /// filter all applied transaction.
+    pub transaction_filter: Arc<Mutex<BTreeMap<<B::Header as HeaderT>::Number, HashSet<B::Hash>>>>,
+    /// Network config hotstuff protocol size limit, which will influence block transaction size.
+    /// Default 5M Bytes(1024 *1024 * 5).
+    pub network_notification_limit: usize,
+
+    /// Average time to get transaction from pool(`ready_at`/`ready`).
+    pub ready_avg_time: Arc<Mutex<Option<Duration>>>,
+    /// If group timeout, next group number div this.
+    pub limit_div_rate: Arc<Mutex<usize>>,
+    phantom: PhantomData<B>,
+}
+
+impl<B: BlockT, O: BlockOracle<B>> HotstuffOracle<B, O> {
+    pub fn new(inner: Arc<O>, network_notification_limit: Option<usize>) -> Self {
+        // default same with block_duration. only necessary set for Hotstuff consensus.
+        let mut hotstuff_duration = inner.block_duration();
+        if let Ok(value) = env::var("HOTSTUFF_DURATION") {
+            if let Ok(duration) = value.parse::<u64>() {
+                hotstuff_duration = Duration::from_millis(duration);
+            }
+        }
+        let consensus_time = hotstuff_duration.saturating_sub(inner.pool_time());
+        let consensus_percent = Percent::from_rational(consensus_time.as_micros(), hotstuff_duration.as_micros());
+        let mut verify_percent = Percent::from_percent(75);
+        if let Ok(value) = env::var("HOTSTUFF_VERIFY_PERCENT") {
+            if let Ok(percent) = value.parse::<u8>() {
+                verify_percent = Percent::from_percent(percent);
+            }
+        }
+        verify_percent = verify_percent * consensus_percent;
+
+        let mut verify_per_tx = 100u64;
+        if let Ok(value) = env::var("HOTSTUFF_VERIFY_PER_TX") {
+            if let Ok(time) = value.parse::<u64>() {
+                verify_per_tx = time;
+            }
+        }
+
+        let mut pool_limit_rate = 2f32;
+        if let Ok(rate) = env::var("HOTSTUFF_POOL_TX_RATE") {
+            if let Ok(rate) = rate.parse::<f32>() {
+                pool_limit_rate = rate;
+            }
+        }
+
+        let mut filter_blocks = 50u32;
+        if let Ok(value) = env::var("HOTSTUFF_FILTER_BLOCKS") {
+            if let Ok(blocks) = value.parse::<u32>() {
+                filter_blocks = blocks.max(1);
+            }
+        }
+        Self {
+            inner,
+            hotstuff_duration,
+            verify_percent: Arc::new(Mutex::new(verify_percent)),
+            verify_time_per_tx: Arc::new(Mutex::new(Duration::from_micros(verify_per_tx))),
+            pool_limit_rate,
+            filter_blocks,
+            transaction_filter: Arc::new(Mutex::new(BTreeMap::new())),
+            network_notification_limit: network_notification_limit.unwrap_or(1024 * 1024 * 5),
+
+            ready_avg_time: Arc::new(Mutex::new(None)),
+            limit_div_rate: Arc::new(Mutex::new(1)),
+            phantom: PhantomData,
+        }
+    }
+}
+
+impl <B: BlockT, O: BlockOracle<B> + Send + Sync + 'static> HotstuffOracle<B, O> {
+    pub fn update_block_transactions(&self, info: &BlockExecuteInfo<B>) {
+        let transactions: HashSet<_> = info.threads.iter().map(|t| t.1.transactions.clone()).flatten().collect();
+        let mut filter =  self.transaction_filter.lock().unwrap();
+        let mut blocks: Vec<_> = filter.keys().cloned().collect();
+        blocks.sort_by(|a, b| b.cmp(&a));
+        if blocks.len() >= self.filter_blocks as usize {
+            for index in self.filter_blocks as usize - 1..blocks.len() - 1 {
+                filter.remove(&blocks[index]);
+            }
+        }
+        filter.insert(info.number, transactions);
+    }
+}
+
+impl<B: BlockT, O: BlockOracle<B> + Clone + Send + Sync + 'static> HotsOracle<B> for HotstuffOracle<B, O> {
+    fn update_group_info(&self, info: GroupInfo) {
+        let oracle = self.clone();
+        std::thread::spawn(move || {
+            match info.ready_info {
+                Some((ready_number, ready_time)) => {
+                    let avg_time = ready_time.checked_div(ready_number as u32).unwrap_or_default();
+                    if avg_time > Default::default() {
+                        oracle.ready_avg_time.lock().unwrap().replace(avg_time);
+                        let prev_rate = *oracle.limit_div_rate.lock().unwrap();
+                        *oracle.limit_div_rate.lock().unwrap() = (prev_rate / 2).max(1);
+                    }
+                },
+                None => *oracle.limit_div_rate.lock().unwrap() *= 2,
+            }
+            let group_info = info.info();
+            if !group_info.is_empty() {
+                log::debug!(target: "oracle_hots", "[Update] {group_info}");
+            }
+        });
+    }
+
+    // each value at input should be (verify_number, verify_micros)
+    fn update_verify_times(&self, verify_times: Vec<(usize, Duration)>) {
+        // TODO update verify_percent by full_time and hotstuff_duration?
+        let verify_time_per_tx = self.verify_time_per_tx.clone();
+        std::thread::spawn(move || {
+            let mut total_number = 0;
+            let mut total_time = Duration::default();
+            for (number, time) in verify_times {
+                if number == 0 {
+                    continue;
+                }
+                total_number += number;
+                total_time += time;
+            }
+            if total_number > 0 {
+                let time_per_verify = total_time / total_number as u32;
+                let pre_verify_time_per_tx = *verify_time_per_tx.lock().unwrap();
+                if pre_verify_time_per_tx != time_per_verify {
+                    *verify_time_per_tx.lock().unwrap() = time_per_verify;
+                    log::debug!(target: "oracle_hots", "[Update] verify_time_per_tx: {}μs", time_per_verify.as_micros());
+                }
+            }
+        });
+    }
+
+    fn verify_time_limit(&self) -> Duration {
+        // Default we use 75%  `HotstuffDuration` for verify extrinsic
+        Duration::from_micros(self.verify_percent.lock().unwrap().mul_floor(self.hotstuff_duration.as_micros() as u64))
+    }
+
+    /// verify time should < slot_duration to finish consensus
+    /// limited extrinsic number for thread verify time.
+    fn thread_verify_limit(&self) -> Option<usize> {
+        let verify_time_per_tx = *self.verify_time_per_tx.lock().unwrap();
+        if verify_time_per_tx == Duration::default() {
+            return None;
+        }
+        // During full consensus process, verify extrinsic takes most time.
+        Some((self.verify_time_limit().as_micros() as usize / verify_time_per_tx.as_micros() as usize).max(1))
+    }
+
+    fn filter_transactions(&self) -> HashSet<B::Hash> {
+        self.transaction_filter.lock().unwrap().values().cloned().flatten().collect()
+    }
+
+    fn import_time(&self) -> Duration {
+        // default we set 50% of block_duration to import
+        self.block_duration() * 1 / 2
+    }
+}
+
+impl<B: BlockT, O: BlockOracle<B> + Clone + Send + Sync + 'static> BlockOracle<B> for  HotstuffOracle<B, O> {
+    fn update_block_duration(&self, time: Duration) {
+        self.inner.update_block_duration(time);
+    }
+
+    fn update_reserve_time(&self, time: Duration) -> Duration {
+        self.inner.update_reserve_time(time)
+    }
+
+    fn update_execute_info(&self, info: BlockExecuteInfo<B>) {
+        let oracle = (*self).clone();
+        std::thread::spawn(move || {
+            oracle.update_block_transactions(&info);
+            oracle.inner.update_execute_info(info);
+        });
+    }
+
+    fn block_duration(&self) -> Duration {
+        self.inner.block_duration()
+    }
+
+    fn thread_limit(&self) -> usize {
+        self.inner.thread_limit()
+    }
+
+    fn round_tx(&self) -> usize {
+        self.inner.round_tx()
+    }
+
+    fn linear_execute_time(&self) -> Duration {
+        self.inner.linear_execute_time()
+    }
+
+    fn min_single_tx(&self) -> usize {
+        self.inner.min_single_tx()
+    }
+
+    fn pool_time(&self) -> Duration {
+        self.inner.pool_time()
+    }
+
+    fn merge_time(&self) -> Duration {
+        self.inner.merge_time()
+    }
+
+    fn thread_execution_limit(&self) -> Option<usize> {
+        self.inner.thread_execution_limit()
+    }
+
+    fn linear_tx_limit(&self) -> usize {
+        self.thread_execution_limit().unwrap_or(2000)
+    }
+
+    fn block_size_limit(&self) -> usize {
+        // both decide by execute block size limit and `network_notification_limit`
+        self.inner.block_size_limit().min(self.network_notification_limit - 1000)
+    }
+
+    fn total_tx_limit(&self) -> usize {
+        let linear_tx_limit = self.linear_tx_limit();
+        let execute_limit = linear_tx_limit * self.thread_limit() * ((self.pool_limit_rate * 100f32) as usize) / 100;
+        // let total_tx_limit = if let Some(ready_avg_time) = self.ready_avg_time.lock().unwrap().clone() {
+        //     let ready_pool_limit = self.pool_time().as_nanos().div(ready_avg_time.as_nanos()) as usize;
+        //     execute_limit.max(1).min(ready_pool_limit)
+        // } else {
+        //     execute_limit.max(1)
+        // };
+        // (total_tx_limit / self.limit_div_rate.lock().unwrap().max(1)).max(1000)
+        execute_limit
+    }
+}

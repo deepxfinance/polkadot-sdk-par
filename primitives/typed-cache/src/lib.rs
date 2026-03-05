@@ -2,11 +2,11 @@
 pub mod static_cache;
 pub mod overlayed_changes;
 pub mod traits;
+pub mod rc_wrapper;
 
+pub use rc_wrapper::*;
 pub use static_cache::*;
 pub use overlayed_changes::*;
-#[cfg(feature = "std")]
-pub use overlayed_changes::storage::*;
 pub use traits::*;
 
 #[cfg(feature = "std")]

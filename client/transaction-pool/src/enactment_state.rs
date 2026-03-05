@@ -73,7 +73,7 @@ pub enum EnactmentAction<Block: BlockT> {
 	/// Enactment phase of maintenance shall be skipped
 	HandleFinalization,
 	/// Special for consensus
-	HandleConsensus(NumberFor<Block>, Block::Hash, Vec<Block::Hash>),
+	HandleConsensus(NumberFor<Block>, Block::Hash, Vec<Block::Hash>, bool),
 }
 
 impl<Block> EnactmentState<Block>
@@ -106,7 +106,8 @@ where
 		let (new_hash, current_hash, finalized) = match event {
 			ChainEvent::NewBestBlock { hash, .. } => (*hash, self.recent_best_block, false),
 			ChainEvent::Finalized { hash, .. } => (*hash, self.recent_finalized_block, true),
-			ChainEvent::Consensus { block, root, hashes } => return Ok(EnactmentAction::HandleConsensus(block.clone(), root.clone(), hashes.clone())),
+			ChainEvent::Consensus { block, root, hashes, confirm } =>
+				return Ok(EnactmentAction::HandleConsensus(block.clone(), root.clone(), hashes.clone(), *confirm)),
 		};
 
 		// do not proceed with txpool maintain if block distance is to high

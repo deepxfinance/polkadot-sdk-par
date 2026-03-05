@@ -432,7 +432,7 @@ where
 	H: std::hash::Hash + Eq + sp_runtime::traits::Member + sp_runtime::traits::MaybeSerialize,
 	E: IntoPoolError + From<sc_transaction_pool_api::error::Error>,
 {
-	pool.ready()
+	pool.ready(Some(50000))
 		.filter(|t| t.is_propagable())
 		.map(|t| {
 			let hash = t.hash().clone();

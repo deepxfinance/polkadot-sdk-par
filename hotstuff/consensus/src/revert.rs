@@ -3,9 +3,9 @@ use sc_client_api::AuxStore;
 use sp_api::{BlockT, HeaderT};
 use sp_blockchain::HeaderBackend;
 use crate::find_block_commit;
-use crate::message::BlockCommit;
-use crate::error::HotstuffError;
-use crate::aux_data::AuxDataStore;
+use crate::consensus::message::BlockCommit;
+use crate::consensus::error::HotstuffError;
+use crate::consensus::aux_data::AuxDataStore;
 
 pub fn revert<B, C>(client: &Arc<C>) -> Result<(), HotstuffError>
 where

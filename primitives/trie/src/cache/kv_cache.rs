@@ -56,7 +56,11 @@ impl schnellru::Limiter<ValueCacheKey, DBValue> for LocalValueCacheLimiter {
 
 	#[inline]
 	fn is_over_the_limit(&self, _length: usize) -> bool {
-		self.items_evicted <= self.max_items_evicted && self.heap_size > self.max_heap_size
+		let over = self.items_evicted >= self.max_items_evicted && self.heap_size > self.max_heap_size;
+		if over {
+			tracing::info!(target: super::KV_LOG_TARGET, "KVCache reach items_evicted {}/{} heap_size {}/{}", self.items_evicted, self.max_items_evicted, self.heap_size, self.max_heap_size);
+		}
+		over
 	}
 
 	#[inline]

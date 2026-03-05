@@ -447,7 +447,7 @@ pub mod pallet {
 					// genesis) so it's really not a big deal and we assume that the user wants to
 					// do this since it's the only way a non-endowed account can contain a session
 					// key.
-					frame_system::Pallet::<T>::inc_providers(&account);
+					frame_system::Pallet::<T>::genesis_inc_providers(&account);
 				}
 			}
 

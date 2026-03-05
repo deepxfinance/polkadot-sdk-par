@@ -39,9 +39,14 @@ pub use self::{
 pub use sp_runtime::TransactionOutcome;
 pub use types::Key;
 
+pub use typed_cache::TStorageOverlay;
 #[cfg(feature = "std")]
-pub use sp_state_machine::TStorage;
+pub use typed_cache::{RcT, TStorage};
+#[cfg(not(feature = "std"))]
+pub use no_std_rct::RcT;
 
+#[cfg(not(feature = "std"))]
+pub mod no_std_rct;
 pub mod bounded_btree_map;
 pub mod bounded_btree_set;
 pub mod bounded_vec;
@@ -82,6 +87,9 @@ pub trait StorageValue<T: FullCodec + TStorage> {
 
 	/// Load the value from the provided storage instance.
 	fn get() -> Self::Query;
+
+	/// Load the value reference from the provided storage instance.
+	fn get_ref() -> RcT<T>;
 
 	/// Try to get the underlying value from the provided storage instance.
 	///
@@ -125,11 +133,20 @@ pub trait StorageValue<T: FullCodec + TStorage> {
 	/// Mutate the value
 	fn mutate<R, F: FnOnce(&mut Self::Query) -> R>(f: F) -> R;
 
+	/// Mutate the value by reference
+	fn mutate_ref<R, F: FnOnce(&mut Self::Query) -> R>(f: F) -> R;
+
 	/// Mutate the value if closure returns `Ok`
 	fn try_mutate<R, E, F: FnOnce(&mut Self::Query) -> Result<R, E>>(f: F) -> Result<R, E>;
 
+	/// Mutate the value by reference if closure returns `Ok`
+	fn try_mutate_ref<R, E, F: FnOnce(&mut Self::Query) -> Result<R, E>>(f: F) -> Result<R, E>;
+
 	/// Mutate the value. Deletes the item if mutated to a `None`.
 	fn mutate_exists<R, F: FnOnce(&mut Option<T>) -> R>(f: F) -> R;
+
+	/// Mutate the value by reference. Deletes the item if mutated to a `None`.
+	fn mutate_exists_ref<R, F: FnOnce(&mut Option<T>) -> R>(f: F) -> R;
 
 	/// Mutate the value if closure returns `Ok`. Deletes the item if mutated to a `None`.
 	fn try_mutate_exists<R, E, F: FnOnce(&mut Option<T>) -> Result<R, E>>(f: F) -> Result<R, E>;
@@ -197,6 +214,9 @@ pub trait StorageMap<K: FullEncode, V: FullCodec> {
 	/// Load the value associated with the given key from the map.
 	fn get<KeyArg: EncodeLike<K>>(key: KeyArg) -> Self::Query;
 
+	/// Load the value reference associated with the given key from the map.
+	fn get_ref<KeyArg: EncodeLike<K>>(key: KeyArg) -> RcT<V>;
+
 	/// Store or remove the value to be associated with `key` so that `get` returns the `query`.
 	fn set<KeyArg: EncodeLike<K>>(key: KeyArg, query: Self::Query);
 
@@ -222,8 +242,17 @@ pub trait StorageMap<K: FullEncode, V: FullCodec> {
 	/// Mutate the value under a key.
 	fn mutate<KeyArg: EncodeLike<K>, R, F: FnOnce(&mut Self::Query) -> R>(key: KeyArg, f: F) -> R;
 
+	/// Mutate the value under a key by reference.
+	fn mutate_ref<KeyArg: EncodeLike<K>, R, F: FnOnce(&mut Self::Query) -> R>(key: KeyArg, f: F) -> R;
+
 	/// Mutate the item, only if an `Ok` value is returned.
 	fn try_mutate<KeyArg: EncodeLike<K>, R, E, F: FnOnce(&mut Self::Query) -> Result<R, E>>(
+		key: KeyArg,
+		f: F,
+	) -> Result<R, E>;
+
+	/// Mutate the item by reference, only if an `Ok` value is returned.
+	fn try_mutate_ref<KeyArg: EncodeLike<K>, R, E, F: FnOnce(&mut Self::Query) -> Result<R, E>>(
 		key: KeyArg,
 		f: F,
 	) -> Result<R, E>;
@@ -232,6 +261,14 @@ pub trait StorageMap<K: FullEncode, V: FullCodec> {
 	///
 	/// Deletes the item if mutated to a `None`.
 	fn mutate_exists<KeyArg: EncodeLike<K>, R, F: FnOnce(&mut Option<V>) -> R>(
+		key: KeyArg,
+		f: F,
+	) -> R;
+
+	/// Mutate the value by reference under a key.
+	///
+	/// Deletes the item if mutated to a `None`.
+	fn mutate_exists_ref<KeyArg: EncodeLike<K>, R, F: FnOnce(&mut Option<V>) -> R>(
 		key: KeyArg,
 		f: F,
 	) -> R;
@@ -519,6 +556,12 @@ pub trait StorageDoubleMap<K1: FullEncode, K2: FullEncode, V: FullCodec> {
 		KArg1: EncodeLike<K1>,
 		KArg2: EncodeLike<K2>;
 
+	/// Load the value reference associated with the given key from the double map.
+	fn get_ref<KArg1, KArg2>(k1: KArg1, k2: KArg2) -> RcT<V>
+	where
+		KArg1: EncodeLike<K1>,
+		KArg2: EncodeLike<K2>;
+
 	/// Try to get the value for the given key from the double map.
 	///
 	/// Returns `Ok` if it exists, `Err` if not.
@@ -623,6 +666,13 @@ pub trait StorageDoubleMap<K1: FullEncode, K2: FullEncode, V: FullCodec> {
 		KArg2: EncodeLike<K2>,
 		F: FnOnce(&mut Self::Query) -> R;
 
+	/// Mutate the value by reference under the given keys.
+	fn mutate_ref<KArg1, KArg2, R, F>(k1: KArg1, k2: KArg2, f: F) -> R
+	where
+		KArg1: EncodeLike<K1>,
+		KArg2: EncodeLike<K2>,
+		F: FnOnce(&mut Self::Query) -> R;
+
 	/// Mutate the value under the given keys when the closure returns `Ok`.
 	fn try_mutate<KArg1, KArg2, R, E, F>(k1: KArg1, k2: KArg2, f: F) -> Result<R, E>
 	where
@@ -630,8 +680,22 @@ pub trait StorageDoubleMap<K1: FullEncode, K2: FullEncode, V: FullCodec> {
 		KArg2: EncodeLike<K2>,
 		F: FnOnce(&mut Self::Query) -> Result<R, E>;
 
+	/// Mutate the value by reference under the given keys when the closure returns `Ok`.
+	fn try_mutate_ref<KArg1, KArg2, R, E, F>(k1: KArg1, k2: KArg2, f: F) -> Result<R, E>
+	where
+		KArg1: EncodeLike<K1>,
+		KArg2: EncodeLike<K2>,
+		F: FnOnce(&mut Self::Query) -> Result<R, E>;
+
 	/// Mutate the value under the given keys. Deletes the item if mutated to a `None`.
 	fn mutate_exists<KArg1, KArg2, R, F>(k1: KArg1, k2: KArg2, f: F) -> R
+	where
+		KArg1: EncodeLike<K1>,
+		KArg2: EncodeLike<K2>,
+		F: FnOnce(&mut Option<V>) -> R;
+
+	/// Mutate the value by reference under the given keys. Deletes the item if mutated to a `None`.
+	fn mutate_exists_ref<KArg1, KArg2, R, F>(k1: KArg1, k2: KArg2, f: F) -> R
 	where
 		KArg1: EncodeLike<K1>,
 		KArg2: EncodeLike<K2>,
@@ -723,6 +787,9 @@ pub trait StorageNMap<K: KeyGenerator, V: FullCodec> {
 
 	/// Load the value associated with the given key from the map.
 	fn get<KArg: EncodeLikeTuple<K::KArg> + TupleToEncodedIter>(key: KArg) -> Self::Query;
+
+	/// Load the value reference associated with the given key from the map.
+	fn get_ref<KArg: EncodeLikeTuple<K::KArg> + TupleToEncodedIter>(key: KArg) -> RcT<V>;
 
 	/// Try to get the value for the given key from the map.
 	///
@@ -820,8 +887,20 @@ pub trait StorageNMap<K: KeyGenerator, V: FullCodec> {
 		KArg: EncodeLikeTuple<K::KArg> + TupleToEncodedIter,
 		F: FnOnce(&mut Self::Query) -> R;
 
+	/// Mutate the value by reference under a key.
+	fn mutate_ref<KArg, R, F>(key: KArg, f: F) -> R
+	where
+		KArg: EncodeLikeTuple<K::KArg> + TupleToEncodedIter,
+		F: FnOnce(&mut Self::Query) -> R;
+
 	/// Mutate the item, only if an `Ok` value is returned.
 	fn try_mutate<KArg, R, E, F>(key: KArg, f: F) -> Result<R, E>
+	where
+		KArg: EncodeLikeTuple<K::KArg> + TupleToEncodedIter,
+		F: FnOnce(&mut Self::Query) -> Result<R, E>;
+
+	/// Mutate the item by reference, only if an `Ok` value is returned.
+	fn try_mutate_ref<KArg, R, E, F>(key: KArg, f: F) -> Result<R, E>
 	where
 		KArg: EncodeLikeTuple<K::KArg> + TupleToEncodedIter,
 		F: FnOnce(&mut Self::Query) -> Result<R, E>;
@@ -830,6 +909,14 @@ pub trait StorageNMap<K: KeyGenerator, V: FullCodec> {
 	///
 	/// Deletes the item if mutated to a `None`.
 	fn mutate_exists<KArg, R, F>(key: KArg, f: F) -> R
+	where
+		KArg: EncodeLikeTuple<K::KArg> + TupleToEncodedIter,
+		F: FnOnce(&mut Option<V>) -> R;
+
+	/// Mutate the value under a key.
+	///
+	/// Deletes the item if mutated to a `None`.
+	fn mutate_exists_ref<KArg, R, F>(key: KArg, f: F) -> R
 	where
 		KArg: EncodeLikeTuple<K::KArg> + TupleToEncodedIter,
 		F: FnOnce(&mut Option<V>) -> R;
@@ -1579,6 +1666,16 @@ pub fn storage_prefix(pallet_name: &[u8], storage_name: &[u8]) -> [u8; 32] {
 	final_key[..16].copy_from_slice(&pallet_hash);
 	final_key[16..].copy_from_slice(&storage_hash);
 
+	final_key
+}
+
+/// Returns the storage prefix for a specific pallet name and storage name.
+///
+/// The storage prefix is `concat(twox_128(pallet_name), twox_128(storage_name))`.
+pub fn storage_prefix_with_const(module_hash: &[u8; 16], storage_hash: &[u8; 16]) -> [u8; 32] {
+	let mut final_key = [0u8; 32];
+	final_key[..16].copy_from_slice(module_hash);
+	final_key[16..].copy_from_slice(storage_hash);
 	final_key
 }
 

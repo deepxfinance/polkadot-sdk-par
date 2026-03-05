@@ -21,7 +21,8 @@ use crate::{
 };
 use codec::{Decode, Encode, EncodeLike, FullCodec};
 use scale_info::prelude::string::String;
-use crate::storage::TypedAppend;
+use typed_cache::{OptionQT, QueryTransfer};
+use crate::storage::{TypedAppend, RcT};
 
 /// Generator for `StorageValue` used by `decl_storage`.
 ///
@@ -29,25 +30,22 @@ use crate::storage::TypedAppend;
 /// ```nocompile
 /// Twox128(module_prefix) ++ Twox128(storage_prefix)
 /// ```
-pub trait StorageValue<T: FullCodec + TStorage> {
-	/// The type that get/take returns.
-	type Query;
-
+pub trait StorageValue<T: FullCodec + TStorage>: QueryTransfer<T> {
 	/// Module prefix. Used for generating final key.
 	fn module_prefix() -> &'static [u8];
 
 	/// Storage prefix. Used for generating final key.
 	fn storage_prefix() -> &'static [u8];
 
-	/// Convert an optional value retrieved from storage to the type queried.
-	fn from_optional_value_to_query(v: Option<T>) -> Self::Query;
+	/// Module prefix hash. Used for generating final key.
+	fn module_prefix_hash() -> [u8; 16];
 
-	/// Convert a query to an optional value into storage.
-	fn from_query_to_optional_value(v: Self::Query) -> Option<T>;
+	/// Storage prefix hash. Used for generating final key.
+	fn storage_prefix_hash() -> &'static [u8; 16];
 
 	/// Generate the full key used in top storage.
 	fn storage_value_final_key() -> [u8; 32] {
-		crate::storage::storage_prefix(Self::module_prefix(), Self::storage_prefix())
+		crate::storage::storage_prefix_with_const(&Self::module_prefix_hash(), Self::storage_prefix_hash())
 	}
 }
 
@@ -63,7 +61,7 @@ impl<T: FullCodec + TStorage, G: StorageValue<T>> storage::StorageValue<T> for G
 		if sp_io::mut_typed_cache(|_| ()).is_none() {
 			unhashed::exists(&Self::storage_value_final_key())
 		} else {
-			unhashed::get_cache(&Self::storage_value_final_key(), |_| { Option::<T>::None }).is_some()
+			unhashed::get_cache(&Self::storage_value_final_key(), unhashed::non_f::<T>).is_some()
 		}
 		#[cfg(not(feature = "std"))]
 		unhashed::exists(&Self::storage_value_final_key())
@@ -71,15 +69,19 @@ impl<T: FullCodec + TStorage, G: StorageValue<T>> storage::StorageValue<T> for G
 
 	fn get() -> Self::Query {
 		#[cfg(feature = "std")]
-		let value = unhashed::get_cache(&Self::storage_value_final_key(), |_| { Option::<T>::None });
+		let value = unhashed::get_cache(&Self::storage_value_final_key(), unhashed::non_f::<T>);
 		#[cfg(not(feature = "std"))]
 		let value = unhashed::get(&Self::storage_value_final_key());
 		G::from_optional_value_to_query(value)
 	}
 
+	fn get_ref() -> RcT<T> {
+		unhashed::get_cache_ref(&Self::storage_value_final_key(), #[cfg(feature = "std")] unhashed::non_t::<T>)
+	}
+
 	fn try_get() -> Result<T, ()> {
 		#[cfg(feature = "std")]
-		{ unhashed::get_cache(&Self::storage_value_final_key(), |_| { Option::<T>::None }).ok_or(()) }
+		{ unhashed::get_cache(&Self::storage_value_final_key(), unhashed::non_f::<T>).ok_or(()) }
 		#[cfg(not(feature = "std"))]
 		unhashed::get(&Self::storage_value_final_key()).ok_or(())
 	}
@@ -108,10 +110,6 @@ impl<T: FullCodec + TStorage, G: StorageValue<T>> storage::StorageValue<T> for G
 
 	#[cfg(feature = "std")]
 	fn put(val: T) {
-		log::trace!(target: "storage_dev", "value put {} {}",
-			String::from_utf8(Self::module_prefix().to_vec()).unwrap(),
-			String::from_utf8(Self::storage_prefix().to_vec()).unwrap(),
-		);
 		// detect if typed_cache exists.
 		let key = Self::storage_value_final_key();
 		unhashed::put_cache(&key, val);
@@ -119,18 +117,10 @@ impl<T: FullCodec + TStorage, G: StorageValue<T>> storage::StorageValue<T> for G
 
 	#[cfg(not(feature = "std"))]
 	fn put<Arg: EncodeLike<T>>(val: Arg) {
-		log::trace!(target: "storage_dev", "value put {} {}",
-			String::from_utf8(Self::module_prefix().to_vec()).unwrap(), 
-			String::from_utf8(Self::storage_prefix().to_vec()).unwrap(),
-		);
 		unhashed::put(&Self::storage_value_final_key(), &val)
 	}
 
 	fn set(maybe_val: Self::Query) {
-		log::trace!(target: "storage_dev", "value set {} {}",
-			String::from_utf8(Self::module_prefix().to_vec()).unwrap(),
-			String::from_utf8(Self::storage_prefix().to_vec()).unwrap(),
-		);
 		let key = Self::storage_value_final_key();
 		if let Some(val) = G::from_query_to_optional_value(maybe_val) {
 			#[cfg(feature = "std")]
@@ -157,15 +147,15 @@ impl<T: FullCodec + TStorage, G: StorageValue<T>> storage::StorageValue<T> for G
 		Self::try_mutate(|v| Ok::<R, Never>(f(v))).expect("`Never` can not be constructed; qed")
 	}
 
+	fn mutate_ref<R, F: FnOnce(&mut Self::Query) -> R>(f: F) -> R {
+		Self::try_mutate_ref(|v| Ok::<R, Never>(f(v))).expect("`Never` can not be constructed; qed")
+	}
+
 	fn try_mutate<R, E, F: FnOnce(&mut G::Query) -> Result<R, E>>(f: F) -> Result<R, E> {
 		let mut val = G::get();
 
 		let ret = f(&mut val);
 		if ret.is_ok() {
-			log::trace!(target: "storage_dev", "value mutate {} {}",
-				String::from_utf8(Self::module_prefix().to_vec()).unwrap(), 
-				String::from_utf8(Self::storage_prefix().to_vec()).unwrap(),
-			);
 			match G::from_query_to_optional_value(val) {
 				Some(ref val) => {
 					#[cfg(feature = "std")]
@@ -179,10 +169,38 @@ impl<T: FullCodec + TStorage, G: StorageValue<T>> storage::StorageValue<T> for G
 		ret
 	}
 
+	fn try_mutate_ref<R, E, F: FnOnce(&mut G::Query) -> Result<R, E>>(f: F) -> Result<R, E> {
+		#[cfg(feature = "std")]
+		{
+			unhashed::mutate_cache::<G, T, _, _, _, _>(
+				&Self::storage_value_final_key(),
+				|| { None::<T> },
+				|v| f(v),
+			)
+		}
+		#[cfg(not(feature = "std"))]
+		Self::try_mutate(|v| f(v))
+	}
+
 	fn mutate_exists<R, F>(f: F) -> R
 	where
 		F: FnOnce(&mut Option<T>) -> R,
 	{
+		Self::try_mutate_exists(|v| Ok::<R, Never>(f(v)))
+			.expect("`Never` can not be constructed; qed")
+	}
+
+	fn mutate_exists_ref<R, F: FnOnce(&mut Option<T>) -> R>(f: F) -> R {
+		#[cfg(feature = "std")]
+		{
+			unhashed::mutate_cache::<OptionQT, T, _, _, _, _>(
+				&Self::storage_value_final_key(),
+				|| { None::<T> },
+				|v| Ok::<R, Never>(f(v)),
+			)
+			.expect("`Never` can not be constructed; qed")
+		}
+		#[cfg(not(feature = "std"))]
 		Self::try_mutate_exists(|v| Ok::<R, Never>(f(v)))
 			.expect("`Never` can not be constructed; qed")
 	}
@@ -195,10 +213,6 @@ impl<T: FullCodec + TStorage, G: StorageValue<T>> storage::StorageValue<T> for G
 
 		let ret = f(&mut val);
 		if ret.is_ok() {
-			log::trace!(target: "storage_dev", "value mutate_exists {} {}",
-				String::from_utf8(Self::module_prefix().to_vec()).unwrap(), 
-				String::from_utf8(Self::storage_prefix().to_vec()).unwrap(),
-			);
 			match val {
 				Some(ref val) => Self::put(val.clone()),
 				None => Self::kill(),
@@ -209,7 +223,7 @@ impl<T: FullCodec + TStorage, G: StorageValue<T>> storage::StorageValue<T> for G
 
 	fn take() -> G::Query {
 		#[cfg(feature = "std")]
-		let value = unhashed::get_cache(&Self::storage_value_final_key(), |_| { Option::<T>::None });
+		let value = unhashed::get_cache(&Self::storage_value_final_key(), unhashed::non_f::<T>);
 
 		#[cfg(not(feature = "std"))]
 		let value = unhashed::get(&Self::storage_value_final_key());
@@ -224,10 +238,6 @@ impl<T: FullCodec + TStorage, G: StorageValue<T>> storage::StorageValue<T> for G
 	where
 		T: TypedAppend<Item> + TStorage
 	{
-		log::trace!(target: "storage_dev", "value append {} {}",
-			String::from_utf8(Self::module_prefix().to_vec()).unwrap(),
-			String::from_utf8(Self::storage_prefix().to_vec()).unwrap(),
-		);
 		let key = Self::storage_value_final_key();
 		unhashed::append_cache::<T, Item>(&key, item);
 	}
@@ -239,10 +249,6 @@ impl<T: FullCodec + TStorage, G: StorageValue<T>> storage::StorageValue<T> for G
 		EncodeLikeItem: EncodeLike<Item>,
 		T: StorageAppend<Item>,
 	{
-		log::trace!(target: "storage_dev", "value append {} {}",
-			String::from_utf8(Self::module_prefix().to_vec()).unwrap(), 
-			String::from_utf8(Self::storage_prefix().to_vec()).unwrap(),
-		);
 		sp_io::storage::append(&Self::storage_value_final_key(), item.encode());
 	}
 }

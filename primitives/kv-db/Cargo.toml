@@ -43,4 +43,5 @@ std = [
     "rustc-hex",
     "memory-db/std",
 ]
+async-root = []
 dev-time = []

@@ -15,13 +15,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::{
-	counter_prefix,
-	pallet::{
-		parse::storage::{Metadata, QueryKind, StorageDef, StorageGenerics},
-		Def,
-	},
-};
+use crate::{counter_prefix, counter_prefix_hash, pallet::{
+	parse::storage::{Metadata, QueryKind, StorageDef, StorageGenerics},
+	Def,
+}};
 use quote::ToTokens;
 use std::{collections::HashMap, ops::IndexMut};
 use syn::spanned::Spanned;
@@ -31,6 +28,12 @@ use syn::spanned::Spanned;
 fn prefix_ident(storage: &StorageDef) -> syn::Ident {
 	let storage_ident = &storage.ident;
 	syn::Ident::new(&format!("_GeneratedPrefixForStorage{}", storage_ident), storage_ident.span())
+}
+
+/// Help transfer limited slice to token.
+fn array_to_tokens<const N: usize>(arr: &[u8; N]) -> proc_macro2::TokenStream {
+	let elements = arr.iter().map(|b| quote::quote! { #b });
+	quote::quote! { [#(#elements),*] }
 }
 
 /// Generate the counter_prefix_ident related to the storage.
@@ -526,6 +529,7 @@ pub fn expand_storages(def: &mut Def) -> proc_macro2::TokenStream {
 		let prefix_struct_ident = prefix_ident(storage_def);
 		let prefix_struct_vis = &storage_def.vis;
 		let prefix_struct_const = storage_def.prefix();
+		let prefix_struct_const_hash = array_to_tokens(&storage_def.prefix_hash());
 		let config_where_clause = &def.config.where_clause;
 
 		let cfg_attrs = &storage_def.cfg_attrs;
@@ -533,6 +537,7 @@ pub fn expand_storages(def: &mut Def) -> proc_macro2::TokenStream {
 		let maybe_counter = if let Metadata::CountedMap { .. } = storage_def.metadata {
 			let counter_prefix_struct_ident = counter_prefix_ident(&storage_def.ident);
 			let counter_prefix_struct_const = counter_prefix(&prefix_struct_const);
+			let counter_prefix_struct_const_hash = array_to_tokens(&counter_prefix_hash(&prefix_struct_const));
 
 			quote::quote_spanned!(storage_def.attr_span =>
 				#(#cfg_attrs)*
@@ -540,6 +545,20 @@ pub fn expand_storages(def: &mut Def) -> proc_macro2::TokenStream {
 				#prefix_struct_vis struct #counter_prefix_struct_ident<#type_use_gen>(
 					core::marker::PhantomData<(#type_use_gen,)>
 				);
+				#(#cfg_attrs)*
+				impl<#type_impl_gen> #frame_support::traits::StoragePrefixHash
+					for #counter_prefix_struct_ident<#type_use_gen>
+					#config_where_clause
+				{
+					const STORAGE_PREFIX_HASH: [u8; 16] = #counter_prefix_struct_const_hash;
+					fn module_name_hash() -> [u8; 16] {
+						<
+							<T as #frame_system::Config>::PalletInfo
+							as #frame_support::traits::PalletInfo
+						>::name_hash::<Pallet<#type_use_gen>>()
+							.expect("No name hash found for the pallet in the runtime! This usually means that the pallet wasn't added to `construct_runtime!`.")
+					}
+				}
 				#(#cfg_attrs)*
 				impl<#type_impl_gen> #frame_support::traits::StorageInstance
 					for #counter_prefix_struct_ident<#type_use_gen>
@@ -574,6 +593,20 @@ pub fn expand_storages(def: &mut Def) -> proc_macro2::TokenStream {
 			#prefix_struct_vis struct #prefix_struct_ident<#type_use_gen>(
 				core::marker::PhantomData<(#type_use_gen,)>
 			);
+			#(#cfg_attrs)*
+			impl<#type_impl_gen> #frame_support::traits::StoragePrefixHash
+				for #prefix_struct_ident<#type_use_gen>
+				#config_where_clause
+			{
+				const STORAGE_PREFIX_HASH: [u8; 16] = #prefix_struct_const_hash;
+				fn module_name_hash() -> [u8; 16] {
+					<
+						<T as #frame_system::Config>::PalletInfo
+						as #frame_support::traits::PalletInfo
+					>::name_hash::<Pallet<#type_use_gen>>()
+						.expect("No name hash found for the pallet in the runtime! This usually means that the pallet wasn't added to `construct_runtime!`.")
+				}
+			}
 			#(#cfg_attrs)*
 			impl<#type_impl_gen> #frame_support::traits::StorageInstance
 				for #prefix_struct_ident<#type_use_gen>

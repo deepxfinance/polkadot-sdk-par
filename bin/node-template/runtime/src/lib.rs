@@ -87,7 +87,7 @@ pub mod opaque {
 
 	impl_opaque_keys! {
 		pub struct SessionKeys {
-			pub hotstuff: Hotstuff,
+			pub hots: Hotstuff,
 		}
 	}
 }
@@ -202,7 +202,7 @@ impl frame_system::Config for Runtime {
 }
 
 impl pallet_hotstuff::Config for Runtime {
-	type MaxEmpty = ConstU32<15>;
+	type MaxEmpty = ConstU32<1>;
 	type AuthorityId = HotstuffId;
 	type DisabledValidators = ();
 	type MaxAuthorities = ConstU32<32>;

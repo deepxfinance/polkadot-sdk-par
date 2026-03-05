@@ -74,8 +74,14 @@ impl<K, V> TrackedMap<K, V> {
 
 impl<K: Clone, V: Clone> TrackedMap<K, V> {
 	/// Clone the inner map.
-	pub fn clone_map(&self) -> HashMap<K, V> {
-		self.index.read().clone()
+	pub fn clone_map(&self) -> (HashMap<K, V>, String) {
+		let start = std::time::Instant::now();
+		let read = self.index.read();
+		let read_lock_time = start.elapsed();
+		let length = read.len();
+		let res = read.clone();
+		let clone_map_info = format!("{:?}(length {length} lock {read_lock_time:?})", start.elapsed());
+		(res, clone_map_info)
 	}
 }
 
@@ -95,6 +101,10 @@ where
 	/// Returns reference to the contained value by key, if exists.
 	pub fn get(&self, key: &K) -> Option<&V> {
 		self.inner_guard.get(key)
+	}
+
+	pub fn len(&self) -> usize {
+		self.inner_guard.len()
 	}
 
 	/// Returns iterator over all values.

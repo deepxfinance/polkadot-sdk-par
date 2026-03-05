@@ -105,7 +105,7 @@ pub mod pallet {
 			assert_eq!(endowed_accounts.len(), self.quotas.len(), "duplicate quotas in genesis.");
 
 			for &(ref who, quota) in self.quotas.iter() {
-				frame_system::Pallet::<T>::inc_providers(who);
+				frame_system::Pallet::<T>::genesis_inc_providers(who);
 				let mut account = frame_system::Account::<T>::get(who.clone());
 				account.quota = quota;
 				account.time_nonce.init();

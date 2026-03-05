@@ -1,5 +1,4 @@
 pub mod changeset;
-#[cfg(feature = "std")]
 pub mod storage;
 use sp_std::vec::Vec;
 use sp_std::collections::btree_set::BTreeSet;

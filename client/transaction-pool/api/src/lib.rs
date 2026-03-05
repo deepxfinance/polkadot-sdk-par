@@ -243,6 +243,7 @@ pub trait TransactionPool: Send + Sync {
 	fn ready_at(
 		&self,
 		at: NumberFor<Self::Block>,
+		limit: Option<usize>,
 	) -> Pin<
 		Box<
 			dyn Future<
@@ -252,7 +253,7 @@ pub trait TransactionPool: Send + Sync {
 	>;
 
 	/// Get an iterator for ready transactions ordered by priority.
-	fn ready(&self) -> Box<dyn ReadyTransactions<Item = Arc<Self::InPoolTransaction>> + Send>;
+	fn ready(&self, limit: Option<usize>) -> Box<dyn ReadyTransactions<Item = Arc<Self::InPoolTransaction>> + Send>;
 
 	// *** Block production
 	/// Remove transactions identified by given hashes (and dependent transactions) from the pool.
@@ -291,6 +292,9 @@ pub trait ReadyTransactions: Iterator {
 	/// This might affect subsequent elements returned by the iterator, so dependent transactions
 	/// are skipped for performance reasons.
 	fn report_invalid(&mut self, _tx: &Self::Item);
+	
+	/// Return total get transaction reference count.
+	fn total(&self) -> usize { 0 }
 }
 
 /// A no-op implementation for an empty iterator.
@@ -322,8 +326,10 @@ pub enum ChainEvent<B: BlockT> {
 		block: NumberFor<B>,
 		/// confirmed transactions' hash.
 		root: B::Hash,
-		/// Hash of consensus confirmed transactions. 
+		/// Hash of consensus transactions.
 		hashes: Vec<B::Hash>,
+		/// If block confirmed.
+		confirm: bool,
 	}
 }
 

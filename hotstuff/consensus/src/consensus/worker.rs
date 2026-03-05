@@ -1,55 +1,46 @@
-use std::{
-    env,
-    pin::Pin,
-    sync::Arc,
-    task::{Context, Poll},
-};
 use std::collections::{HashMap, HashSet};
+use std::env;
+use std::future::Future;
 use std::marker::PhantomData;
 use std::str::FromStr;
-use std::time::Duration;
-use async_recursion::async_recursion;
-use futures::{channel::mpsc::Receiver as Recv, Future, StreamExt};
-
-use codec::{Decode, Encode};
-use log::{debug, error, info, trace, warn};
+use std::sync::Arc;
+use std::time::{Duration, Instant, SystemTime};
+use sc_basic_authorship::{BlockOracle, BlockPropose, GroupTransaction};
+use sc_client_api::{Backend, BlockConsensus};
+use sp_consensus::{Environment, Error as ConsensusError, Proposer, SelectChain};
+use sp_consensus_slots::SlotDuration;
+use sp_runtime::traits::{Block as BlockT, Header as HeaderT, NumberFor, Zero};
 use tokio::sync::mpsc::{channel, unbounded_channel, Receiver, Sender, UnboundedSender};
 use tokio::sync::RwLock;
+use hotstuff_primitives::{ConsensusLog, HotstuffApi, RuntimeAuthorityId};
+use log::{debug, error, info, trace, warn};
+use async_recursion::async_recursion;
+use codec::Encode;
 use frame_system::extrinsics_data_root;
-use sc_basic_authorship::{BlockPropose, GroupTransaction, BlockOracle};
-use sc_client_api::{Backend, CallExecutor, BlockConsensus, ExecutionStrategy};
-use sc_network::types::ProtocolName;
-use sc_network_gossip::TopicNotification;
-use sp_core::traits::CallContext;
-use sp_keystore::KeystorePtr;
-use sp_runtime::{generic::BlockId, traits, traits::{Block as BlockT, Header as HeaderT}, Saturating};
 use sc_consensus::BlockImport;
 use sc_consensus_slots::InherentDataProviderExt;
-use sp_consensus::SelectChain;
-
-use crate::{AuthorityList, client::{ClientForHotstuff, LinkHalf}, find_consensus_logs, find_block_commit, executor::{BlockExecutor, ExecutorMission}, import::{PendingFinalizeBlockQueue, ImportLock}, message::{
-    ConsensusMessage, Proposal, Timeout, Vote, QC, TC, BlockCommit, ConsensusStage, Payload,
-    PeerAuthority, ProposalKey, ProposalReq, ProposalRequest,
-}, network::{HotstuffNetworkBridge, Network as NetworkT, Syncing as SyncingT}, error::{HotstuffError, PayloadError, ViewNumber}, aux_data::{AuxDataStore, Timer}, CLIENT_LOG_TARGET, AuthorityId};
-use hotstuff_primitives::{ConsensusLog, HotstuffApi, RuntimeAuthorityId};
-use sc_network::PeerId;
+use sc_network::{PeerId, ProtocolName};
 use sc_network_common::sync::SyncState;
 use sp_api::TransactionFor;
-use sp_consensus::{Environment, Error as ConsensusError, Proposer};
-use sp_consensus_slots::SlotDuration;
 use sp_inherents::CreateInherentDataProviders;
-use sp_runtime::traits::Zero;
+use sp_keystore::KeystorePtr;
+use sp_runtime::generic::BlockId;
+use sp_runtime::{traits, Saturating};
 use sp_runtime::transaction_validity::TransactionSource;
 use sp_timestamp::Timestamp;
-use crate::executor::NewBlockMission;
-use crate::message::{CommitQC, Round};
-use crate::oracle::HotsOracle;
+use crate::consensus::aux_data::{AuxDataStore, Timer};
+use crate::client::ClientForHotstuff;
+use crate::consensus::error::{HotstuffError, PayloadError, ViewNumber};
+use crate::consensus::message::*;
+use crate::consensus::network::ConsensusNetwork;
+use crate::consensus::oracle::HotsOracle;
+use crate::consensus::state::ConsensusState;
+use crate::executor::types::{BlockMission, ExeStage, ExecutorMission};
+use crate::import::{ImportLock, PendingFinalizeBlockQueue};
+use crate::{find_block_commit, find_consensus_logs, AuthorityId, LinkHalf, CLIENT_LOG_TARGET};
+use crate::executor::BlockExecutor;
+use crate::network::{HotstuffNetworkBridge, Network as NetworkT, Syncing as SyncingT};
 use crate::revert::get_block_commit;
-use crate::state::ConsensusState;
-
-#[cfg(test)]
-#[path = "tests/consensus_tests.rs"]
-pub mod consensus_tests;
 
 pub struct ConsensusWorker<
     B: BlockT,
@@ -61,6 +52,7 @@ pub struct ConsensusWorker<
     Error: std::error::Error + Send + From<ConsensusError> + 'static,
     O: BlockOracle<B> + HotsOracle<B> + Sync + Send + 'static,
 > {
+    mode: ExeStage,
     state: ConsensusState<B, C>,
 
     network: HotstuffNetworkBridge<B, N, S>,
@@ -80,7 +72,7 @@ pub struct ConsensusWorker<
     processed: Proposal<B>,
     /// consensus success block waiting to execute.
     commit: BlockCommit<B>,
-    commit_extrinsic: HashMap<<B::Header as HeaderT>::Number, (ViewNumber, Vec<B::Hash>)>,
+    commit_extrinsic: HashMap<<B::Header as HeaderT>::Number, (ViewNumber, Vec<B::Hash>, Instant)>,
     /// Tmp proposal extrinsic hashes for faster consensus notify.
     proposal_extrinsic_hashes: HashMap<ViewNumber, Vec<B::Hash>>,
 
@@ -103,6 +95,7 @@ where
 {
     #![allow(clippy::too_many_arguments)]
     pub fn new(
+        mode: ExeStage,
         consensus_state: ConsensusState<B, C>,
         client: Arc<C>,
         sync: S,
@@ -134,6 +127,7 @@ where
         let processed = aux_data.get_high_proposal().unwrap().unwrap_or(Proposal::empty());
         info!(target: CLIENT_LOG_TARGET, "Start consensus worker with local_timer_duration: {local_timer_duration}ms, slot_duration: {}ms", slot_duration.as_millis());
         Self {
+            mode,
             state: consensus_state,
             network,
             local_timer: Timer::new(local_timer_duration),
@@ -158,10 +152,12 @@ where
     }
 
     pub fn should_propose_empty(&self) -> bool {
-        // if time passed since last commit time greater than `(max_empty - 1) * slot_duration`
+        // If time passed since last commit time greater than `(max_empty - 1) * slot_duration`
+        // Or last block is not empty(to push this block to be executed)
         // we should propose block even empty.
         if self.max_empty > 1 {
-            Timestamp::current().as_millis().saturating_sub(self.state.commit_qc.timestamp.as_millis())
+            !self.commit.is_empty_block()
+                || Timestamp::current().as_millis().saturating_sub(self.commit.commit_time().as_millis())
                 > self.max_empty.saturating_sub(1) as u64 * self.slot_duration.as_millis()
         } else {
             true
@@ -187,7 +183,7 @@ where
         // ready to recover higher state since recover will change it.
         let init_processed = self.processed.clone();
         let mut init_commit = self.commit.clone();
-        let mut commit_qc_list = vec![];
+        let mut proposal_list = vec![];
         // load commit_qc
         loop {
             if round <= latest_round {
@@ -197,9 +193,7 @@ where
             match self.aux_data.get_proposal(proposal_key.clone()).unwrap() {
                 Some(proposal) => {
                     trace!(target: CLIENT_LOG_TARGET, "[Recover] ~~ load proposal {} qc {}", proposal.round(), proposal.qc.round());
-                    if proposal.qc.stage.finish() {
-                        commit_qc_list.push(proposal.qc.clone());
-                    }
+                    proposal_list.push(proposal.clone());
                     if proposal.payload.block_number() <= latest {
                         debug!(target: CLIENT_LOG_TARGET, "[Recover] load finish for proposal {} payload block #{} <= latest #{latest}", proposal.round(), proposal.payload.block_number());
                         break;
@@ -218,21 +212,26 @@ where
                 }
             };
         }
-        commit_qc_list.sort_by(|a, b| a.round().cmp(&b.round()));
-        if let Some(commit_qc) = self.aux_data.get_commit_qc().unwrap() {
-            self.update_by_qc(&commit_qc.qc);
-            if commit_qc.qc.round() > commit_qc_list.last().map(|qc| qc.round()).unwrap_or_default() {
-                commit_qc_list.push(commit_qc.qc);
+        proposal_list.sort_by(|a, b| a.round().cmp(&b.round()));
+        for proposal in proposal_list {
+            if let Err(e) = self.trigger_qc_mission(&proposal.qc, true) {
+                error!(target: CLIENT_LOG_TARGET, "[Recover] trigger_qc_mission {} failed for {e:?}", proposal.qc.view);
+            }
+            if let Err(e) = self.trigger_execute_mission(&proposal, true) {
+                error!(target: CLIENT_LOG_TARGET, "[Recover] trigger_execute_mission for proposal {} block {} error {e:?}", proposal.round(), proposal.payload.block_number());
             }
         }
-        for qc in commit_qc_list {
-            if let Err(e) = self.trigger_qc_mission(&qc, true) {
-                error!(target: CLIENT_LOG_TARGET, "[Recover] ~~ trigger_qc_mission {} failed for {e:?}", qc.view);
+        if let Some(commit_qc) = self.aux_data.get_commit_qc().unwrap() {
+            self.update_by_qc(&commit_qc.qc);
+            if commit_qc.qc.round() > self.commit.round() {
+                if let Err(e) = self.trigger_qc_mission(&commit_qc.qc, true) {
+                    error!(target: CLIENT_LOG_TARGET, "[Recover] trigger_qc_mission {} failed for {e:?}", commit_qc.qc.view);
+                }
             }
-            // since init commit is from best block, recovered commit might be higher.
-            if self.commit.view() > init_commit.view() {
-                init_commit = self.commit.clone();
-            }
+        }
+        // since init commit is from best block, recovered commit might be higher.
+        if self.commit.view() > init_commit.view() {
+            init_commit = self.commit.clone();
         }
         self.processed = init_processed;
         self.commit = init_commit;
@@ -353,11 +352,11 @@ where
             None => return Ok(()),
         };
         self.state.increase_last_voted();
-        let message = ConsensusMessage::Timeout(timeout.clone());
+        let message = ConsensusMessage::Timeout(timeout);
 
         self.network.send_to_authorities(self.state.authorities(self.state.view(), true)?, message.encode())?;
 
-        if let Err(e) = self.consensus_msg_tx.send((true, ConsensusMessage::Timeout(timeout))).await {
+        if let Err(e) = self.consensus_msg_tx.send((true, message)).await {
             warn!(target: CLIENT_LOG_TARGET, "$L$ handle_local_timer. Can't inform self `Timeout` for {e:?}.");
         }
         Ok(())
@@ -477,9 +476,6 @@ where
         if self.client.info().best_number > *header.number() {
             return Ok(());
         }
-        if self.executor_tx.send(ExecutorMission::Imported(header.clone())).is_err() {
-            warn!(target: CLIENT_LOG_TARGET, "~~ handle_block_import. Notify executor block {} imported failed", header.number());
-        }
         // try handle pending proposal.
         if let Some(pending_proposal) = self.pending_proposal.take() {
             self.vote_for_proposal(&pending_proposal, true, "pending").await?;
@@ -543,6 +539,7 @@ where
             }
             self.update_by_qc(&proposal.qc);
         }
+        self.trigger_execute_mission(proposal, local)?;
         // the qc mission is triggered before this proposal generate.
         // self.trigger_qc_mission(&proposal.qc, local).await?;
         self.vote_for_proposal(proposal, !local, from).await?;
@@ -560,13 +557,18 @@ where
         }
         if check_payload {
             match self.check_payload(proposal).await {
-                Ok(true) => {
+                Ok((true, hashes)) => {
                     self.pending_proposal = Some(proposal.clone());
                     self.try_wait_sync().await;
                     trace!(target: CLIENT_LOG_TARGET, "check_payload no state to check, skip vote for proposal to pending!!!");
+                    if let Some(hashes) = hashes {
+                        self.proposal_extrinsic_hashes.insert(proposal.view, hashes);
+                    }
                     return Ok(())
                 },
-                Ok(false) => (),
+                Ok((false, hashes)) => if let Some(hashes) = hashes {
+                    self.proposal_extrinsic_hashes.insert(proposal.view, hashes);
+                },
                 Err(e) => {
                     debug!(target: CLIENT_LOG_TARGET, "#^# Check proposal {} digest {} parent {} payload {} error: {e:?}", proposal.round(), proposal.digest(), proposal.parent_hash(), proposal.payload);
                     return Ok(())
@@ -603,11 +605,10 @@ where
             self.state.verify_vote(vote)?;
         }
 
-        if let Some(mut qc) = self.state.add_vote(vote)? {
+        if let Some(qc) = self.state.add_vote(vote)? {
             trace!(target: CLIENT_LOG_TARGET, "~~ handle_vote({from} self.round {}). QC.round {}, proposal_hash {}", self.state.round, qc.round(), qc.proposal_hash);
             if self.state.is_leader() {
                 if qc.stage.finish() {
-                    self.handle_qc_timestamp(&mut qc).await?;
                     // if this stage finish, should not be next proposer
                     if let Some(commit_qc) = self.state.make_commit_qc(qc.clone()) {
                         if let Err(e) = self.consensus_msg_tx.send((true, ConsensusMessage::CommitQC(commit_qc.clone()))).await {
@@ -660,73 +661,89 @@ where
         }
     }
 
-    async fn handle_qc_timestamp(&mut self, qc: &mut QC<B>) -> Result<(), HotstuffError> {
-        if !qc.stage.finish() { return Ok(()); }
-        let qc_proposal = match self.aux_data.get_proposal(ProposalKey::digest(qc.proposal_hash))? {
-            Some(p) => p,
+    fn estimate_block_timestamp(&self, block: NumberFor<B>) -> Result<Timestamp, HotstuffError> {
+        let min_block_duration = self.slot_duration.as_millis();
+        // Try first: best way to estimate timestamp by commit.
+       if self.commit.block_number() == block.saturating_add(1u32.into()) || block == 1u32.into() {
+            return Ok(Timestamp::current().max(*self.commit.commit_time() + Timestamp::new(min_block_duration)));
+        }
+        // Try second: get parent time from proposal
+        let parent_commit_proposal = self.state.commit_qc.proposal_hash;
+        match self.aux_data.get_proposal(ProposalKey::Digest(parent_commit_proposal))? {
+            Some(proposal) => {
+                return Ok(Timestamp::current().max(proposal.payload.timestamp() + Timestamp::new(min_block_duration)));
+            },
             None => {
                 self.request_proposals(
-                    vec![ProposalKey::digest(qc.proposal_hash)],
-                    self.state.find_authority(qc.view).as_ref().map(|(_, a)| vec![a]).unwrap_or(
-                        self.state.authorities(self.state.view(), false)?,
-                    ),
+                    vec![ProposalKey::Digest(parent_commit_proposal)],
+                    self.state.find_authority(self.state.commit_qc.view).as_ref()
+                        .map(|(_, a)| vec![a])
+                        .unwrap_or(
+                            self.state.authorities(self.state.view(), false)?,
+                        )
                 )?;
-                return Err(HotstuffError::GetProposal(format!("No proposal for commit qc of proposal {}, skip for can't check timestamp", qc.proposal_hash)));
-            }
-        };
-        let (parent_commit_hash, is_empty_block) = match self.aux_data.get_proposal_ancestors(&qc_proposal)? {
-            Some((_, grandpa)) => (
-                grandpa.qc.proposal_hash,
-                grandpa.payload.extrinsics
-                    .map(|e| e.iter().flatten().all(|es| es.is_empty()))
-                    .unwrap_or(true),
-            ),
-            None => {
-                return Err(HotstuffError::GetProposal(format!("No ancestor proposals for commit qc of proposal {}, skip for can't check timestamp", qc.proposal_hash)));
-            }
-        };
-        let new_block_number = qc_proposal.payload.block_number();
-        // if from local, we should make time delay for min slot_duration.
-        let last_commit_time = if self.commit.commit_hash() == parent_commit_hash {
-            *self.commit.commit_time()
-        } else if self.client.info().best_number >= new_block_number.saturating_sub(1u32.into()) {
-            let parent_block = new_block_number.saturating_sub(1u32.into());
-            if new_block_number > 1u32.into() {
-                match self.client.block_hash_from_id(&BlockId::Number(parent_block)) {
-                    Ok(Some(parent_hash)) => match self.client.header(parent_hash).map_err(|e| HotstuffError::ClientError(e.to_string()))? {
-                        Some(parent_header) => {
-                            let parent_commit = find_block_commit::<B>(&parent_header).expect("Best Header should have block commit");
-                            if parent_commit.commit_hash() == parent_commit_hash {
-                                *parent_commit.commit_time()
-                            } else {
-                                return Err(HotstuffError::ProposalNoParent)
-                            }
-                        }
-                        None => {
-                            return Err(HotstuffError::ClientError(format!("No block header for {parent_block}:{parent_hash}")));
-                        },
-                    },
-                    Ok(None) => {
-                        return Err(HotstuffError::ClientError(format!("No block hash for {parent_block}")));
-                    },
-                    Err(e) => {
-                        return Err(HotstuffError::ClientError(format!("Get block {parent_block} hash failed for {e:?}")));
-                    }
+            },
+        }
+        // Try last: get from imported block
+        let parent_block = block.saturating_sub(1u32.into());
+        if self.client.info().best_number >= parent_block {
+            let parent_hash = self.client.block_hash_from_id(&BlockId::Number(parent_block))
+                .map_err(|e| HotstuffError::ClientError(format!("Get block {parent_block} hash failed for {e:?}")))?
+                .ok_or(HotstuffError::ClientError(format!("No block hash for {parent_block}")))?;
+            let parent_header = self.client.header(parent_hash)
+                .map_err(|e| HotstuffError::ClientError(e.to_string()))?
+                .ok_or(HotstuffError::ClientError(format!("No block header for {parent_block}:{parent_hash}")))?;
+            let parent_commit = find_block_commit::<B>(&parent_header)
+                .ok_or(HotstuffError::ClientError(format!("Block {parent_block} header have no commit")))?;
+            return Ok(Timestamp::current().max(*parent_commit.commit_time() + Timestamp::new(min_block_duration)));
+        }
+        Err(HotstuffError::GetProposal(format!("Can't get estimate block timestamp for {block}")))
+    }
+
+    fn trigger_execute_mission(&mut self, proposal: &Proposal<B>, local: bool) -> Result<(), HotstuffError> {
+        if proposal.digest() == B::Hash::default() { return Ok(()) }
+        let from = if local { "local" } else { "network" };
+        let block_number = proposal.payload.block_number();
+        match (self.mode, proposal.payload.stage) {
+            (ExeStage::Unchecked, ConsensusStage::Prepare) => {
+                let mission = ExecutorMission::execute(
+                    SystemTime::now(),
+                    BlockMission::new(
+                        ExeStage::Unchecked,
+                        BlockCommit::new_without_sig(
+                            self.commit.parent_commit_hash(),
+                            proposal.view,
+                            proposal.payload.block.clone(),
+                            proposal.payload.timestamp(),
+                        ),
+                        proposal.payload.extrinsics.clone().unwrap(),
+                    )
+                );
+                if self.executor_tx.send(mission).is_err() {
+                    warn!(target: CLIENT_LOG_TARGET, "~~ trigger_execute_mission({from}). block {block_number} Unchecked execute mission send failed");
                 }
-            } else {
-                Default::default()
-            }
-        } else {
-            return Err(HotstuffError::ClientError(format!("Can't get last commit time for new block {} slot. skip ", new_block_number)));
-        };
-        let min_qc_time = if is_empty_block {
-            last_commit_time.as_millis() + self.slot_duration.as_millis() * self.max_empty as u64
-        } else {
-            last_commit_time.as_millis() + self.slot_duration.as_millis()
-        };
-        if qc.timestamp.as_millis() < min_qc_time {
-            qc.timestamp = Timestamp::from(min_qc_time);
-            trace!(target: CLIENT_LOG_TARGET, "~~ handle_qc from local. QC.round {} set timestamp {min_qc_time} for next slot", qc.round());
+            },
+            (ExeStage::Checked, ConsensusStage::PreCommit) => {
+                let parent_proposal = self.aux_data.get_proposal_parent(&proposal)?
+                    .ok_or(HotstuffError::GetProposal(format!("no parent_proposal for proposal {}", proposal.round())))?;
+                let mission = ExecutorMission::execute(
+                    SystemTime::now(),
+                    BlockMission::new(
+                        ExeStage::Checked,
+                        BlockCommit::new_without_sig(
+                            self.commit.parent_commit_hash(),
+                            proposal.view,
+                            proposal.payload.block.clone(),
+                            proposal.payload.timestamp(),
+                        ),
+                        parent_proposal.payload.extrinsics.clone().unwrap(),
+                    ),
+                );
+                if self.executor_tx.send(mission).is_err() {
+                    warn!(target: CLIENT_LOG_TARGET, "~~ trigger_execute_mission({from}). block {block_number} Checked execute mission send failed");
+                }
+            },
+            _ => ()
         }
         Ok(())
     }
@@ -749,7 +766,22 @@ where
                 return Ok(());
             }
         };
-        if !qc_proposal.payload.stage.finish() { return Ok(()); }
+        match qc_proposal.payload.stage {
+            ConsensusStage::Prepare => {
+                // Prepare finished, we can confirm that commited parent block can be imported and finalized.
+                let confirm_block = self.commit.block_number();
+                if confirm_block > 0u32.into() && confirm_block.saturating_add(1u32.into()) == qc_proposal.payload.block_number() {
+                    let mission = ExecutorMission::confirm(SystemTime::now(), qc_proposal.view, self.commit.clone());
+                    if self.executor_tx.send(mission).is_err() {
+                        warn!(target: CLIENT_LOG_TARGET, "~~ trigger_qc_mission({from}). block {confirm_block} confirm mission send failed");
+                    }
+                    self.notify_confirm_block(confirm_block, self.commit.extrinsics_root());
+                }
+            }
+            ConsensusStage::PreCommit => return Ok(()),
+            _ => (),
+        }
+        // For Commit stage, we can execute block.
         // grandpa -> parent(grandpa_qc) -> qc_proposal(parent_qc) -> qc
         match self.aux_data.get_proposal_ancestors(&qc_proposal) {
             Ok(Some((parent, grandpa))) => {
@@ -770,30 +802,24 @@ where
                         None => return Ok(()),
                     };
                     // send execute block mission to a block execute queue and execute/import it.
-                    info!(
-                        target: CLIENT_LOG_TARGET,
-                        "^^_^^. block {new_block_number} can be execute with QC {} parent {}",
-                        commit.round(),
-                        grandpa.qc.round(),
-                    );
-                    self.state.authority.on_block_commit(commit.view(), commit.block_number());
                     let extrinsics = grandpa.payload.extrinsics.clone().unwrap();
-                    let mission = ExecutorMission::Consensus(NewBlockMission {
-                        commit: commit.clone(),
-                        block: grandpa.payload.block.clone(),
-                        extrinsics: extrinsics.clone(),
-                    });
+                    // event not ExecuteMode is not Commit, we still notify executor `commit` for trace.
+                    let mission = ExecutorMission::execute(
+                        SystemTime::now(),
+                        BlockMission::new(ExeStage::Commit, commit.clone(), extrinsics.clone())
+                    );
                     if self.executor_tx.send(mission).is_err() {
                         warn!(target: CLIENT_LOG_TARGET, "~~ trigger_qc_mission({from}). block {new_block_number} execute mission send failed");
                     }
-                    if let Some(hashes) = self.notify_consensus_block(&commit, &extrinsics) {
-                        if let Some((pre_view, pre_hashes)) = self.commit_extrinsic.get_mut(&commit.block_number()) {
-                            if commit.view() > *pre_view {
-                                *pre_hashes = hashes;
-                            }
-                        } else {
-                            self.commit_extrinsic.insert(commit.block_number(), (commit.view(), hashes));
+                    let hashes = self.notify_consensus_block(&commit, &extrinsics);
+                    self.state.authority.on_block_commit(commit.view(), commit.block_number());
+                    if let Some((pre_view, pre_hashes, prev_time)) = self.commit_extrinsic.get_mut(&commit.block_number()) {
+                        if commit.view() > *pre_view {
+                            *pre_hashes = hashes;
+                            *prev_time = Instant::now();
                         }
+                    } else {
+                        self.commit_extrinsic.insert(commit.block_number(), (commit.view(), hashes, Instant::now()));
                     }
                     self.state.update_commit_qc(&qc);
                     self.commit = commit;
@@ -851,6 +877,7 @@ where
             // already proposed for this round.
             return Ok(())
         }
+        self.local_timer.reset();
         match self.get_proposal_payload().await {
             Some(payload) => {
                 if payload.stage != self.state.round.stage {
@@ -919,7 +946,7 @@ where
             if self.commit.block_number() >= best.saturating_add(2u32.into()) {
                 (None, Default::default())
             } else {
-                // restart consensus for a new block
+                // start consensus for a new block
                 let block_number = best_next
                     .max(self.commit.block_number().saturating_add(1u32.into()));
                 self.get_new_block_payload(block_number).await
@@ -967,17 +994,25 @@ where
     }
 
     async fn get_new_block_payload(&self, block_number: <B::Header as HeaderT>::Number) -> (Option<Payload<B>>, Duration) {
-        let start = std::time::Instant::now();
+        let start = Instant::now();
+        let timestamp = match self.estimate_block_timestamp(block_number) {
+            Ok(timestamp) => timestamp,
+            Err(e) => {
+                debug!(target: CLIENT_LOG_TARGET, "estimate_block_timestamp failed for {e:?}");
+                return (None, start.elapsed());
+            }
+        };
         let info = self.client.info();
         let parent_header = self.client.header(info.best_hash).expect("failed to get best_hash").expect("no expected header");
         let proposer = self.proposer_factory.write().await.init(&parent_header).await.expect("proposer init");
-        let (mut multi, single, group_info) = match GroupTransaction::<B>::extrinsic(
+        let (mut multi, single, mut group_info) = match GroupTransaction::<B>::extrinsic(
             &proposer,
+            block_number,
             *parent_header.number(),
-            // time wait for pool response. (slot_duration / 10)
-            std::time::Duration::from_millis(self.slot_duration.as_millis()).checked_div(10).unwrap_or_default(),
-            // time for pool get transactions. (HotstuffDuration / 10)
-            self.local_timer.period() / 10,
+            // time wait for pool response. (slot_duration * 3 / 20)
+            std::time::Duration::from_millis(self.slot_duration.as_millis() * 3 / 20),
+            // time for pool get transactions. (HotstuffDuration / 5)
+            self.local_timer.period() / 5,
             None,
             None,
             self.filter_transactions(block_number),
@@ -997,9 +1032,11 @@ where
                 return (None, start.elapsed());
             }
         };
-        self.oracle.update_group_info(&group_info);
+        group_info.extra_debug_info = format!("(round {} block {block_number})", self.state.round);
+        self.oracle.update_group_info(group_info);
         // sort by extrinsic length ascending order for merge.
         multi.sort_by(|a, b| a.len().cmp(&b.len()));
+        // TODO extrinsics_data_root cost time.
         let mut extrinsic_data : Vec<Vec<u8>>= multi
             .iter()
             .map(|g| g.iter().map(|e| e.encode()).collect::<Vec<Vec<u8>>>())
@@ -1009,7 +1046,7 @@ where
         (
             Some(Payload {
                 stage: ConsensusStage::Prepare,
-                block: (block_number, extrinsics_data_root::<<B::Header as HeaderT>::Hashing>(extrinsic_data)).into(),
+                block: (block_number, extrinsics_data_root::<<B::Header as HeaderT>::Hashing>(extrinsic_data), timestamp).into(),
                 extrinsics: Some(vec![multi, vec![single]]),
             }),
             start.elapsed(),
@@ -1021,7 +1058,7 @@ where
         let mut block = self.client.info().best_number.saturating_add(1u32.into());
         loop {
             if block > block_number { break; }
-            if let Some((_, hashes)) = self.commit_extrinsic.get(&block) {
+            if let Some((_, hashes, _)) = self.commit_extrinsic.get(&block) {
                 // this processed block extrinsic are not executed, should exclude it for
                 filter.extend(hashes.clone());
             }
@@ -1054,18 +1091,18 @@ where
     }
 
     // return if we should keep pending_proposal.
-    async fn check_payload(&self, proposal: &Proposal<B>) -> Result<bool, HotstuffError> {
+    async fn check_payload(&self, proposal: &Proposal<B>) -> Result<(bool, Option<Vec<B::Hash>>), HotstuffError> {
         let info = self.client.info();
         let payload = &proposal.payload;
         if payload.block_number() > info.best_number.saturating_add(2u32.into()) && self.state.find_authority(proposal.view).is_some() {
             // if propose new block is much more than local best block, do not vote for it.
             debug!(target: CLIENT_LOG_TARGET, "Meet proposal new_block #{} > local_best_block #{}(+2). skip vote and pending it!", payload.block_number(), info.best_number);
-            return Ok(true);
+            return Ok((true, None));
         }
         if payload.block_number() < self.commit.block_number() {
             return Err(PayloadError::BlockRollBack(format!("Next/Processed: #{}/#{}", payload.block_number(), self.commit.block_number())).into());
         }
-        if payload.stage != ConsensusStage::Prepare { return Ok(false); }
+        if payload.stage != ConsensusStage::Prepare { return Ok((false, None)); }
         let parent_commit_hash = self.commit.commit_hash();
         if self.commit.block_number().saturating_add(1u32.into()) == payload.block_number() {
             if parent_commit_hash != proposal.parent_hash() {
@@ -1084,10 +1121,10 @@ where
             return Err(PayloadError::BaseBlock(format!("proposal {} no local parent commit to check, commit: {}, commit_qc: {}", proposal.round(), self.commit.round(), self.state.commit_qc.round())).into());
         }
         if payload.extrinsics.is_none() {
-            return Ok(false);
+            return Ok((false, None));
         }
         // verify extrinsic
-        let start = std::time::Instant::now();
+        let start = Instant::now();
         let extrinsics = payload.extrinsics.clone().unwrap();
         if extrinsics.iter().flatten().all(|v| v.is_empty()) && !self.should_propose_empty() {
             // for empty transaction block and not exceed max_empty block. we don't need to propose.
@@ -1120,7 +1157,7 @@ where
         for thread_extrinsic in extrinsic {
             let client = self.client.clone();
             let task = tokio::spawn(async move {
-                let thread_start = std::time::Instant::now();
+                let thread_start = Instant::now();
                 let length = thread_extrinsic.len();
                 let hashes = thread_extrinsic
                     .iter()
@@ -1158,7 +1195,7 @@ where
             },
             Err(e) => return Err(HotstuffError::Other(format!("Failed to calculate extrinsics_root for {e:?}"))),
         }
-        self.oracle.update_verify_times(&threads_verify);
+        self.oracle.update_verify_times(threads_verify.clone());
         let check_extrinsic_time = start.elapsed().as_micros();
         if check_extrinsic_time / 1000 >= self.slot_duration.as_millis() as u128 {
             let mut threads_verify = threads_verify
@@ -1168,12 +1205,11 @@ where
             threads_verify.sort_by(|a, b| b.1.cmp(&a.1));
             warn!(target: CLIENT_LOG_TARGET, "check_payload extrinsic exceed slot_duration({}ms): {check_extrinsic_time}μs(each length & ms: {threads_verify:?})", self.slot_duration.as_millis());
         }
-        Ok(false)
+        Ok((false, Some(all_hashes)))
     }
 
-    fn notify_consensus_block(&mut self, commit: &BlockCommit<B>, extrinsics: &Vec<Vec<Vec<B::Extrinsic>>>) -> Option<Vec<B::Hash>> {
+    fn notify_consensus_block(&mut self, commit: &BlockCommit<B>, extrinsics: &Vec<Vec<Vec<B::Extrinsic>>>) -> Vec<B::Hash> {
         // empty block
-        if extrinsics == &vec![vec![], vec![vec![]]] { return None; }
         let hashes = self.proposal_extrinsic_hashes.remove(&commit.view())
             .unwrap_or(
                 // TODO faster parallel calculation.
@@ -1185,101 +1221,16 @@ where
                     .collect::<Vec<_>>()
             );
         let block = commit.block_number();
-        if let Err(e) = self.client.notify_consensus((block, commit.extrinsics_root(), hashes.clone()).into()) {
+        if let Err(e) = self.client.notify_consensus((block, commit.extrinsics_root(), hashes.clone(), false).into()) {
             warn!(target: CLIENT_LOG_TARGET, "notify_consensus_block {block} failed for err: {e:?}");
         }
-        Some(hashes)
+        hashes
     }
-}
 
-pub struct ConsensusNetwork<
-    B: BlockT,
-    N: NetworkT<B> + Sync + 'static,
-    S: SyncingT<B> + Sync + 'static,
-> {
-    network: HotstuffNetworkBridge<B, N, S>,
-    message_recv: Recv<TopicNotification>,
-    consensus_msg_tx: Sender<(bool, ConsensusMessage<B>)>,
-    pending_queue: PendingFinalizeBlockQueue<B>,
-}
-
-impl<B, N, S> Future for ConsensusNetwork<B, N, S>
-where
-    B: BlockT,
-    N: NetworkT<B> + Sync + 'static,
-    S: SyncingT<B> + Sync + 'static,
-{
-    type Output = ();
-
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        loop {
-            match StreamExt::poll_next_unpin(&mut self.message_recv, cx) {
-                Poll::Ready(None) => break,
-                Poll::Ready(Some(notification)) => {
-                    if let Err(e) = self.incoming_message_handler(notification) {
-                        error!("process incoming message error: {:#?}", e)
-                    }
-                }
-                Poll::Pending => break,
-            };
+    fn notify_confirm_block(&mut self, block: NumberFor<B>, extrinsics_root: B::Hash) {
+        if let Err(e) = self.client.notify_consensus((block, extrinsics_root, Vec::new(), true).into()) {
+            warn!(target: CLIENT_LOG_TARGET, "notify_confirm_block {block} failed for err: {e:?}");
         }
-
-        match Future::poll(Pin::new(&mut self.pending_queue), cx) {
-            Poll::Ready(notification) => {
-                if let Err(e) = self
-                    .consensus_msg_tx
-                    .try_send((false, ConsensusMessage::BlockImport(notification.header.clone())))
-                {
-                    error!("process incoming block error: {:#?}", e)
-                }
-            }
-            Poll::Pending => {}
-        };
-
-        match Future::poll(Pin::new(&mut self.network), cx) {
-            Poll::Ready(_) => {}
-            Poll::Pending => {}
-        };
-
-        Poll::Pending
-    }
-}
-
-impl<B, N, S> ConsensusNetwork<B, N, S>
-where
-    B: BlockT,
-    N: NetworkT<B> + Sync + 'static,
-    S: SyncingT<B> + Sync + 'static,
-{
-    fn new(
-        network: HotstuffNetworkBridge<B, N, S>,
-        consensus_msg_tx: Sender<(bool, ConsensusMessage<B>)>,
-        pending_queue: PendingFinalizeBlockQueue<B>,
-    ) -> Self {
-        let message_recv = network
-            .gossip_engine
-            .clone()
-            .lock()
-            .messages_for(ConsensusMessage::<B>::gossip_topic());
-
-        Self {
-            network,
-            consensus_msg_tx,
-            message_recv,
-            pending_queue,
-        }
-    }
-
-    pub fn incoming_message_handler(
-        &mut self,
-        notification: TopicNotification,
-    ) -> Result<(), HotstuffError> {
-        let message: ConsensusMessage<B> =
-            Decode::decode(&mut &notification.message[..]).map_err(|e| HotstuffError::Other(e.to_string()))?;
-
-        self.consensus_msg_tx
-            .try_send((false, message))
-            .map_err(|e| HotstuffError::Other(e.to_string()))
     }
 }
 
@@ -1338,7 +1289,7 @@ where
     O: BlockOracle<B> + HotsOracle<B> + Sync + Send + 'static,
 {
     let LinkHalf { client, select_chain: _, persistent_data } = link;
-    let authorities = get_authorities_from_client::<B, BE, C>(client.clone());
+    let authorities = crate::get_authorities_from_client::<B, BE, C>(client.clone());
 
     let aux_data = AuxDataStore::<B, C>::new(client.clone());
     let commit_qc = aux_data.get_commit_qc().unwrap();
@@ -1351,6 +1302,12 @@ where
 
     let queue = PendingFinalizeBlockQueue::<B>::new(client.clone()).expect("error");
 
+    let mut mode = ExeStage::Commit;
+    if let Ok(config_mode) = env::var("HOTSTUFF_EXECUTE_MODE") {
+        if let Ok(config_mode) = config_mode.parse::<ExeStage>() {
+            mode = config_mode;
+        }
+    }
     let mut local_timer_duration = slot_duration.as_millis();
     if let Ok(value) = env::var("HOTSTUFF_DURATION") {
         if let Ok(duration) = value.parse::<u64>() {
@@ -1360,6 +1317,7 @@ where
     let (executor_tx, executor_rx) = unbounded_channel();
     let proposer_factory = Arc::new(RwLock::new(proposer_factory));
     let consensus_worker = ConsensusWorker::<B, BE, C, N, S, PF, Error, O>::new(
+        mode,
         consensus_state,
         client.clone(),
         sync,
@@ -1389,35 +1347,4 @@ where
         executor_rx,
     );
     Ok((async { consensus_worker.run().await }, consensus_network, async move { block_executor.run().await }))
-}
-
-pub fn get_authorities_from_client<
-    B: BlockT,
-    BE: Backend<B>,
-    C: ClientForHotstuff<B, BE>,
->(
-    client: Arc<C>,
-) -> AuthorityList {
-    let block_id = BlockId::hash(client.info().best_hash);
-    let block_hash = client
-        .expect_block_hash_from_id(&block_id)
-        .expect("get genesis block hash from client failed");
-
-    let authorities_data = client
-        .executor()
-        .call(
-            block_hash,
-            "HotstuffApi_authorities",
-            &[],
-            ExecutionStrategy::NativeElseWasm,
-            CallContext::Offchain,
-        )
-        .expect("call runtime failed");
-
-    let authorities: Vec<RuntimeAuthorityId> = Decode::decode(&mut &authorities_data[..]).expect("");
-
-    authorities
-        .iter()
-        .map(|id| (id.clone().into(), 0))
-        .collect::<AuthorityList>()
 }

@@ -44,7 +44,7 @@ frame-support = { version = "4.0.0-dev", path = "../../../frame/support" }
 pallet-transaction-payment = { version = "4.0.0-dev", default-features = false, path = "../../../frame/transaction-payment" }
 pallet-quota = { default-features = false, path	= "../../../frame/quota" }
 
-# Hotstuff Consensus
+# HotStuff Consensus
 hotstuff-consensus = { path = "../../../hotstuff/consensus" }
 pallet-hotstuff = { default-features = false, path = "../../../hotstuff/pallets/hotstuff" }
 hotstuff-primitives = { default-features = false, path = "../../../hotstuff/primitives", features = ["bls-experimental"] }
@@ -76,9 +76,10 @@ try-runtime-cli = { version = "0.10.0-dev", optional = true, path = "../../../ut
 substrate-build-script-utils = { version = "3.0.0", path = "../../../utils/build-script-utils" }
 
 [features]
-default = ["kvdb"]
+default = ["kvdb", "async-root"]
 dev-time = ["sc-basic-authorship/dev-time", "frame-support/dev-time"]
 kvdb = ["sc-basic-authorship/kvdb", "sc-service/kvdb"]
+async-root = ["sc-basic-authorship/async-root", "hotstuff-consensus/async-root"]
 # Dependencies that are only required if runtime benchmarking should be build.
 runtime-benchmarks = [
 	"node-template-runtime/runtime-benchmarks",

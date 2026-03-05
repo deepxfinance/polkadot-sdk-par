@@ -61,3 +61,6 @@ sc-network-test = { path = "../../client/network/test" }
 sp-tracing = { path = "../../primitives/tracing" }
 substrate-test-runtime-client = { path = "../../test-utils/runtime/client" }
 substrate-test-runtime = { path = "../../test-utils/runtime" }
+
+[features]
+async-root = ["sc-basic-authorship/async-root"]

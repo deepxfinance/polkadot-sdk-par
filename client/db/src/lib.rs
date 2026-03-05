@@ -32,6 +32,7 @@ pub mod offchain;
 
 pub mod bench;
 
+mod block_cache;
 mod children;
 mod parity_db;
 mod pinned_blocks_cache;
@@ -42,7 +43,7 @@ mod upgrade;
 mod utils;
 
 use linked_hash_map::LinkedHashMap;
-use log::{debug, trace, warn};
+use log::{debug, info, trace, warn};
 use parking_lot::{Mutex, RwLock};
 use std::{
 	collections::{HashMap, HashSet},
@@ -52,6 +53,7 @@ use std::{
 };
 
 use crate::{
+	block_cache::BlockCache,
 	pinned_blocks_cache::PinnedBlocksCache,
 	record_stats_state::RecordStatsState,
 	stats::StateUsageStats,
@@ -99,6 +101,11 @@ pub use sc_state_db::PruningMode;
 pub use sp_database::Database;
 
 pub use bench::BenchmarkingState;
+
+use tokio::sync::mpsc::{self, Sender};
+use std::sync::OnceLock;
+
+static GLOBAL_SENDER: OnceLock<Sender<Transaction<sp_core::H256>>> = OnceLock::new();
 
 const CACHE_HEADERS: usize = 8;
 
@@ -466,6 +473,7 @@ pub struct BlockchainDb<Block: BlockT> {
 	header_metadata_cache: Arc<HeaderMetadataCache<Block>>,
 	header_cache: Mutex<LinkedHashMap<Block::Hash, Option<Block::Header>>>,
 	pinned_blocks_cache: Arc<RwLock<PinnedBlocksCache<Block>>>,
+	blocks_cache: Arc<RwLock<BlockCache<Block>>>,
 }
 
 impl<Block: BlockT> BlockchainDb<Block> {
@@ -479,6 +487,7 @@ impl<Block: BlockT> BlockchainDb<Block> {
 			header_metadata_cache: Arc::new(HeaderMetadataCache::default()),
 			header_cache: Default::default(),
 			pinned_blocks_cache: Arc::new(RwLock::new(PinnedBlocksCache::new())),
+			blocks_cache: Arc::new(RwLock::new(BlockCache::new())),
 		})
 	}
 
@@ -511,6 +520,11 @@ impl<Block: BlockT> BlockchainDb<Block> {
 	/// Empty the cache of pinned items.
 	fn clear_pinning_cache(&self) {
 		self.pinned_blocks_cache.write().clear();
+	}
+
+	fn insert_block_body(&self, hash: Block::Hash, body: Option<Vec<Block::Extrinsic>>) {
+		let mut cache = self.blocks_cache.write();
+		cache.insert_body(hash, body);
 	}
 
 	/// Load a justification into the cache of pinned items.
@@ -703,6 +717,12 @@ impl<Block: BlockT> sc_client_api::blockchain::HeaderBackend<Block> for Blockcha
 
 impl<Block: BlockT> sc_client_api::blockchain::Backend<Block> for BlockchainDb<Block> {
 	fn body(&self, hash: Block::Hash) -> ClientResult<Option<Vec<Block::Extrinsic>>> {
+		let blocks_cache = self.blocks_cache.read();
+		if let Some(result) = blocks_cache.body(&hash) {
+			log::info!("found block from blocks cache");
+			return Ok(result.clone());
+		}
+
 		let cache = self.pinned_blocks_cache.read();
 		if let Some(result) = cache.body(&hash) {
 			return Ok(result.clone())
@@ -1107,6 +1127,7 @@ pub struct Backend<Block: BlockT> {
 	state_usage: Arc<StateUsageStats>,
 	genesis_state: RwLock<Option<Arc<DbGenesisStorage<Block>>>>,
 	shared_trie_cache: Option<sp_trie::cache::SharedTrieCache<HashFor<Block>>>,
+	//background_commit_sender: Sender<Transaction<sp_core::H256>>,
 }
 
 impl<Block: BlockT> Backend<Block> {
@@ -1424,7 +1445,10 @@ impl<Block: BlockT> Backend<Block> {
 	}
 
 	fn try_commit_operation(&self, mut operation: BlockImportOperation<Block>) -> ClientResult<()> {
+		let start = std::time::Instant::now();
+
 		let mut transaction = Transaction::new();
+		let mut transaction_state = Transaction::new();
 
 		operation.apply_aux(&mut transaction);
 		operation.apply_offchain(&mut transaction);
@@ -1438,6 +1462,7 @@ impl<Block: BlockT> Backend<Block> {
 		let mut current_transaction_justifications: HashMap<Block::Hash, Justification> =
 			HashMap::new();
 		for (block_hash, justification) in operation.finalized_blocks {
+			debug!(target:"commit-time", "⌛️ operation.finalized_blocks");
 			let block_header = self.blockchain.expect_header(block_hash)?;
 			meta_updates.push(self.finalize_block_with_transaction(
 				&mut transaction,
@@ -1450,6 +1475,8 @@ impl<Block: BlockT> Backend<Block> {
 			last_finalized_hash = block_hash;
 			last_finalized_num = *block_header.number();
 		}
+
+		let mut genesis = false;
 
 		#[cfg(feature = "kvdb")]
 		let kv_cache = self.shared_trie_cache.as_ref().map(|cache| cache.local_cache());
@@ -1471,17 +1498,18 @@ impl<Block: BlockT> Backend<Block> {
 			let lookup_key = utils::number_and_hash_to_lookup_key(number, hash)?;
 
 			if pending_block.leaf_state.is_best() {
-				self.set_head_with_transaction(&mut transaction, parent_hash, (number, hash))?;
+				debug!(target:"commit-time", "⌛️ pending_block.leaf_state.is_best");
+				self.set_head_with_transaction(&mut transaction_state, parent_hash, (number, hash))?;
 			};
 
-			utils::insert_hash_to_key_mapping(&mut transaction, columns::KEY_LOOKUP, number, hash)?;
-
-			transaction.set_from_vec(columns::HEADER, &lookup_key, pending_block.header.encode());
+			utils::insert_hash_to_key_mapping(&mut transaction_state, columns::KEY_LOOKUP, number, hash)?;
+			transaction_state.set_from_vec(columns::HEADER, &lookup_key, pending_block.header.encode());
 			if let Some(body) = pending_block.body {
 				// If we have any index operations we save block in the new format with indexed
 				// extrinsic headers Otherwise we save the body as a single blob.
 				if operation.index_ops.is_empty() {
-					transaction.set_from_vec(columns::BODY, &lookup_key, body.encode());
+					transaction_state.set_from_vec(columns::BODY, &lookup_key, body.encode());
+					self.blockchain.insert_block_body(hash, Some(body));
 				} else {
 					let body =
 						apply_index_ops::<Block>(&mut transaction, body, operation.index_ops);
@@ -1491,8 +1519,9 @@ impl<Block: BlockT> Backend<Block> {
 			if let Some(body) = pending_block.indexed_body {
 				apply_indexed_body::<Block>(&mut transaction, body);
 			}
+
 			if let Some(justifications) = pending_block.justifications {
-				transaction.set_from_vec(
+				transaction_state.set_from_vec(
 					columns::JUSTIFICATIONS,
 					&lookup_key,
 					justifications.encode(),
@@ -1500,6 +1529,7 @@ impl<Block: BlockT> Backend<Block> {
 			}
 
 			if number.is_zero() {
+				genesis = true;
 				transaction.set(columns::META, meta_keys::GENESIS_HASH, hash.as_ref());
 
 				if operation.commit_state {
@@ -1524,11 +1554,16 @@ impl<Block: BlockT> Backend<Block> {
 				let mut bytes_removal: u64 = 0;
 				#[cfg(feature = "kvdb")]
 				let mut kv_cache_lock = kv_cache.as_ref().map(|cache| cache.as_trie_db_mut_cache());
+				#[cfg(feature = "kvdb")]
+				let cache = kv_cache_lock.as_mut().unwrap();
+
+				debug!(target:"commit-time", "⌛️ The time taken to collect basic data {:?}", start.elapsed());
+
 				for (mut key, (val, rc)) in operation.db_updates.drain() {
 					self.storage.db.sanitize_key(&mut key);
 					if rc > 0 {
 						#[cfg(feature = "kvdb")]
-						kv_cache_lock.as_mut().map(|cache| cache.cache_value_for_key(&key, val.clone()));
+						cache.cache_value_for_key(&key, val.clone());
 						ops += 1;
 						bytes += key.len() as u64 + val.len() as u64;
 						if rc == 1 {
@@ -1541,7 +1576,7 @@ impl<Block: BlockT> Backend<Block> {
 						}
 					} else if rc < 0 {
 						#[cfg(feature = "kvdb")]
-						kv_cache_lock.as_mut().map(|cache| cache.cache_value_for_key(&key, Vec::new()));
+						cache.cache_value_for_key(&key, Vec::new());
 						removal += 1;
 						bytes_removal += key.len() as u64;
 						if rc == -1 {
@@ -1553,6 +1588,9 @@ impl<Block: BlockT> Backend<Block> {
 						}
 					}
 				}
+
+				debug!(target:"commit-time", "⌛️ The time taken to collect state data {:?}", start.elapsed());
+
 				#[cfg(feature = "kvdb")]
 				drop(kv_cache_lock);
 				self.state_usage.tally_writes_nodes(ops, bytes);
@@ -1580,7 +1618,7 @@ impl<Block: BlockT> Backend<Block> {
 					.map_err(|e: sc_state_db::Error<sp_database::error::DatabaseError>| {
 						sp_blockchain::Error::from_state_db(e)
 					})?;
-				apply_state_commit(&mut transaction, commit);
+				apply_state_commit(&mut transaction_state, commit);
 				if number <= last_finalized_num {
 					// Canonicalize in the db when re-importing existing blocks with state.
 					let commit = self.storage.state_db.canonicalize_block(&hash).map_err(
@@ -1588,7 +1626,7 @@ impl<Block: BlockT> Backend<Block> {
 							sc_state_db::Error<sp_database::error::DatabaseError>,
 						>,
 					)?;
-					apply_state_commit(&mut transaction, commit);
+					apply_state_commit(&mut transaction_state, commit);
 					meta_updates.push(MetaUpdate {
 						hash,
 						number,
@@ -1630,7 +1668,7 @@ impl<Block: BlockT> Backend<Block> {
 				self.ensure_sequential_finalization(header, Some(last_finalized_hash))?;
 				let mut current_transaction_justifications = HashMap::new();
 				self.note_finalized(
-					&mut transaction,
+					&mut transaction_state,
 					header,
 					hash,
 					operation.commit_state,
@@ -1638,7 +1676,7 @@ impl<Block: BlockT> Backend<Block> {
 				)?;
 			} else {
 				// canonicalize blocks which are old enough, regardless of finality.
-				self.force_delayed_canonicalize(&mut transaction)?
+				self.force_delayed_canonicalize(&mut transaction_state)?
 			}
 
 			if !existing_header {
@@ -1647,7 +1685,7 @@ impl<Block: BlockT> Backend<Block> {
 					let mut leaves = self.blockchain.leaves.write();
 					leaves.import(hash, number, parent_hash);
 					leaves.prepare_transaction(
-						&mut transaction,
+						&mut transaction_state,
 						columns::META,
 						meta_keys::LEAF_PREFIX,
 					);
@@ -1662,7 +1700,7 @@ impl<Block: BlockT> Backend<Block> {
 				if !children.contains(&hash) {
 					children.push(hash);
 					children::write_children(
-						&mut transaction,
+						&mut transaction_state,
 						columns::META,
 						meta_keys::CHILDREN_PREFIX,
 						parent_hash,
@@ -1674,20 +1712,20 @@ impl<Block: BlockT> Backend<Block> {
 					if number == start {
 						start += One::one();
 						utils::insert_number_to_key_mapping(
-							&mut transaction,
+							&mut transaction_state,
 							columns::KEY_LOOKUP,
 							number,
 							hash,
 						)?;
 					}
 					if start > end {
-						transaction.remove(columns::META, meta_keys::BLOCK_GAP);
+						transaction_state.remove(columns::META, meta_keys::BLOCK_GAP);
 						block_gap = None;
 						debug!(target: "db", "Removed block gap.");
 					} else {
 						block_gap = Some((start, end));
 						debug!(target: "db", "Update block gap. {:?}", block_gap);
-						transaction.set(
+						transaction_state.set(
 							columns::META,
 							meta_keys::BLOCK_GAP,
 							&(start, end).encode(),
@@ -1697,7 +1735,7 @@ impl<Block: BlockT> Backend<Block> {
 					number > One::one() && self.blockchain.header(parent_hash)?.is_none()
 				{
 					let gap = (best_num + One::one(), number - One::one());
-					transaction.set(columns::META, meta_keys::BLOCK_GAP, &gap.encode());
+					transaction_state.set(columns::META, meta_keys::BLOCK_GAP, &gap.encode());
 					block_gap = Some(gap);
 					debug!(target: "db", "Detected block gap {:?}", block_gap);
 				}
@@ -1722,7 +1760,7 @@ impl<Block: BlockT> Backend<Block> {
 				let number = header.number();
 				let hash = header.hash();
 
-				self.set_head_with_transaction(&mut transaction, hash, (*number, hash))?;
+				self.set_head_with_transaction(&mut transaction_state, hash, (*number, hash))?;
 
 				meta_updates.push(MetaUpdate {
 					hash,
@@ -1739,13 +1777,16 @@ impl<Block: BlockT> Backend<Block> {
 			}
 		}
 
-		self.storage.db.commit(transaction)?;
-		#[cfg(feature = "kvdb")]
-		drop(kv_cache);
+		let print = imported.is_some();
+		if print {
+			debug!(target:"commit-time", "⌛️ The time before to commit basic state & header data {:?}", start.elapsed());
+		}
 
-		// Apply all in-memory state changes.
-		// Code beyond this point can't fail.
-
+		if !print || genesis {
+			debug!(target:"commit-time", "⌛️ transaction numbers {}", transaction.0.len() );
+			self.storage.db.commit(transaction.clone())?;
+		}
+		
 		if let Some((header, hash)) = imported {
 			trace!(target: "db", "DB Commit done {:?}", hash);
 			let header_metadata = CachedHeaderMetadata::from(&header);
@@ -1753,12 +1794,54 @@ impl<Block: BlockT> Backend<Block> {
 			cache_header(&mut self.blockchain.header_cache.lock(), hash, Some(header));
 		}
 
+		if print {
+			let lens_txs = transaction_state.0.len();
+			debug!(target:"commit-time", "⌛️ The time taken to commit basic state & header data {:?} and next {lens_txs}", start.elapsed());
+			let _ = self.commit_db_state_background().try_send(transaction_state);
+		}
+
+		#[cfg(feature = "kvdb")]
+		drop(kv_cache);
+
+		// Apply all in-memory state changes.
+		// Code beyond this point can't fail.
+
 		for m in meta_updates {
 			self.blockchain.update_meta(m);
 		}
 		self.blockchain.update_block_gap(block_gap);
 
+		if print {
+			debug!(target:"commit-time", "⏳ full try_commit_operation time: {:?}", start.elapsed());
+		}
+
 		Ok(())
+	}
+
+	/// Returns a sender for background database state commits.
+	/// This allows committing state to the database asynchronously.
+	pub fn commit_db_state_background(&self) -> Sender<Transaction<sp_core::H256>> {
+
+    	//let db = &self.storage.db.clone();
+
+		GLOBAL_SENDER.get_or_init(|| {
+        	let db_clone = Arc::clone(&self.storage.db.clone());
+
+			let (sender, mut receiver) = mpsc::channel(100);
+
+			tokio::spawn(async move {				
+				while let Some(msg) = receiver.recv().await {
+					// Use spawn_blocking for the blocking database commit operation
+					let db_for_blocking = Arc::clone(&db_clone);
+					let start = std::time::Instant::now();
+					let res = db_for_blocking.commit(msg);
+					debug!(target:"commit-time", "⏳ Commit full State to DB success {:?} time {:?}", res, start.elapsed());
+				}
+			});
+
+			sender
+		})
+		.clone()
 	}
 
 	// write stuff to a transaction after a new block is finalized.
@@ -2453,6 +2536,8 @@ impl<Block: BlockT> sc_client_api::backend::Backend<Block> for Backend<Block> {
 	}
 
 	fn have_state_at(&self, hash: Block::Hash, number: NumberFor<Block>) -> bool {
+		#[cfg(feature = "kvdb")]
+		return self.blockchain.meta.read().best_number == number;
 		if self.is_archive {
 			match self.blockchain.header_metadata(hash) {
 				Ok(header) => sp_state_machine::Storage::get(
