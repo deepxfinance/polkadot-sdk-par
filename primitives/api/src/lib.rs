@@ -103,10 +103,8 @@ pub use sp_runtime::{
 pub use sp_state_machine::{
 	backend::AsTrieBackend, Backend as StateBackend, InMemoryBackend, OverlayedChanges,
 	StorageProof, TrieBackend, TrieBackendBuilder, OverlayedEntry, MergeErr, MergeChange,
-	OverlayCache, Changes,
+	Changes,
 };
-#[cfg(not(feature = "std"))]
-pub struct OverlayCache;
 #[doc(hidden)]
 pub use sp_std::{mem, slice, vec};
 #[doc(hidden)]
@@ -601,36 +599,23 @@ pub trait ApiExt<Block: BlockT> {
 	where
 		Self: Sized;
 
-	fn typed_cache_keys_by_prefix(&self, prefix: &[u8]) -> Option<Vec<StorageKey>>
-	where
-		Self: Sized;
-
 	fn top_keys_by_prefix(&self, prefix: &StorageKey) -> Vec<StorageKey>
 	where
 		Self: Sized;
 
-	fn get_typed_change_encode(&self, space: &[u8], key: &StorageKey) -> Option<Option<Vec<u8>>>
+	fn get_encode_change(&self, key: &StorageKey) -> Option<Option<Vec<u8>>>
 	where
 		Self: Sized;
 
-	fn get_typed_change<T: Clone + codec::FullCodec + 'static>(&self, space: &[u8], key: &StorageKey) -> Option<Option<T>>
-	where
-		Self: Sized;
-	
-	fn get_top_change(&self, key: &StorageKey) -> Option<Option<StorageValue>>
+	fn get_typed_change<T: Clone + codec::FullCodec + 'static>(&self, key: &StorageKey) -> Option<Option<T>>
 	where
 		Self: Sized;
 
 	fn take_all_changes(&mut self) -> (
-		OverlayCache,
 		OverlayedChanges,
 		StorageTransactionCache<Block, Self::StateBackend>,
 		Option<ProofRecorder<Block>>,
 	)
-	where
-		Self: Sized;
-
-	fn set_typed_cache(&mut self, cache: OverlayCache)
 	where
 		Self: Sized;
 
@@ -656,8 +641,6 @@ pub struct CallApiAtParams<'a, Block: BlockT, Backend: StateBackend<HashFor<Bloc
 	pub function: &'static str,
 	/// The encoded arguments of the function.
 	pub arguments: Vec<u8>,
-	/// Typed cache changes that are on top of the state,
-	pub typed_cache: &'a RefCell<OverlayCache>,
 	/// The overlayed changes that are on top of the state.
 	pub overlayed_changes: &'a RefCell<OverlayedChanges>,
 	/// The cache for storage transactions.

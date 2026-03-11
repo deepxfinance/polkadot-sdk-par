@@ -78,14 +78,12 @@ fn construct_block(
 		digest: Digest { logs: vec![] },
 	};
 	let hash = header.hash();
-	let mut cache = OverlayCache::default();
 	let mut overlay = OverlayedChanges::default();
 	let backend_runtime_code = sp_state_machine::backend::BackendRuntimeCode::new(backend);
 	let runtime_code = backend_runtime_code.runtime_code().expect("Code is part of the backend");
 
 	StateMachine::new(
 		backend,
-		&mut cache,
 		&mut overlay,
 		&new_native_or_wasm_executor(),
 		"Core_initialize_block",
@@ -100,7 +98,6 @@ fn construct_block(
 	for tx in transactions.iter() {
 		StateMachine::new(
 			backend,
-			&cache,
 			&mut overlay,
 			&new_native_or_wasm_executor(),
 			"BlockBuilder_apply_extrinsic",
@@ -115,7 +112,6 @@ fn construct_block(
 
 	let ret_data = StateMachine::new(
 		backend,
-		&cache,
 		&mut overlay,
 		&new_native_or_wasm_executor(),
 		"BlockBuilder_finalize_block",
@@ -183,12 +179,10 @@ fn construct_genesis_should_work_with_native() {
 	let backend_runtime_code = sp_state_machine::backend::BackendRuntimeCode::new(&backend);
 	let runtime_code = backend_runtime_code.runtime_code().expect("Code is part of the backend");
 
-	let mut cache = OverlayCache::default();
 	let mut overlay = OverlayedChanges::default();
 
 	let _ = StateMachine::new(
 		&backend,
-		&mut cache,
 		&mut overlay,
 		&new_native_or_wasm_executor(),
 		"Core_execute_block",
@@ -216,12 +210,10 @@ fn construct_genesis_should_work_with_wasm() {
 	let backend_runtime_code = sp_state_machine::backend::BackendRuntimeCode::new(&backend);
 	let runtime_code = backend_runtime_code.runtime_code().expect("Code is part of the backend");
 
-	let mut cache = OverlayCache::default();
 	let mut overlay = OverlayedChanges::default();
 
 	let _ = StateMachine::new(
 		&backend,
-		&mut cache,
 		&mut overlay,
 		&new_native_or_wasm_executor(),
 		"Core_execute_block",

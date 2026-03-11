@@ -1,7 +1,7 @@
 #[cfg(not(feature = "std"))]
-use alloc::collections::{BTreeMap, BTreeSet};
+use alloc::collections::BTreeMap;
 #[cfg(feature = "std")]
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use hash_db::{HashDB, HashDBRef, Hasher};
 use log::trace;
 use crate::{DBValue, KVCache, KVMut, rstd::vec::Vec, STORAGE_HASH};
@@ -53,8 +53,8 @@ impl <'db, 'cache, H: Hasher> KVDBMut<'db, 'cache, H> {
         if self.direct {
             return self.db_get(key, None, update_cache);
         }
-        match self.storage.get(&(key.to_vec(), None)) {
-            Some(value) => Some(value.to_vec()),
+        match self.storage.get(&(key.to_vec(), None)).cloned() {
+            Some(value) => Some(value),
             None => self.db_get(key, None, update_cache)
         }
     }
@@ -72,7 +72,7 @@ impl <'db, 'cache, H: Hasher> KVDBMut<'db, 'cache, H> {
     fn insert(
         &mut self,
         key: &[u8],
-        mut value: DBValue,
+        value: DBValue,
     ) {
         #[cfg(all(feature = "std", feature = "dev-time"))]
         let start = std::time::Instant::now();
@@ -83,9 +83,9 @@ impl <'db, 'cache, H: Hasher> KVDBMut<'db, 'cache, H> {
         }
         if self.extend_storage_hash(key) {
             if self.direct {
-                self.db_insert(key, Some(STORAGE_HASH), self.hash.as_ref().to_vec());
+                self.db_insert(key, Some(STORAGE_HASH), self.hash.as_ref().into());
             } else {
-                self.storage.insert((key.to_vec(), Some(STORAGE_HASH)), self.hash.as_ref().to_vec());
+                self.storage.insert((key.to_vec(), Some(STORAGE_HASH)), self.hash.as_ref().into());
             }
         }
         #[cfg(all(feature = "std", feature = "dev-time"))]
@@ -98,13 +98,13 @@ impl <'db, 'cache, H: Hasher> KVDBMut<'db, 'cache, H> {
         let removed = if self.direct {
             self.db_remove(key, None)
         } else {
-            self.storage.insert((key.to_vec(), None), NULL_DATA.to_vec())
+            self.storage.insert((key.to_vec(), None), NULL_DATA.as_slice().into())
         };
         if self.extend_storage_hash(key) {
             if self.direct {
                 self.db_remove(key, Some(STORAGE_HASH));
             } else {
-                self.storage.insert((key.to_vec(), Some(STORAGE_HASH)), NULL_DATA.to_vec());
+                self.storage.insert((key.to_vec(), Some(STORAGE_HASH)), NULL_DATA.as_slice().into());
             }
         }
         #[cfg(all(feature = "std", feature = "dev-time"))]
@@ -115,10 +115,13 @@ impl <'db, 'cache, H: Hasher> KVDBMut<'db, 'cache, H> {
     fn db_insert(&mut self, key: &[u8], pad: Option<u8>, value: DBValue) {
         let key_hash = H::hash(key);
         self.cache.as_mut().map(|c| (*c.borrow_mut()).cache_value_for_key(
-            &memory_db::prefixed_key::<H>(&key_hash, (key, pad)), value.to_vec())
+            &memory_db::prefixed_key::<H>(&key_hash, (key, pad)), value.clone())
         );
         self.db.emplace(key_hash, (key, pad), value.clone());
+        #[cfg(all(not(feature = "async-root"), not(feature = "typed-cache")))]
         self.direct_changes.extend([key, &pad_encode(&pad), &value].concat());
+        #[cfg(all(not(feature = "async-root"), feature = "typed-cache"))]
+        self.direct_changes.extend([key, &pad_encode(&pad), &value.get_raw(true).expect("SHOULD BE SOME")].concat());
     }
 
     /// Remove some value from db and cache.
@@ -129,6 +132,7 @@ impl <'db, 'cache, H: Hasher> KVDBMut<'db, 'cache, H> {
             &memory_db::prefixed_key::<H>(&key_hash, (key, pad)))
         );
         self.db.remove(&key_hash, (key, pad));
+        #[cfg(not(feature = "async-root"))]
         self.direct_changes.extend([key, &pad_encode(&pad), &NULL_DATA].concat());
         None
     }
@@ -166,9 +170,13 @@ impl <'db, 'cache, H: Hasher> KVDBMut<'db, 'cache, H> {
             let mut changes = Vec::new();
             for (prefix, value) in core::mem::take(&mut self.storage).into_iter() {
                 #[cfg(not(feature = "async-root"))]
-                changes.extend([prefix.0.as_slice(), &pad_encode(&prefix.1), &value].concat());
+                changes.extend([prefix.0.as_slice(), &pad_encode(&prefix.1), &value.get_raw(false).unwrap_or_default()].concat());
                 let key_hash = H::hash(prefix.0.as_slice());
-                if value == &NULL_DATA {
+                #[cfg(not(feature = "typed-cache"))]
+                let remove = value == &NULL_DATA;
+                #[cfg(feature = "typed-cache")]
+                let remove = !value.exists();
+                if remove {
                     self.db.remove(&key_hash, (prefix.0.as_slice(), prefix.1));
                     self.cache.as_mut().map(|c| (*c.borrow_mut()).remove_value_for_key(
                         &memory_db::prefixed_key::<H>(&key_hash, (prefix.0.as_slice(), prefix.1))
@@ -193,7 +201,7 @@ impl <'db, 'cache, H: Hasher> KVDBMut<'db, 'cache, H> {
         let changes_root = H::hash(&changes);
         // extra storage for state_root, which will be used with this special prefix.
         #[cfg(not(feature = "async-root"))]
-        self.db.emplace(changes_root, (&[], None), changes_root.as_ref().to_vec());
+        self.db.emplace(changes_root, (&[], None), changes_root.as_ref().to_vec().into());
         #[cfg(feature = "std")]
         let hash_time = start.elapsed();
         #[cfg(all(feature = "std", not(feature = "dev-time")))]
@@ -209,14 +217,22 @@ impl<'db, 'cache, H: Hasher> KVMut<'db, H> for KVDBMut<'db, 'cache, H> {
     where
         'a: 'key
     {
-        match self.get_data(key, true).map(|v| v.clone()) {
-            Some(v) => if v == NULL_DATA.to_vec() {
-                None
-            } else {
-                Some(v)
-            },
-            None => None
+        let v = self.get_data(key, true).map(|v| v.clone())?;
+        #[cfg(feature = "typed-cache")]
+        return Some(v);
+        #[cfg(not(feature = "typed-cache"))]
+        if v == NULL_DATA.to_vec() {
+            None
+        } else {
+            Some(v)
         }
+    }
+
+    fn contains(&self, key: &[u8]) -> bool {
+        #[cfg(feature = "typed-cache")]
+        { self.get(key).map(|v| v.exists()).unwrap_or(false) }
+        #[cfg(not(feature = "typed-cache"))]
+        self.get(key).is_some()
     }
 
     fn insert(&mut self, key: &[u8], value: DBValue) {
@@ -241,15 +257,16 @@ mod test {
     use hash_db::Hasher;
     use memory_db::prefixed_key;
     use sp_core::Blake2Hasher;
-    use crate::KVDBMut;
+    use typed_cache::StorageValue;
+    use crate::{DBValue, KVDBMut};
 
-    type PrefixedMemoryDB = crate::MemoryDB<Blake2Hasher, memory_db::PrefixedKey<Blake2Hasher>, Vec<u8>>;
-    type MemoryDB = crate::MemoryDB<Blake2Hasher, crate::HashKey<Blake2Hasher>, Vec<u8>>;
+    type PrefixedMemoryDB = crate::MemoryDB<Blake2Hasher, memory_db::PrefixedKey<Blake2Hasher>, DBValue>;
+    type MemoryDB = crate::MemoryDB<Blake2Hasher, crate::HashKey<Blake2Hasher>, DBValue>;
 
-    fn collect_changes(insert: usize, remove: usize, size: usize) -> BTreeMap<Vec<u8>, Option<Vec<u8>>> {
+    fn collect_changes(insert: usize, remove: usize, size: usize) -> BTreeMap<Vec<u8>, Option<DBValue>> {
         let mut changes = BTreeMap::new();
         for i in 0..insert {
-            changes.insert(i.to_le_bytes().to_vec(), Some(vec![(i / 256) as u8; size]));
+            changes.insert(i.to_le_bytes().to_vec(), Some(vec![(i / 256) as u8; size].into()));
         }
         for r in insert..(remove + insert) {
             changes.insert(r.to_le_bytes().to_vec(), None);
@@ -257,7 +274,7 @@ mod test {
         changes
     }
 
-    fn process<H: Hasher>(db: &mut KVDBMut<H>, changes: &BTreeMap<Vec<u8>, Option<Vec<u8>>>) {
+    fn process<H: Hasher>(db: &mut KVDBMut<H>, changes: &BTreeMap<Vec<u8>, Option<DBValue>>) {
         for (k, v) in changes {
             if let Some(v) = v {
                 db.insert(k, v.clone());
@@ -267,7 +284,7 @@ mod test {
         }
     }
 
-    fn check_prefix_db_drain<H: Hasher>(db: &mut PrefixedMemoryDB, changes: &BTreeMap<Vec<u8>, Option<Vec<u8>>>) {
+    fn check_prefix_db_drain<H: Hasher>(db: &mut PrefixedMemoryDB, changes: &BTreeMap<Vec<u8>, Option<DBValue>>) {
         let mut drain = db.drain();
         for (k, v) in changes {
             let db_key = prefixed_key::<H>(&H::hash(k), (k, None));

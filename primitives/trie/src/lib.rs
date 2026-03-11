@@ -50,13 +50,18 @@ use trie_db::proof::{generate_proof, verify_proof};
 pub use trie_db::{
 	nibble_ops,
 	node::{NodePlan, ValuePlan},
-	CError, DBValue, Query, Recorder, Trie, TrieCache, TrieConfiguration, TrieDBIterator,
+	CError, Query, Recorder, Trie, TrieCache, TrieConfiguration, TrieDBIterator,
 	TrieDBKeyIterator, TrieDBRawIterator, TrieLayout, TrieMut, TrieRecorder,
 };
 /// The Substrate format implementation of `TrieStream`.
 pub use trie_stream::TrieStream;
 #[cfg(feature = "kvdb")]
 pub use kv_db::KVCache;
+
+#[cfg(feature = "typed-cache")]
+pub use kv_db::StorageValue as DBValue;
+#[cfg(not(feature = "typed-cache"))]
+pub use trie_db::DBValue;
 
 /// substrate trie layout
 pub struct LayoutV0<H>(PhantomData<H>);
@@ -151,29 +156,29 @@ where
 /// TrieDB error over `TrieConfiguration` trait.
 pub type TrieError<L> = trie_db::TrieError<TrieHash<L>, CError<L>>;
 /// Reexport from `hash_db`, with genericity set for `Hasher` trait.
-pub trait AsHashDB<H: Hasher>: hash_db::AsHashDB<H, trie_db::DBValue> {}
-impl<H: Hasher, T: hash_db::AsHashDB<H, trie_db::DBValue>> AsHashDB<H> for T {}
+pub trait AsHashDB<H: Hasher>: hash_db::AsHashDB<H, DBValue> {}
+impl<H: Hasher, T: hash_db::AsHashDB<H, DBValue>> AsHashDB<H> for T {}
 /// Reexport from `hash_db`, with genericity set for `Hasher` trait.
-pub type HashDB<'a, H> = dyn hash_db::HashDB<H, trie_db::DBValue> + 'a;
+pub type HashDB<'a, H> = dyn hash_db::HashDB<H, DBValue> + 'a;
 /// Reexport from `hash_db`, with genericity set for `Hasher` trait.
 /// This uses a `KeyFunction` for prefixing keys internally (avoiding
 /// key conflict for non random keys).
 #[cfg(not(feature = "kvdb"))]
-pub type PrefixedMemoryDB<H> = memory_db::MemoryDB<H, memory_db::PrefixedKey<H>, trie_db::DBValue>;
+pub type PrefixedMemoryDB<H> = memory_db::MemoryDB<H, memory_db::PrefixedKey<H>, DBValue>;
 #[cfg(feature = "kvdb")]
-pub type PrefixedMemoryDB<H> = kv_db::MemoryDB<H, memory_db::PrefixedKey<H>, trie_db::DBValue>;
+pub type PrefixedMemoryDB<H> = kv_db::MemoryDB<H, memory_db::PrefixedKey<H>, DBValue>;
 /// Reexport from `hash_db`, with genericity set for `Hasher` trait.
 /// This uses a noops `KeyFunction` (key addressing must be hashed or using
 /// an encoding scheme that avoid key conflict).
 #[cfg(not(feature = "kvdb"))]
-pub type MemoryDB<H> = memory_db::MemoryDB<H, memory_db::HashKey<H>, trie_db::DBValue>;
+pub type MemoryDB<H> = memory_db::MemoryDB<H, memory_db::HashKey<H>, DBValue>;
 #[cfg(feature = "kvdb")]
-pub type MemoryDB<H> = kv_db::MemoryDB<H, memory_db::HashKey<H>, trie_db::DBValue>;
+pub type MemoryDB<H> = kv_db::MemoryDB<H, memory_db::HashKey<H>, DBValue>;
 /// Reexport from `hash_db`, with genericity set for `Hasher` trait.
 #[cfg(not(feature = "kvdb"))]
-pub type GenericMemoryDB<H, KF> = memory_db::MemoryDB<H, KF, trie_db::DBValue>;
+pub type GenericMemoryDB<H, KF> = memory_db::MemoryDB<H, KF, DBValue>;
 #[cfg(feature = "kvdb")]
-pub type GenericMemoryDB<H, KF> = kv_db::MemoryDB<H, KF, trie_db::DBValue>;
+pub type GenericMemoryDB<H, KF> = kv_db::MemoryDB<H, KF, DBValue>;
 
 /// Persistent trie database read-access interface for the a given hasher.
 pub type TrieDB<'a, 'cache, L> = trie_db::TrieDB<'a, 'cache, L>;
@@ -426,10 +431,13 @@ where
 	root.as_mut().copy_from_slice(root_slice);
 
 	let db = KeySpacedDB::new(db, keyspace);
-	TrieDBBuilder::<L>::new(&db, &root)
+	let res = TrieDBBuilder::<L>::new(&db, &root)
 		.build()
-		.get_with(key, query)
-		.map(|x| x.map(|val| val.to_vec()))
+		.get_with(key, query);
+	#[cfg(not(feature = "typed-cache"))]
+	{ res.map(|x| x.map(|val| val.to_vec())) }
+	#[cfg(feature = "typed-cache")]
+	{ res.map(|x| x.and_then(|val| val.get_raw(false))) }
 }
 
 /// `HashDB` implementation that append a encoded prefix (unique id bytes) in addition to the

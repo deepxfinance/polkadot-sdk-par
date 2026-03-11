@@ -295,14 +295,10 @@ where
 	type RawIter = crate::trie_backend_essence::RawIter<S, H, C>;
 
 	fn storage_hash(&self, key: &[u8]) -> Result<Option<H::Out>, Self::Error> {
-		#[cfg(feature = "kvdb")]
-		return self.essence.kv_storage_hash(key);
 		self.essence.storage_hash(key)
 	}
 
 	fn storage(&self, key: &[u8]) -> Result<Option<StorageValue>, Self::Error> {
-		#[cfg(feature = "kvdb")]
-		return self.essence.kv_storage(key);
 		self.essence.storage(key)
 	}
 
@@ -311,8 +307,6 @@ where
 		child_info: &ChildInfo,
 		key: &[u8],
 	) -> Result<Option<H::Out>, Self::Error> {
-		#[cfg(feature = "kvdb")]
-		return Ok(None);
 		self.essence.child_storage_hash(child_info, key)
 	}
 
@@ -321,48 +315,48 @@ where
 		child_info: &ChildInfo,
 		key: &[u8],
 	) -> Result<Option<StorageValue>, Self::Error> {
-		#[cfg(feature = "kvdb")]
-		return self.essence.kv_child_storage(child_info, key);
 		self.essence.child_storage(child_info, key)
 	}
 
 	fn next_storage_key(&self, key: &[u8]) -> Result<Option<StorageKey>, Self::Error> {
 		#[cfg(feature = "kvdb")]
 		return Ok(None);
-		let (is_cached, mut cache) = access_cache(&self.next_storage_key_cache, Option::take)
-			.map(|cache| (cache.last_key == key, cache))
-			.unwrap_or_default();
+		#[cfg(not(feature = "kvdb"))]
+		{
+			let (is_cached, mut cache) = access_cache(&self.next_storage_key_cache, Option::take)
+				.map(|cache| (cache.last_key == key, cache))
+				.unwrap_or_default();
 
-		if !is_cached {
-			cache.iter = self.raw_iter(IterArgs {
-				start_at: Some(key),
-				start_at_exclusive: true,
-				..IterArgs::default()
-			})?
-		};
+			if !is_cached {
+				cache.iter = self.raw_iter(IterArgs {
+					start_at: Some(key),
+					start_at_exclusive: true,
+					..IterArgs::default()
+				})?
+			};
 
-		let next_key = match cache.iter.next_key(self) {
-			None => return Ok(None),
-			Some(Err(error)) => return Err(error),
-			Some(Ok(next_key)) => next_key,
-		};
+			let next_key = match cache.iter.next_key(self) {
+				None => return Ok(None),
+				Some(Err(error)) => return Err(error),
+				Some(Ok(next_key)) => next_key,
+			};
 
-		cache.last_key.clear();
-		cache.last_key.extend_from_slice(&next_key);
-		access_cache(&self.next_storage_key_cache, |cache_cell| cache_cell.replace(cache));
+			cache.last_key.clear();
+			cache.last_key.extend_from_slice(&next_key);
+			access_cache(&self.next_storage_key_cache, |cache_cell| cache_cell.replace(cache));
 
-		#[cfg(debug_assertions)]
-		debug_assert_eq!(
-			self.essence
-				.next_storage_key_slow(key)
-				.expect(
-					"fetching the next key through iterator didn't fail so this shouldn't either"
-				)
-				.as_ref(),
-			Some(&next_key)
-		);
-
-		Ok(Some(next_key))
+			#[cfg(debug_assertions)]
+			debug_assert_eq!(
+				self.essence
+					.next_storage_key_slow(key)
+					.expect(
+						"fetching the next key through iterator didn't fail so this shouldn't either"
+					)
+					.as_ref(),
+				Some(&next_key)
+			);
+			Ok(Some(next_key))
+		}
 	}
 
 	fn next_child_storage_key(
@@ -383,33 +377,36 @@ where
 			#[cfg(not(feature = "std"))]
 			return Err(crate::DefaultError);
 		}
+		#[cfg(not(feature = "kvdb"))]
 		self.essence.raw_iter(args)
 	}
 
 	fn storage_root<'a>(
 		&self,
-		delta: impl Iterator<Item = (&'a [u8], Option<&'a [u8]>)>,
+		delta: impl Iterator<Item = (&'a [u8], Option<&'a StorageValue>)>,
 		state_version: StateVersion,
 	) -> (H::Out, Self::Transaction)
 	where
 		H::Out: Ord,
 	{
+		#[cfg(not(feature = "kvdb"))]
+		{ self.essence.storage_root(delta.into_iter().map(|(k, v)| (k, v.map(|v| v.as_slice()))), state_version) }
 		#[cfg(feature = "kvdb")]
-		return self.essence.kv_storage_root(delta, state_version);
 		self.essence.storage_root(delta, state_version)
 	}
 
 	fn child_storage_root<'a>(
 		&self,
 		child_info: &ChildInfo,
-		delta: impl Iterator<Item = (&'a [u8], Option<&'a [u8]>)>,
+		delta: impl Iterator<Item = (&'a [u8], Option<&'a StorageValue>)>,
 		state_version: StateVersion,
 	) -> (H::Out, bool, Self::Transaction)
 	where
 		H::Out: Ord,
 	{
+		#[cfg(not(feature = "kvdb"))]
+		{ self.essence.child_storage_root(child_info, delta.into_iter().map(|(k, v)| (k, v.map(|v| v.as_slice()))), state_version) }
 		#[cfg(feature = "kvdb")]
-		return self.essence.kv_child_storage_root(child_info, delta, state_version);
 		self.essence.child_storage_root(child_info, delta, state_version)
 	}
 

@@ -57,32 +57,18 @@ impl<T: FullCodec + TStorage, G: StorageValue<T>> storage::StorageValue<T> for G
 	}
 
 	fn exists() -> bool {
-		#[cfg(feature = "std")]
-		if sp_io::mut_typed_cache(|_| ()).is_none() {
-			unhashed::exists(&Self::storage_value_final_key())
-		} else {
-			unhashed::get_cache(&Self::storage_value_final_key(), unhashed::non_f::<T>).is_some()
-		}
-		#[cfg(not(feature = "std"))]
 		unhashed::exists(&Self::storage_value_final_key())
 	}
 
 	fn get() -> Self::Query {
-		#[cfg(feature = "std")]
-		let value = unhashed::get_cache(&Self::storage_value_final_key(), unhashed::non_f::<T>);
-		#[cfg(not(feature = "std"))]
-		let value = unhashed::get(&Self::storage_value_final_key());
-		G::from_optional_value_to_query(value)
+		G::from_optional_value_to_query(unhashed::get(&Self::storage_value_final_key()))
 	}
 
 	fn get_ref() -> RcT<T> {
-		unhashed::get_cache_ref(&Self::storage_value_final_key(), #[cfg(feature = "std")] unhashed::non_t::<T>)
+		unhashed::get_cache_ref(&Self::storage_value_final_key())
 	}
 
 	fn try_get() -> Result<T, ()> {
-		#[cfg(feature = "std")]
-		{ unhashed::get_cache(&Self::storage_value_final_key(), unhashed::non_f::<T>).ok_or(()) }
-		#[cfg(not(feature = "std"))]
 		unhashed::get(&Self::storage_value_final_key()).ok_or(())
 	}
 
@@ -112,7 +98,7 @@ impl<T: FullCodec + TStorage, G: StorageValue<T>> storage::StorageValue<T> for G
 	fn put(val: T) {
 		// detect if typed_cache exists.
 		let key = Self::storage_value_final_key();
-		unhashed::put_cache(&key, val);
+		unhashed::put(&key, val);
 	}
 
 	#[cfg(not(feature = "std"))]
@@ -124,23 +110,16 @@ impl<T: FullCodec + TStorage, G: StorageValue<T>> storage::StorageValue<T> for G
 		let key = Self::storage_value_final_key();
 		if let Some(val) = G::from_query_to_optional_value(maybe_val) {
 			#[cfg(feature = "std")]
-			unhashed::put_cache(&key, val);
+			unhashed::put(&key, val);
 			#[cfg(not(feature = "std"))]
 			unhashed::put(&key, &val)
 		} else {
-			#[cfg(feature = "std")]
-			unhashed::kill_cache::<T>(&key);
-			#[cfg(not(feature = "std"))]
 			unhashed::kill(&key)
 		}
 	}
 
 	fn kill() {
-		let key = Self::storage_value_final_key();
-		#[cfg(feature = "std")]
-		unhashed::kill_cache::<T>(&key);
-		#[cfg(not(feature = "std"))]
-		unhashed::kill(&key)
+		unhashed::kill(&Self::storage_value_final_key())
 	}
 
 	fn mutate<R, F: FnOnce(&mut G::Query) -> R>(f: F) -> R {
@@ -172,7 +151,7 @@ impl<T: FullCodec + TStorage, G: StorageValue<T>> storage::StorageValue<T> for G
 	fn try_mutate_ref<R, E, F: FnOnce(&mut G::Query) -> Result<R, E>>(f: F) -> Result<R, E> {
 		#[cfg(feature = "std")]
 		{
-			unhashed::mutate_cache::<G, T, _, _, _, _>(
+			unhashed::mutate::<G, T, _, _, _, _>(
 				&Self::storage_value_final_key(),
 				|| { None::<T> },
 				|v| f(v),
@@ -193,7 +172,7 @@ impl<T: FullCodec + TStorage, G: StorageValue<T>> storage::StorageValue<T> for G
 	fn mutate_exists_ref<R, F: FnOnce(&mut Option<T>) -> R>(f: F) -> R {
 		#[cfg(feature = "std")]
 		{
-			unhashed::mutate_cache::<OptionQT, T, _, _, _, _>(
+			unhashed::mutate::<OptionQT, T, _, _, _, _>(
 				&Self::storage_value_final_key(),
 				|| { None::<T> },
 				|v| Ok::<R, Never>(f(v)),
@@ -222,24 +201,16 @@ impl<T: FullCodec + TStorage, G: StorageValue<T>> storage::StorageValue<T> for G
 	}
 
 	fn take() -> G::Query {
-		#[cfg(feature = "std")]
-		let value = unhashed::get_cache(&Self::storage_value_final_key(), unhashed::non_f::<T>);
-
-		#[cfg(not(feature = "std"))]
-		let value = unhashed::get(&Self::storage_value_final_key());
-		if value.is_some() {
-			Self::kill()
-		}
-		G::from_optional_value_to_query(value)
+		G::from_optional_value_to_query(unhashed::take(&Self::storage_value_final_key()))
 	}
 
 	#[cfg(feature = "std")]
 	fn append<Item: Encode + Clone>(item: Item)
 	where
-		T: TypedAppend<Item> + TStorage
+		T: TypedAppend<Item> + crate::storage::TStorageOverlay
 	{
 		let key = Self::storage_value_final_key();
-		unhashed::append_cache::<T, Item>(&key, item);
+		unhashed::append::<T, Item>(&key, item);
 	}
 
 	#[cfg(not(feature = "std"))]

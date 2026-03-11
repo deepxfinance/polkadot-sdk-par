@@ -132,11 +132,7 @@ where
 		KArg1: EncodeLike<K1>,
 		KArg2: EncodeLike<K2>,
 	{
-		let key = Self::storage_double_map_final_key(k1, k2);
-		#[cfg(feature = "std")]
-		{ unhashed::contains_key_cache::<V>(&key) }
-		#[cfg(not(feature = "std"))]
-		unhashed::exists(&key)
+		unhashed::exists(&Self::storage_double_map_final_key(k1, k2))
 	}
 
 	fn get<KArg1, KArg2>(k1: KArg1, k2: KArg2) -> Self::Query
@@ -144,14 +140,6 @@ where
 		KArg1: EncodeLike<K1>,
 		KArg2: EncodeLike<K2>,
 	{
-		#[cfg(feature = "std")]
-		{
-			G::from_optional_value_to_query(unhashed::get_cache(
-				&Self::storage_double_map_final_key(k1, k2),
-				unhashed::non_f::<V>
-			))
-		}
-		#[cfg(not(feature = "std"))]
 		G::from_optional_value_to_query(unhashed::get(&Self::storage_double_map_final_key(k1, k2)))
 	}
 
@@ -160,10 +148,7 @@ where
 		KArg1: EncodeLike<K1>,
 		KArg2: EncodeLike<K2>
 	{
-		unhashed::get_cache_ref(
-			&Self::storage_double_map_final_key(k1, k2),
-			#[cfg(feature = "std")] unhashed::non_t::<V>,
-		)
+		unhashed::get_cache_ref(&Self::storage_double_map_final_key(k1, k2))
 	}
 
 	fn try_get<KArg1, KArg2>(k1: KArg1, k2: KArg2) -> Result<V, ()>
@@ -171,15 +156,6 @@ where
 		KArg1: EncodeLike<K1>,
 		KArg2: EncodeLike<K2>,
 	{
-		#[cfg(feature = "std")]
-		{
-			unhashed::get_cache(
-				&Self::storage_double_map_final_key(k1, k2),
-				unhashed::non_f::<V>
-			)
-				.ok_or(())
-		}
-		#[cfg(not(feature = "std"))]
 		unhashed::get(&Self::storage_double_map_final_key(k1, k2)).ok_or(())
 	}
 
@@ -197,7 +173,7 @@ where
 	{
 		let final_key = Self::storage_double_map_final_key(k1, k2);
 		#[cfg(feature = "std")]
-		let value = unhashed::take_cache(&final_key);
+		let value = unhashed::take(&final_key);
 		#[cfg(not(feature = "std"))]
 		let value = unhashed::take(&final_key);
 		G::from_optional_value_to_query(value)
@@ -215,16 +191,16 @@ where
 
 		#[cfg(feature = "std")]
 		{
-			let v1 = unhashed::get_cache(&final_x_key, unhashed::non_f::<V>);
-			if let Some(val) = unhashed::get_cache(&final_y_key, unhashed::non_f::<V>) {
-				unhashed::put_cache(&final_x_key, val);
+			let v1 = unhashed::get::<V>(&final_x_key);
+			if let Some(val) = unhashed::get::<V>(&final_y_key) {
+				unhashed::put(&final_x_key, val);
 			} else {
-				unhashed::kill_cache::<V>(&final_x_key);
+				unhashed::kill(&final_x_key);
 			}
 			if let Some(val) = v1 {
-				unhashed::put_cache(&final_y_key, val);
+				unhashed::put(&final_y_key, val);
 			} else {
-				unhashed::kill_cache::<V>(&final_y_key);
+				unhashed::kill(&final_y_key);
 			}
 		}
 		#[cfg(not(feature = "std"))]
@@ -250,7 +226,7 @@ where
 		KArg2: EncodeLike<K2>
 	{
 		#[cfg(feature = "std")]
-		unhashed::put_cache(&Self::storage_double_map_final_key(k1, k2), val);
+		unhashed::put(&Self::storage_double_map_final_key(k1, k2), val);
 		#[cfg(not(feature = "std"))]
 		unhashed::put(&Self::storage_double_map_final_key(k1, k2), &val)
 	}
@@ -270,9 +246,6 @@ where
 		KArg1: EncodeLike<K1>,
 		KArg2: EncodeLike<K2>,
 	{
-		#[cfg(feature = "std")]
-		unhashed::kill_cache::<V>(&Self::storage_double_map_final_key(k1, k2));
-		#[cfg(not(feature = "std"))]
 		unhashed::kill(&Self::storage_double_map_final_key(k1, k2))
 	}
 
@@ -372,7 +345,7 @@ where
 		#[cfg(feature = "std")]
 		{
 			let final_key = Self::storage_double_map_final_key(k1, k2);
-			unhashed::mutate_cache::<OptionQT, V, _, _, _, _>(&final_key, || { None::<V> }, |v| Ok::<R, Never>(f(v)))
+			unhashed::mutate::<OptionQT, V, _, _, _, _>(&final_key, || { None::<V> }, |v| Ok::<R, Never>(f(v)))
 				.expect("`Never` can not be constructed; qed")
 		}
 		#[cfg(not(feature = "std"))]
@@ -387,12 +360,6 @@ where
 		F: FnOnce(&mut Self::Query) -> Result<R, E>,
 	{
 		let final_key = Self::storage_double_map_final_key(k1, k2);
-		#[cfg(feature = "std")]
-		let mut val = G::from_optional_value_to_query(unhashed::get_cache(
-			final_key.as_ref(),
-			unhashed::non_f::<V>
-		));
-		#[cfg(not(feature = "std"))]
 		let mut val = G::from_optional_value_to_query(unhashed::get(final_key.as_ref()));
 
 		let ret = f(&mut val);
@@ -400,14 +367,11 @@ where
 			match G::from_query_to_optional_value(val) {
 				Some(ref val) => {
 					#[cfg(feature = "std")]
-					unhashed::put_cache(final_key.as_ref(), val.clone());
+					unhashed::put(final_key.as_ref(), val.clone());
 					#[cfg(not(feature = "std"))]
 					unhashed::put(final_key.as_ref(), val)
 				},
 				None => {
-					#[cfg(feature = "std")]
-					unhashed::kill_cache::<V>(final_key.as_ref());
-					#[cfg(not(feature = "std"))]
 					unhashed::kill(final_key.as_ref())
 				},
 			}
@@ -424,7 +388,7 @@ where
 		#[cfg(feature = "std")]
 		{
 			let final_key = Self::storage_double_map_final_key(k1, k2);
-			unhashed::mutate_cache::<G, V, _, _, _, _>(&final_key, || { None::<V> }, |v| f(v))
+			unhashed::mutate::<G, V, _, _, _, _>(&final_key, || { None::<V> }, |v| f(v))
 		}
 		#[cfg(not(feature = "std"))]
 		Self::try_mutate(k1, k2, |v| f(v))
@@ -437,9 +401,6 @@ where
 		F: FnOnce(&mut Option<V>) -> Result<R, E>,
 	{
 		let final_key = Self::storage_double_map_final_key(k1, k2);
-		#[cfg(feature = "std")]
-		let mut val = unhashed::get_cache(final_key.as_ref(), unhashed::non_f::<V>);
-		#[cfg(not(feature = "std"))]
 		let mut val = unhashed::get(final_key.as_ref());
 
 		let ret = f(&mut val);
@@ -447,14 +408,11 @@ where
 			match val {
 				Some(ref val) => {
 					#[cfg(feature = "std")]
-					unhashed::put_cache(final_key.as_ref(), val.clone());
+					unhashed::put(final_key.as_ref(), val.clone());
 					#[cfg(not(feature = "std"))]
 					unhashed::put(final_key.as_ref(), val)
 				},
 				None => {
-					#[cfg(feature = "std")]
-					unhashed::kill_cache::<V>(final_key.as_ref());
-					#[cfg(not(feature = "std"))]
 					unhashed::kill(final_key.as_ref())
 				},
 			}
@@ -470,7 +428,7 @@ where
 		V: TypedAppend<Item> + TStorage
 	{
 		let final_key = Self::storage_double_map_final_key(k1, k2);
-		unhashed::append_cache::<V, Item>(&final_key, item);
+		unhashed::append::<V, Item>(&final_key, item);
 	}
 
 	#[cfg(not(feature = "std"))]
@@ -512,8 +470,8 @@ where
 		};
 		#[cfg(feature = "std")]
 		{
-			unhashed::take_cache::<V>(&old_key).map(|value| {
-				unhashed::put_cache(Self::storage_double_map_final_key(key1, key2).as_ref(), value.clone());
+			unhashed::take::<V>(&old_key).map(|value| {
+				unhashed::put(Self::storage_double_map_final_key(key1, key2).as_ref(), value.clone());
 				value
 			})
 		}
@@ -660,41 +618,44 @@ where
 
 	fn translate<O: Decode, F: FnMut(K1, K2, O) -> Option<V>>(mut f: F) {
 		#[cfg(feature = "std")]
-		if sp_io::mut_typed_cache(|_| ()).is_some() { panic!("`StorageDoubleMap::translate` not supported") };
-		let prefix = G::prefix_hash();
-		let mut previous_key = prefix.clone();
-		while let Some(next) =
-			sp_io::storage::next_key(&previous_key).filter(|n| n.starts_with(&prefix))
+		panic!("StorageMapIterator no supported");
+		#[cfg(not(feature = "std"))]
 		{
-			previous_key = next;
-			let value = match unhashed::get::<O>(&previous_key) {
-				Some(value) => value,
-				None => {
-					log::error!("Invalid translate: fail to decode old value");
-					continue
-				},
-			};
-			let mut key_material = G::Hasher1::reverse(&previous_key[prefix.len()..]);
-			let key1 = match K1::decode(&mut key_material) {
-				Ok(key1) => key1,
-				Err(_) => {
-					log::error!("Invalid translate: fail to decode key1");
-					continue
-				},
-			};
+			let prefix = G::prefix_hash();
+			let mut previous_key = prefix.clone();
+			while let Some(next) =
+				sp_io::storage::next_key(&previous_key).filter(|n| n.starts_with(&prefix))
+			{
+				previous_key = next;
+				let value = match unhashed::get::<O>(&previous_key) {
+					Some(value) => value,
+					None => {
+						log::error!("Invalid translate: fail to decode old value");
+						continue;
+					}
+				};
+				let mut key_material = G::Hasher1::reverse(&previous_key[prefix.len()..]);
+				let key1 = match K1::decode(&mut key_material) {
+					Ok(key1) => key1,
+					Err(_) => {
+						log::error!("Invalid translate: fail to decode key1");
+						continue;
+					}
+				};
 
-			let mut key2_material = G::Hasher2::reverse(key_material);
-			let key2 = match K2::decode(&mut key2_material) {
-				Ok(key2) => key2,
-				Err(_) => {
-					log::error!("Invalid translate: fail to decode key2");
-					continue
-				},
-			};
+				let mut key2_material = G::Hasher2::reverse(key_material);
+				let key2 = match K2::decode(&mut key2_material) {
+					Ok(key2) => key2,
+					Err(_) => {
+						log::error!("Invalid translate: fail to decode key2");
+						continue;
+					}
+				};
 
-			match f(key1, key2, value) {
-				Some(new) => unhashed::put::<V>(&previous_key, &new),
-				None => unhashed::kill(&previous_key),
+				match f(key1, key2, value) {
+					Some(new) => unhashed::put::<V>(&previous_key, &new),
+					None => unhashed::kill(&previous_key),
+				}
 			}
 		}
 	}

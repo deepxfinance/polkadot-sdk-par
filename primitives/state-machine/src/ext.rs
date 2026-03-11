@@ -46,6 +46,7 @@ use sp_std::{
 use std::error;
 #[cfg(feature = "std")]
 use std::sync::RwLock;
+use sp_core::Blake2Hasher;
 
 const EXT_NOT_ALLOWED_TO_FAIL: &str = "Externalities not allowed to fail within runtime";
 const BENCHMARKING_FN: &str = "\
@@ -101,8 +102,6 @@ where
 	H: Hasher,
 	B: 'a + Backend<H>,
 {
-	/// The overlayed typed changes and cache.
-	cache: Option<&'a mut OverlayCache>,
 	/// The overlayed changes to write to.
 	overlay: &'a mut OverlayedChanges,
 	/// The storage backend to read from.
@@ -130,25 +129,22 @@ where
 	/// Create a new `Ext`.
 	#[cfg(not(feature = "std"))]
 	pub fn new(
-		cache: Option<&'a mut OverlayCache>,
 		overlay: &'a mut OverlayedChanges,
 		storage_transaction_cache: &'a mut StorageTransactionCache<B::Transaction, H>,
 		backend: &'a B,
 	) -> Self {
-		Ext { cache, overlay, backend, id: 0, storage_transaction_cache }
+		Ext { overlay, backend, id: 0, storage_transaction_cache }
 	}
 
 	/// Create a new `Ext` from overlayed changes and read-only backend
 	#[cfg(feature = "std")]
 	pub fn new(
-		cache: Option<&'a mut OverlayCache>,
 		overlay: &'a mut OverlayedChanges,
 		storage_transaction_cache: &'a mut StorageTransactionCache<B::Transaction, H>,
 		backend: &'a B,
 		extensions: Option<&'a mut sp_externalities::Extensions>,
 	) -> Self {
 		Self {
-			cache,
 			overlay,
 			backend,
 			storage_transaction_cache,
@@ -226,22 +222,35 @@ where
 	}
 
 	fn overlay_cache(&mut self) -> Option<&mut OverlayCache> {
-		match self.cache {
-			Some(ref mut x) => Some(x),
-			None => None,
-		}
+		#[cfg(feature = "typed-cache")]
+		{ Some(&mut self.overlay.top) }
+		#[cfg(not(feature = "typed-cache"))]
+		None
 	}
 
-	fn storage(&self, key: &[u8]) -> Option<StorageValue> {
+	fn storage(&mut self, key: &[u8]) -> Option<StorageValue> {
 		#[cfg(all(feature = "std", feature = "dev-time"))]
 		let start = std::time::Instant::now();
+		#[cfg(all(feature = "std", feature = "dev-time"))]
 		let mut backend = false;
 		let _guard = guard();
-		let result = self
-			.overlay
-			.storage(key)
-			.map(|x| x.map(|x| x.to_vec()))
-			.unwrap_or_else(|| { backend = true; self.backend.storage(key).expect(EXT_NOT_ALLOWED_TO_FAIL) });
+		let result = if let Some(storage) = self.overlay.storage(key) {
+			#[cfg(not(feature = "typed-cache"))]
+			{ storage.cloned() }
+			#[cfg(feature = "typed-cache")]
+			storage.map(|s| s.clone_ref())
+		} else {
+			#[cfg(all(feature = "std", feature = "dev-time"))]
+			{ backend = true; }
+			let backend_value = self.backend.storage(key).expect(EXT_NOT_ALLOWED_TO_FAIL);
+			self.overlay.top.set(key.to_vec(), backend_value, None);
+			#[cfg(not(feature = "typed-cache"))]
+			{ self.overlay.storage(key).cloned().expect(EXT_NOT_ALLOWED_TO_FAIL) }
+			#[cfg(feature = "typed-cache")]
+			self.overlay.storage(key).map(|s| s.map(|s| s.clone_ref()))
+				.expect(EXT_NOT_ALLOWED_TO_FAIL)
+		};
+		
 		#[cfg(all(feature = "std", feature = "dev-time"))]
 		{
 			let time = start.elapsed().as_nanos();
@@ -254,6 +263,7 @@ where
 			}
 		}
 		// NOTE: be careful about touching the key names – used outside substrate!
+		#[cfg(not(feature = "typed-cache"))]
 		trace!(
 			target: "state",
 			method = "Get",
@@ -271,10 +281,14 @@ where
 		result
 	}
 
-	fn storage_hash(&self, key: &[u8]) -> Option<Vec<u8>> {
+	fn storage_hash(&mut self, key: &[u8]) -> Option<Vec<u8>> {
 		let _guard = guard();
-		let result = self
-			.overlay
+		#[cfg(feature = "typed-cache")]
+		let result = self.storage(key)
+			.map(|v| v.get_raw(true).map(|v| H::hash(&v)))
+			.unwrap_or_else(|| self.backend.storage_hash(key).expect(EXT_NOT_ALLOWED_TO_FAIL));
+		#[cfg(not(feature = "typed-cache"))]
+		let result = self.overlay
 			.storage(key)
 			.map(|x| x.map(|x| H::hash(x)))
 			.unwrap_or_else(|| self.backend.storage_hash(key).expect(EXT_NOT_ALLOWED_TO_FAIL));
@@ -294,11 +308,12 @@ where
 		let result = self
 			.overlay
 			.child_storage(child_info, key)
-			.map(|x| x.map(|x| x.to_vec()))
+			.map(|x| x.map(|x| x.clone()))
 			.unwrap_or_else(|| {
 				self.backend.child_storage(child_info, key).expect(EXT_NOT_ALLOWED_TO_FAIL)
 			});
 
+		#[cfg(not(feature = "typed-cache"))]
 		trace!(
 			target: "state",
 			method = "ChildGet",
@@ -313,9 +328,15 @@ where
 
 	fn child_storage_hash(&self, child_info: &ChildInfo, key: &[u8]) -> Option<Vec<u8>> {
 		let _guard = guard();
-		let result = self
+		let child_storage = self
 			.overlay
-			.child_storage(child_info, key)
+			.child_storage(child_info, key);
+		#[cfg(feature = "typed-cache")]
+		let result = child_storage
+			.map(|v| v.map(|v| v.get_raw(true).map(|v| H::hash(&v))))?
+			.unwrap_or_else(|| self.backend.child_storage_hash(child_info, key).expect(EXT_NOT_ALLOWED_TO_FAIL));
+		#[cfg(not(feature = "typed-cache"))]
+		let result = child_storage
 			.map(|x| x.map(|x| H::hash(x)))
 			.unwrap_or_else(|| {
 				self.backend.child_storage_hash(child_info, key).expect(EXT_NOT_ALLOWED_TO_FAIL)
@@ -333,10 +354,15 @@ where
 		result.map(|r| r.encode())
 	}
 
-	fn exists_storage(&self, key: &[u8]) -> bool {
+	fn exists_storage(&mut self, key: &[u8]) -> bool {
 		let _guard = guard();
 		let result = match self.overlay.storage(key) {
-			Some(x) => x.is_some(),
+			Some(x) => { 
+				#[cfg(not(feature = "typed-cache"))]
+				{ x.is_some() }
+				#[cfg(feature = "typed-cache")]
+				x.expect(EXT_NOT_ALLOWED_TO_FAIL).exists()
+			},
 			_ => self.backend.exists_storage(key).expect(EXT_NOT_ALLOWED_TO_FAIL),
 		};
 
@@ -462,6 +488,7 @@ where
 		}
 
 		// NOTE: be careful about touching the key names – used outside substrate!
+		#[cfg(not(feature = "typed-cache"))]
 		trace!(
 			target: "state",
 			method = "Put",
@@ -494,6 +521,7 @@ where
 		key: StorageKey,
 		value: Option<StorageValue>,
 	) {
+		#[cfg(not(feature = "typed-cache"))]
 		trace!(
 			target: "state",
 			method = "ChildPut",
@@ -585,8 +613,11 @@ where
 	}
 
 	fn storage_append(&mut self, key: Vec<u8>, value: Vec<u8>) {
+		#[cfg(feature = "typed-cache")]
+		panic!("`BasicExternalities::storage_append` not supported for `typed-cache`");
 		#[cfg(all(feature = "std", feature = "dev-time"))]
 		let start = std::time::Instant::now();
+		#[cfg(not(feature = "typed-cache"))]
 		trace!(
 			target: "state",
 			method = "Append",
@@ -602,6 +633,7 @@ where
 		let current_value = self.overlay.value_mut_or_insert_with(&key, || {
 			backend.storage(&key).expect(EXT_NOT_ALLOWED_TO_FAIL).unwrap_or_default()
 		});
+		#[cfg(not(feature = "typed-cache"))]
 		StorageAppend::new(current_value).append(value);
 		#[cfg(all(feature = "std", feature = "dev-time"))]
 		{
@@ -625,15 +657,6 @@ where
 			);
 			return root.encode()
 		}
-		#[cfg(feature = "std")]
-		// Merge changes to overlay
-		for (key, value) in self.cache
-			.as_mut()
-			.map(|overlay| overlay.drain_commited())
-			.unwrap_or_default()
-		{
-			self.overlay.top.set(key, value, None);
-		}
 		let root =
 			self.overlay
 				.storage_root(self.backend, self.storage_transaction_cache, state_version);
@@ -656,6 +679,13 @@ where
 		let storage_key = child_info.storage_key();
 		let prefixed_storage_key = child_info.prefixed_storage_key();
 		if self.storage_transaction_cache.transaction_storage_root.is_some() {
+			#[cfg(feature = "typed-cache")]
+			let root = self
+				.storage(prefixed_storage_key.as_slice())
+				.and_then(|k| k.get_raw(true).and_then(|k| Decode::decode(&mut &k[..]).ok()))
+				// V1 is equivalent to V0 on empty root.
+				.unwrap_or_else(empty_child_trie_root::<LayoutV1<H>>);
+			#[cfg(not(feature = "typed-cache"))]
 			let root = self
 				.storage(prefixed_storage_key.as_slice())
 				.and_then(|k| Decode::decode(&mut &k[..]).ok())
@@ -672,7 +702,10 @@ where
 			root.encode()
 		} else {
 			let root = if let Some((changes, info)) = self.overlay.child_changes(storage_key) {
+				#[cfg(not(feature = "typed-cache"))]
 				let delta = changes.map(|(k, v)| (k.as_ref(), v.value().map(AsRef::as_ref)));
+				#[cfg(feature = "typed-cache")]
+				let delta = changes.map(|(k, v)| (k.as_ref(), v.value()));
 				Some(self.backend.child_storage_root(info, delta, state_version))
 			} else {
 				None
@@ -688,7 +721,7 @@ where
 				if is_empty {
 					self.overlay.set_storage(prefixed_storage_key.into_inner(), None);
 				} else {
-					self.overlay.set_storage(prefixed_storage_key.into_inner(), Some(root.clone()));
+					self.overlay.set_storage(prefixed_storage_key.into_inner(), Some(root.clone().into()));
 				}
 
 				trace!(
@@ -703,6 +736,13 @@ where
 				root
 			} else {
 				// empty overlay
+				#[cfg(feature = "typed-cache")]
+				let root = self
+					.storage(prefixed_storage_key.as_slice())
+					.and_then(|k| k.get_raw(true).and_then(|k| Decode::decode(&mut &k[..]).ok()))
+					// V1 is equivalent to V0 on empty root.
+					.unwrap_or_else(empty_child_trie_root::<LayoutV1<H>>);
+				#[cfg(not(feature = "typed-cache"))]
 				let root = self
 					.storage(prefixed_storage_key.as_slice())
 					.and_then(|k| Decode::decode(&mut &k[..]).ok())
@@ -755,21 +795,15 @@ where
 	}
 
 	fn storage_start_transaction(&mut self) {
-		#[cfg(feature = "std")]
-		self.cache.as_mut().map(|cache| cache.start_transaction());
 		self.overlay.start_transaction()
 	}
 
 	fn storage_rollback_transaction(&mut self) -> Result<(), ()> {
 		self.mark_dirty();
-		#[cfg(feature = "std")]
-		self.cache.as_mut().map(|cache| cache.rollback_transaction());
 		self.overlay.rollback_transaction().map_err(|_| ())
 	}
 
 	fn storage_commit_transaction(&mut self) -> Result<(), ()> {
-		#[cfg(feature = "std")]
-		self.cache.as_mut().map(|cache| cache.commit_transaction());
 		self.overlay.commit_transaction().map_err(|_| ())
 	}
 
@@ -1039,7 +1073,7 @@ mod tests {
 		)
 			.into();
 
-		let ext = TestExt::new(None, &mut overlay, &mut cache, &backend, None);
+		let ext = TestExt::new(&mut overlay, &mut cache, &backend, None);
 
 		// next_backend < next_overlay
 		assert_eq!(ext.next_storage_key(&[5]), Some(vec![10]));
@@ -1055,7 +1089,7 @@ mod tests {
 
 		drop(ext);
 		overlay.set_storage(vec![50], Some(vec![50]));
-		let ext = TestExt::new(None, &mut overlay, &mut cache, &backend, None);
+		let ext = TestExt::new(&mut overlay, &mut cache, &backend, None);
 
 		// next_overlay exist but next_backend doesn't exist
 		assert_eq!(ext.next_storage_key(&[40]), Some(vec![50]));
@@ -1086,7 +1120,7 @@ mod tests {
 		)
 			.into();
 
-		let ext = TestExt::new(None, &mut overlay, &mut cache, &backend, None);
+		let ext = TestExt::new(&mut overlay, &mut cache, &backend, None);
 
 		assert_eq!(ext.next_storage_key(&[5]), Some(vec![30]));
 
@@ -1120,7 +1154,7 @@ mod tests {
 		)
 			.into();
 
-		let ext = TestExt::new(None, &mut overlay, &mut cache, &backend, None);
+		let ext = TestExt::new(&mut overlay, &mut cache, &backend, None);
 
 		// next_backend < next_overlay
 		assert_eq!(ext.next_child_storage_key(child_info, &[5]), Some(vec![10]));
@@ -1136,7 +1170,7 @@ mod tests {
 
 		drop(ext);
 		overlay.set_child_storage(child_info, vec![50], Some(vec![50]));
-		let ext = TestExt::new(None, &mut overlay, &mut cache, &backend, None);
+		let ext = TestExt::new(&mut overlay, &mut cache, &backend, None);
 
 		// next_overlay exist but next_backend doesn't exist
 		assert_eq!(ext.next_child_storage_key(child_info, &[40]), Some(vec![50]));
@@ -1168,7 +1202,7 @@ mod tests {
 		)
 			.into();
 
-		let ext = TestExt::new(None, &mut overlay, &mut cache, &backend, None);
+		let ext = TestExt::new(&mut overlay, &mut cache, &backend, None);
 
 		assert_eq!(ext.child_storage(child_info, &[10]), Some(vec![10]));
 		assert_eq!(
@@ -1208,7 +1242,7 @@ mod tests {
 		)
 			.into();
 
-		let ext = TestExt::new(None, &mut overlay, &mut cache, &backend, None);
+		let ext = TestExt::new(&mut overlay, &mut cache, &backend, None);
 
 		use sp_core::storage::well_known_keys;
 		let mut ext = ext;

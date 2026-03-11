@@ -102,19 +102,29 @@ impl StorageProof {
 	/// Encode as a compact proof with default trie layout.
 	pub fn into_compact_proof<H: Hasher>(
 		self,
-		root: H::Out,
+		_root: H::Out,
 	) -> Result<CompactProof, crate::CompactProofError<H::Out, crate::Error<H::Out>>> {
-		let db = self.into_memory_db();
-		crate::encode_compact::<Layout<H>, crate::MemoryDB<H>>(&db, &root)
+		#[cfg(feature = "typed-cache")]
+		return Err(crate::CompactProofError::IncompleteProof);
+		#[cfg(not(feature = "typed-cache"))]
+		{
+			let db = self.into_memory_db();
+			crate::encode_compact::<Layout<H>, crate::MemoryDB<H>>(&db, &_root)
+		}
 	}
 
 	/// Encode as a compact proof with default trie layout.
 	pub fn to_compact_proof<H: Hasher>(
 		&self,
-		root: H::Out,
+		_root: H::Out,
 	) -> Result<CompactProof, crate::CompactProofError<H::Out, crate::Error<H::Out>>> {
-		let db = self.to_memory_db();
-		crate::encode_compact::<Layout<H>, crate::MemoryDB<H>>(&db, &root)
+		#[cfg(feature = "typed-cache")]
+		return Err(crate::CompactProofError::IncompleteProof);
+		#[cfg(not(feature = "typed-cache"))]
+		{
+			let db = self.to_memory_db();
+			crate::encode_compact::<Layout<H>, crate::MemoryDB<H>>(&db, &_root)
+		}
 	}
 
 	/// Returns the estimated encoded size of the compact proof.
@@ -160,24 +170,29 @@ impl CompactProof {
 	/// Decode to a full storage_proof.
 	pub fn to_storage_proof<H: Hasher>(
 		&self,
-		expected_root: Option<&H::Out>,
+		_expected_root: Option<&H::Out>,
 	) -> Result<(StorageProof, H::Out), crate::CompactProofError<H::Out, crate::Error<H::Out>>> {
-		let mut db = crate::MemoryDB::<H>::new(&[]);
-		let root = crate::decode_compact::<Layout<H>, _, _>(
-			&mut db,
-			self.iter_compact_encoded_nodes(),
-			expected_root,
-		)?;
-		Ok((
-			StorageProof::new(db.drain().into_iter().filter_map(|kv| {
-				if (kv.1).1 > 0 {
-					Some((kv.1).0)
-				} else {
-					None
-				}
-			})),
-			root,
-		))
+		#[cfg(feature = "typed-cache")]
+		return Err(crate::CompactProofError::IncompleteProof);
+		#[cfg(not(feature = "typed-cache"))]
+		{
+			let mut db = crate::MemoryDB::<H>::new(&[]);
+			let root = crate::decode_compact::<Layout<H>, _, _>(
+				&mut db,
+				self.iter_compact_encoded_nodes(),
+				_expected_root,
+			)?;
+			Ok((
+				StorageProof::new(db.drain().into_iter().filter_map(|kv| {
+					if (kv.1).1 > 0 {
+						Some((kv.1).0)
+					} else {
+						None
+					}
+				})),
+				root,
+			))
+		}
 	}
 
 	/// Convert self into a [`MemoryDB`](crate::MemoryDB).
@@ -187,16 +202,21 @@ impl CompactProof {
 	/// Returns the memory db and the root of the trie.
 	pub fn to_memory_db<H: Hasher>(
 		&self,
-		expected_root: Option<&H::Out>,
+		_expected_root: Option<&H::Out>,
 	) -> Result<(crate::MemoryDB<H>, H::Out), crate::CompactProofError<H::Out, crate::Error<H::Out>>>
 	{
-		let mut db = crate::MemoryDB::<H>::new(&[]);
-		let root = crate::decode_compact::<Layout<H>, _, _>(
-			&mut db,
-			self.iter_compact_encoded_nodes(),
-			expected_root,
-		)?;
+		#[cfg(feature = "typed-cache")]
+		return Err(crate::CompactProofError::IncompleteProof);
+		#[cfg(not(feature = "typed-cache"))]
+		{
+			let mut db = crate::MemoryDB::<H>::new(&[]);
+			let root = crate::decode_compact::<Layout<H>, _, _>(
+				&mut db,
+				self.iter_compact_encoded_nodes(),
+				_expected_root,
+			)?;
 
-		Ok((db, root))
+			Ok((db, root))
+		}
 	}
 }

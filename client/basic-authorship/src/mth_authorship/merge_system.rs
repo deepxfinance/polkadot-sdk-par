@@ -73,7 +73,7 @@ impl<RE: Encode + Decode + Debug + Clone> MergeSystem<RE> {
                 let final_index = offset.saturating_add(index_other).saturating_sub(init_index);
                 log::trace!(target: "merge_system", "merge EXTRINSIC_INDEX init: {init_index}, local: {offset}, other: {index_other}, final: {final_index}");
                 if let Some(entry_local) = local.get_mut(&EXTRINSIC_INDEX.to_vec()) {
-                    entry_local.set(Some(final_index.encode()), false, Some(final_index));
+                    entry_local.set(Some(final_index.encode().into()), false, Some(final_index));
                 }
             }
         }
@@ -98,10 +98,10 @@ impl<RE: Encode + Decode + Debug + Clone> MergeSystem<RE> {
                 let local_len: u32 = parse_entry_value(&entry_local).unwrap_or_default();
                 let final_len = local_len.saturating_add(other_len).saturating_sub(self.init_all_extrinsics_len);
                 log::trace!(target: "merge_system", "merge AllExtrinsicsLen init: {}, local: {local_len}, other: {other_len}, final: {final_len}", self.init_all_extrinsics_len);
-                entry_local.set(Some(final_len.encode()), false, final_extrinsic);
+                entry_local.set(Some(final_len.encode().into()), false, final_extrinsic);
                 // update conflict changes
                 let mut new_entry = OverlayedEntry::default();
-                new_entry.set(Some(final_len.encode()), true, final_extrinsic);
+                new_entry.set(Some(final_len.encode().into()), true, final_extrinsic);
                 changes.insert(SYSTEM_ALL_EXTRINSICS_LEN.to_vec(), new_entry);
             } else {
                 log::trace!(target: "merge_system", "merge AllExtrinsicsLen local: None, other: {other_len}, final: {other_len}");
@@ -131,10 +131,10 @@ impl<RE: Encode + Decode + Debug + Clone> MergeSystem<RE> {
                     }
                 }
                 log::trace!(target: "merge_system", "merge Digest local: {local_digest:?}, other: {other_digest:?}, final: {final_digest:?}");
-                entry_local.set(Some(final_digest.encode()), false, final_extrinsic);
+                entry_local.set(Some(final_digest.encode().into()), false, final_extrinsic);
                 // update conflict changes
                 let mut new_entry = OverlayedEntry::default();
-                new_entry.set(Some(final_digest.encode()), true, final_extrinsic);
+                new_entry.set(Some(final_digest.encode().into()), true, final_extrinsic);
                 changes.insert(SYSTEM_DIGEST.to_vec(), new_entry);
             } else {
                 log::trace!(target: "merge_system", "merge Digest local: None, other: {other_digest:?}, final: {other_digest:?}");
@@ -174,10 +174,10 @@ impl<RE: Encode + Decode + Debug + Clone> MergeSystem<RE> {
                     final_weight.mandatory.proof_size = final_weight.mandatory.proof_size.saturating_sub(init_weight.mandatory.proof_size);
                 }
                 log::trace!(target: "merge_system", "merge BlockWeight init: {:?}, local: {local_weight:?}, other: {other_weight:?}, final: {final_weight:?}", self.init_block_weight);
-                entry_local.set(Some(final_weight.encode()), false, final_extrinsic);
+                entry_local.set(Some(final_weight.encode().into()), false, final_extrinsic);
                 // update conflict changes
                 let mut new_entry = OverlayedEntry::default();
-                new_entry.set(Some(final_weight.encode()), true, final_extrinsic);
+                new_entry.set(Some(final_weight.encode().into()), true, final_extrinsic);
                 changes.insert(SYSTEM_BLOCK_WEIGHT.to_vec(), new_entry);
             } else {
                 log::trace!(target: "merge_system", "merge BlockWeight local: None, other: {other_weight:?}, final: {other_weight:?}");
@@ -202,10 +202,10 @@ impl<RE: Encode + Decode + Debug + Clone> MergeSystem<RE> {
                 let local_count: u32 = parse_entry_value(&entry_local).unwrap_or_default();
                 let final_count = local_count.saturating_add(other_count).saturating_sub(self.init_event_count);
                 log::trace!(target: "merge_system", "merge EventCount, init: {}, local: {local_count}, other: {other_count}, final: {final_count}", self.init_event_count);
-                entry_local.set(Some(final_count.encode()), false, final_extrinsic);
+                entry_local.set(Some(final_count.encode().into()), false, final_extrinsic);
                 // update conflict changes
                 let mut new_entry = OverlayedEntry::default();
-                new_entry.set(Some(final_count.encode()), true, final_extrinsic);
+                new_entry.set(Some(final_count.encode().into()), true, final_extrinsic);
                 changes.insert(SYSTEM_EVENT_COUNT.to_vec(), new_entry);
             } else {
                 log::trace!(target: "merge_system", "merge EventCount local: None, other: {other_count}, final: {other_count}");
@@ -308,6 +308,8 @@ impl<RE: Encode + Decode + Debug + Clone> MergeSystem<RE> {
                 let local_event_data = entry_local
                     .value_ref()
                     .clone()
+                    .unwrap_or_default()
+                    .get_raw(false)
                     .unwrap_or_default();
                 let append_events: Vec<_> = other_events
                     .into_iter()
@@ -328,7 +330,7 @@ impl<RE: Encode + Decode + Debug + Clone> MergeSystem<RE> {
                     .collect();
                 let final_events_encoded = <Vec<EventRecord<RE>> as EncodeAppend>::append_or_new(local_event_data, append_events)
                     .expect("append new events");
-                entry_local.set(Some(final_events_encoded), false, final_extrinsic);
+                entry_local.set(Some(final_events_encoded.into()), false, final_extrinsic);
             } else {
                 log::trace!(target: "merge_system", "merge EventsMap local: None, other: {other_events:?}");
                 local.insert(events_map_key, entry_other);
@@ -369,10 +371,10 @@ impl<RE: Encode + Decode + Debug + Clone> MergeSystem<RE> {
                     },
                 };
                 log::trace!(target: "merge_system", "merge ExecutionPhase init: {}, local: {local_phase:?}, other: {other_phase:?}, final: {final_phase:?}", self.init_index);
-                entry_local.set(Some(final_phase.encode()), false, final_extrinsic);
+                entry_local.set(Some(final_phase.encode().into()), false, final_extrinsic);
                 // update conflict changes
                 let mut new_entry = OverlayedEntry::default();
-                new_entry.set(Some(final_phase.encode()), true, final_extrinsic);
+                new_entry.set(Some(final_phase.encode().into()), true, final_extrinsic);
                 changes.insert(SYSTEM_EXECUTION_PHASE.to_vec(), new_entry);
             } else {
                 log::trace!(target: "merge_system", "merge ExecutionPhase local: None, other: {other_phase:?}, final: {other_phase:?}");
@@ -463,24 +465,24 @@ impl<RE: Encode + Decode + Debug + Clone> Default for MergeSystem<RE> {
 
 impl<RE: Encode + Decode + Debug + Clone, B, Block: BlockT, Api: ApiExt<Block>> super::MultiThreadBlockBuilder<B, Block, Api> for MergeSystem<RE> {
     fn prepare(&mut self, _backend: &Arc<B>, _parent: &Block::Hash, api: &Api) {
-        self.init_index = api.get_typed_change(EXTRINSIC_INDEX.as_slice(), &EXTRINSIC_INDEX.to_vec())
+        self.init_index = api.get_typed_change(&EXTRINSIC_INDEX.to_vec())
             .unwrap_or_default()
             .unwrap_or(get_top_value(api, &EXTRINSIC_INDEX.to_vec()).unwrap_or_default());
         self.index_count = self.init_index;
-        self.init_number_encoded = api.get_typed_change_encode(SYSTEM_NUMBER.as_slice(), &SYSTEM_NUMBER.to_vec())
+        self.init_number_encoded = api.get_encode_change(&SYSTEM_NUMBER.to_vec())
             .unwrap_or_default()
             .unwrap_or(get_top_value::<_, _, NumberFor<Block>>(api, &SYSTEM_NUMBER.to_vec()).unwrap_or(0u32.into()).encode());
-        self.init_event_count = api.get_typed_change(SYSTEM_EVENT_COUNT.as_slice(), &SYSTEM_EVENT_COUNT.to_vec())
+        self.init_event_count = api.get_typed_change(&SYSTEM_EVENT_COUNT.to_vec())
             .unwrap_or_default()
             .unwrap_or(get_top_value(api, &SYSTEM_EVENT_COUNT.to_vec()).unwrap_or_default());
-        self.init_block_weight = api.get_typed_change_encode(SYSTEM_BLOCK_WEIGHT.as_slice(), &SYSTEM_BLOCK_WEIGHT.to_vec())
+        self.init_block_weight = api.get_encode_change(&SYSTEM_BLOCK_WEIGHT.to_vec())
             .map(|r| r.map(|v| Decode::decode(&mut v.as_slice()).ok()))
             .unwrap_or_default()
             .unwrap_or(get_top_value(api, &SYSTEM_BLOCK_WEIGHT.to_vec()));
-        self.init_extrinsic_count = api.get_typed_change(SYSTEM_EXTRINSIC_COUNT.as_slice(), &SYSTEM_EXTRINSIC_COUNT.to_vec())
+        self.init_extrinsic_count = api.get_typed_change(&SYSTEM_EXTRINSIC_COUNT.to_vec())
             .unwrap_or_default()
             .unwrap_or(get_top_value(api, &SYSTEM_EXTRINSIC_COUNT.to_vec()).unwrap_or_default());
-        self.init_all_extrinsics_len = api.get_typed_change(SYSTEM_ALL_EXTRINSICS_LEN.as_slice(), &SYSTEM_ALL_EXTRINSICS_LEN.to_vec())
+        self.init_all_extrinsics_len = api.get_typed_change(&SYSTEM_ALL_EXTRINSICS_LEN.to_vec())
             .unwrap_or_default()
             .unwrap_or(get_top_value(api, &SYSTEM_ALL_EXTRINSICS_LEN.to_vec()).unwrap_or_default());
     }
@@ -492,7 +494,7 @@ impl<RE: Encode + Decode + Debug + Clone, B, Block: BlockT, Api: ApiExt<Block>> 
         if thread > 1 {
             let execution_phase = Phase::ApplyExtrinsic(self.index_count);
             if typed_cache {
-                cache.put(&EXTRINSIC_INDEX, &EXTRINSIC_INDEX, self.index_count);
+                cache.put_t(&EXTRINSIC_INDEX, &EXTRINSIC_INDEX, self.index_count);
                 cache.try_update_raw(&SYSTEM_EXECUTION_PHASE, &SYSTEM_EXECUTION_PHASE, execution_phase.encode());
             } else {
                 changes.top.set(EXTRINSIC_INDEX.to_vec(), Some(self.index_count.encode()), None);

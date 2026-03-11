@@ -36,6 +36,11 @@ use sp_storage::{ChildInfo, StateVersion, TrackedStorageKey};
 pub use extensions::{Extension, ExtensionStore, Extensions};
 pub use scope_limited::{set_and_run_with_externalities, with_externalities};
 use typed_cache::OverlayCache;
+#[cfg(feature = "typed-cache")]
+pub use typed_cache::StorageValue;
+
+#[cfg(not(feature = "typed-cache"))]
+pub type StorageValue = Vec<u8>;
 
 mod extensions;
 mod scope_limited;
@@ -92,12 +97,12 @@ pub trait Externalities: ExtensionStore {
 	fn overlay_cache(&mut self) -> Option<&mut OverlayCache>;
 
 	/// Read runtime storage.
-	fn storage(&self, key: &[u8]) -> Option<Vec<u8>>;
+	fn storage(&mut self, key: &[u8]) -> Option<StorageValue>;
 
 	/// Get storage value hash.
 	///
 	/// This may be optimized for large values.
-	fn storage_hash(&self, key: &[u8]) -> Option<Vec<u8>>;
+	fn storage_hash(&mut self, key: &[u8]) -> Option<Vec<u8>>;
 
 	/// Get child storage value hash.
 	///
@@ -109,15 +114,15 @@ pub trait Externalities: ExtensionStore {
 	/// Read child runtime storage.
 	///
 	/// Returns an `Option` that holds the SCALE encoded hash.
-	fn child_storage(&self, child_info: &ChildInfo, key: &[u8]) -> Option<Vec<u8>>;
+	fn child_storage(&self, child_info: &ChildInfo, key: &[u8]) -> Option<StorageValue>;
 
 	/// Set storage entry `key` of current contract being called (effective immediately).
-	fn set_storage(&mut self, key: Vec<u8>, value: Vec<u8>) {
+	fn set_storage(&mut self, key: Vec<u8>, value: StorageValue) {
 		self.place_storage(key, Some(value));
 	}
 
 	/// Set child storage entry `key` of current contract being called (effective immediately).
-	fn set_child_storage(&mut self, child_info: &ChildInfo, key: Vec<u8>, value: Vec<u8>) {
+	fn set_child_storage(&mut self, child_info: &ChildInfo, key: Vec<u8>, value: StorageValue) {
 		self.place_child_storage(child_info, key, Some(value))
 	}
 
@@ -133,7 +138,7 @@ pub trait Externalities: ExtensionStore {
 	}
 
 	/// Whether a storage entry exists.
-	fn exists_storage(&self, key: &[u8]) -> bool {
+	fn exists_storage(&mut self, key: &[u8]) -> bool {
 		self.storage(key).is_some()
 	}
 
@@ -194,10 +199,10 @@ pub trait Externalities: ExtensionStore {
 
 	/// Set or clear a storage entry (`key`) of current contract being called (effective
 	/// immediately).
-	fn place_storage(&mut self, key: Vec<u8>, value: Option<Vec<u8>>);
+	fn place_storage(&mut self, key: Vec<u8>, value: Option<StorageValue>);
 
 	/// Set or clear a child storage entry.
-	fn place_child_storage(&mut self, child_info: &ChildInfo, key: Vec<u8>, value: Option<Vec<u8>>);
+	fn place_child_storage(&mut self, child_info: &ChildInfo, key: Vec<u8>, value: Option<StorageValue>);
 
 	/// Get the trie root of the current storage map.
 	///

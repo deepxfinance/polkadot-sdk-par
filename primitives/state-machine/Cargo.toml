@@ -56,6 +56,7 @@ std = [
 	"tracing",
 	"typed-cache/std",
 ]
-kvdb = ["kv-db"]
+kvdb = ["kv-db", "sp-trie/kvdb"]
+typed-cache = ["sp-externalities/typed-cache", "kvdb", "kv-db/typed-cache", "sp-trie/typed-cache"]
 async-root = ["kv-db/async-root"]
 dev-time = ["typed-cache/dev-time"]

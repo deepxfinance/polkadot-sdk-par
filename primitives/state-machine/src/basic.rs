@@ -66,7 +66,12 @@ impl BasicExternalities {
 			top: self
 				.overlay
 				.changes()
-				.filter_map(|(k, v)| v.value().map(|v| (k.to_vec(), v.to_vec())))
+				.filter_map(|(k, v)| {
+					#[cfg(not(feature = "typed-cache"))]
+					{ v.value().map(|v| (k.to_vec(), v.to_vec())) } 
+					#[cfg(feature = "typed-cache")]
+					v.value().and_then(|v| v.get_raw(false).map(|v| (k.to_vec(), v)))
+				})
 				.collect(),
 			children_default: self
 				.overlay
@@ -76,7 +81,12 @@ impl BasicExternalities {
 						i.storage_key().to_vec(),
 						sp_core::storage::StorageChild {
 							data: iter
-								.filter_map(|(k, v)| v.value().map(|v| (k.to_vec(), v.to_vec())))
+								.filter_map(|(k, v)| {
+									#[cfg(not(feature = "typed-cache"))]
+									{ v.value().map(|v| (k.to_vec(), v.to_vec())) }
+									#[cfg(feature = "typed-cache")]
+									v.value().and_then(|v| v.get_raw(false).map(|v| (k.to_vec(), v)))
+								})
 								.collect(),
 							child_info: i.clone(),
 						},
@@ -165,19 +175,25 @@ impl Externalities for BasicExternalities {
 		None
 	}
 
-	fn storage(&self, key: &[u8]) -> Option<StorageValue> {
-		self.overlay.storage(key).and_then(|v| v.map(|v| v.to_vec()))
+	fn storage(&mut self, key: &[u8]) -> Option<StorageValue> {
+		self.overlay.storage(key).and_then(|v| v.cloned())
 	}
 
-	fn storage_hash(&self, key: &[u8]) -> Option<Vec<u8>> {
+	fn storage_hash(&mut self, key: &[u8]) -> Option<Vec<u8>> {
+		#[cfg(feature = "typed-cache")]
+		{ self.storage(key).map(|v| v.get_raw(true).map(|v| Blake2Hasher::hash(&v).encode()))? }
+		#[cfg(not(feature = "typed-cache"))]
 		self.storage(key).map(|v| Blake2Hasher::hash(&v).encode())
 	}
 
 	fn child_storage(&self, child_info: &ChildInfo, key: &[u8]) -> Option<StorageValue> {
-		self.overlay.child_storage(child_info, key).and_then(|v| v.map(|v| v.to_vec()))
+		self.overlay.child_storage(child_info, key).and_then(|v| v.map(|v| v.clone()))
 	}
 
 	fn child_storage_hash(&self, child_info: &ChildInfo, key: &[u8]) -> Option<Vec<u8>> {
+		#[cfg(feature = "typed-cache")]
+		{ self.child_storage(child_info, key).map(|v| v.get_raw(true).map(|v| Blake2Hasher::hash(&v).encode()))? }
+		#[cfg(not(feature = "typed-cache"))]
 		self.child_storage(child_info, key).map(|v| Blake2Hasher::hash(&v).encode())
 	}
 
@@ -249,9 +265,19 @@ impl Externalities for BasicExternalities {
 		MultiRemovalResults { maybe_cursor: None, backend: count, unique: count, loops: count }
 	}
 
+	#[cfg(feature = "typed-cache")]
+	fn exists_storage(&mut self, key: &[u8]) -> bool {
+		self.storage(key).map(|v| v.exists()).unwrap_or(false)	
+	}
+
 	fn storage_append(&mut self, key: Vec<u8>, value: Vec<u8>) {
-		let current_value = self.overlay.value_mut_or_insert_with(&key, || Default::default());
-		crate::ext::StorageAppend::new(current_value).append(value);
+		#[cfg(not(feature = "typed-cache"))]
+		{
+			let current_value = self.overlay.value_mut_or_insert_with(&key, || Default::default());
+			crate::ext::StorageAppend::new(current_value).append(value);
+		}
+		#[cfg(feature = "typed-cache")]
+		panic!("`BasicExternalities::storage_append` not supported for `typed-cache`");
 	}
 
 	fn storage_root(&mut self, state_version: StateVersion) -> Vec<u8> {
@@ -269,7 +295,7 @@ impl Externalities for BasicExternalities {
 			if empty_hash[..] == child_root[..] {
 				top.remove(child_info.prefixed_storage_key().as_slice());
 			} else {
-				top.insert(child_info.prefixed_storage_key().into_inner(), child_root);
+				top.insert(child_info.prefixed_storage_key().into_inner(), child_root.into());
 			}
 		}
 
@@ -286,7 +312,7 @@ impl Externalities for BasicExternalities {
 	) -> Vec<u8> {
 		if let Some((data, child_info)) = self.overlay.child_changes(child_info.storage_key()) {
 			let delta =
-				data.into_iter().map(|(k, v)| (k.as_ref(), v.value().map(|v| v.as_slice())));
+				data.into_iter().map(|(k, v)| (k.as_ref(), v.value()));
 			crate::in_memory_backend::new_in_mem::<Blake2Hasher, HashKey<_>>()
 				.child_storage_root(&child_info, delta, state_version)
 				.0

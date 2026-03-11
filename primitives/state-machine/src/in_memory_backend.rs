@@ -74,9 +74,9 @@ where
 	) {
 		let (top, child) = changes.into_iter().partition::<Vec<_>, _>(|v| v.0.is_none());
 		let (root, transaction) = self.full_storage_root(
-			top.iter().flat_map(|(_, v)| v).map(|(k, v)| (&k[..], v.as_deref())),
+			top.iter().flat_map(|(_, v)| v).map(|(k, v)| (&k[..], v.as_ref())),
 			child.iter().filter_map(|v| {
-				v.0.as_ref().map(|c| (c, v.1.iter().map(|(k, v)| (&k[..], v.as_deref()))))
+				v.0.as_ref().map(|c| (c, v.1.iter().map(|(k, v)| (&k[..], v.as_ref()))))
 			}),
 			state_version,
 		);
@@ -154,25 +154,39 @@ where
 	H::Out: Codec + Ord,
 	KF: KeyFunction<H> + Send + Sync,
 {
+	#[cfg(not(feature = "typed-cache"))]
 	fn from((inners, state_version): (Storage, StateVersion)) -> Self {
-		let mut inner: HashMap<Option<ChildInfo>, BTreeMap<StorageKey, StorageValue>> = inners
+		let mut inner: HashMap<Option<ChildInfo>, BTreeMap<StorageKey, Vec<u8>>> = inners
 			.children_default
 			.into_values()
-			.map(|c| (Some(c.child_info), c.data))
+			.map(|c| (Some(c.child_info), c.data.into()))
 			.collect();
 		inner.insert(None, inners.top);
 		(inner, state_version).into()
 	}
+
+	#[cfg(feature = "typed-cache")]
+	fn from((inners, state_version): (Storage, StateVersion)) -> Self {
+		let mut inner: HashMap<Option<ChildInfo>, BTreeMap<StorageKey, StorageValue>> = inners
+			.children_default
+			.into_values()
+			.map(|c| (Some(c.child_info), c.data.into_iter().map(|(k, v)| (k , v.into())).collect()))
+			.collect();
+		inner.insert(None, inners.top.into_iter().map(|(k, v)| (k , v.into())).collect());
+		(inner, state_version).into()
+	}
 }
 
-impl<H: Hasher, KF> From<(BTreeMap<StorageKey, StorageValue>, StateVersion)>
+impl<H: Hasher, KF> From<(BTreeMap<StorageKey, Vec<u8>>, StateVersion)>
 	for TrieBackend<GenericMemoryDB<H, KF>, H>
 where
 	H::Out: Codec + Ord,
 	KF: KeyFunction<H> + Send + Sync,
 {
-	fn from((inner, state_version): (BTreeMap<StorageKey, StorageValue>, StateVersion)) -> Self {
+	fn from((inner, state_version): (BTreeMap<StorageKey, Vec<u8>>, StateVersion)) -> Self {
 		let mut expanded = HashMap::new();
+		#[cfg(feature = "typed-cache")]
+		let inner = inner.into_iter().map(|(k, v)| (k, v.into())).collect();
 		expanded.insert(None, inner);
 		(expanded, state_version).into()
 	}

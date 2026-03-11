@@ -63,4 +63,5 @@ std = [
 	"trie-db/std",
 	"trie-root/std",
 ]
+typed-cache = ["kv-db/typed-cache"]
 kvdb = ["kv-db"]

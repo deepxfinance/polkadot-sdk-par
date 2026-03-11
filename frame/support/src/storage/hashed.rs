@@ -22,6 +22,7 @@ use codec::{Decode, Encode};
 use sp_std::prelude::*;
 
 /// Return the value of the item in storage under `key`, or `None` if there is no explicit entry.
+#[cfg(not(feature = "std"))]
 pub fn get<T, HashFn, R>(hash: &HashFn, key: &[u8]) -> Option<T>
 where
 	T: Decode + Sized,
@@ -31,8 +32,19 @@ where
 	unhashed::get(hash(key).as_ref())
 }
 
+#[cfg(feature = "std")]
+pub fn get<T, HashFn, R>(hash: &HashFn, key: &[u8]) -> Option<T>
+where
+	T: super::TStorageOverlay,
+	HashFn: Fn(&[u8]) -> R,
+	R: AsRef<[u8]>,
+{
+	unhashed::get(hash(key).as_ref())
+}
+
 /// Return the value of the item in storage under `key`, or the type's default if there is no
 /// explicit entry.
+#[cfg(not(feature = "std"))]
 pub fn get_or_default<T, HashFn, R>(hash: &HashFn, key: &[u8]) -> T
 where
 	T: Decode + Sized + Default,
@@ -42,8 +54,19 @@ where
 	unhashed::get_or_default(hash(key).as_ref())
 }
 
+#[cfg(feature = "std")]
+pub fn get_or_default<T, HashFn, R>(hash: &HashFn, key: &[u8]) -> T
+where
+	T: super::TStorageOverlay + Default,
+	HashFn: Fn(&[u8]) -> R,
+	R: AsRef<[u8]>,
+{
+	unhashed::get_or_default(hash(key).as_ref())
+}
+
 /// Return the value of the item in storage under `key`, or `default_value` if there is no
 /// explicit entry.
+#[cfg(not(feature = "std"))]
 pub fn get_or<T, HashFn, R>(hash: &HashFn, key: &[u8], default_value: T) -> T
 where
 	T: Decode + Sized,
@@ -53,8 +76,19 @@ where
 	unhashed::get_or(hash(key).as_ref(), default_value)
 }
 
+#[cfg(feature = "std")]
+pub fn get_or<T, HashFn, R>(hash: &HashFn, key: &[u8], default_value: T) -> T
+where
+	T: super::TStorageOverlay,
+	HashFn: Fn(&[u8]) -> R,
+	R: AsRef<[u8]>,
+{
+	unhashed::get_or(hash(key).as_ref(), default_value)
+}
+
 /// Return the value of the item in storage under `key`, or `default_value()` if there is no
 /// explicit entry.
+#[cfg(not(feature = "std"))]
 pub fn get_or_else<T, F, HashFn, R>(hash: &HashFn, key: &[u8], default_value: F) -> T
 where
 	T: Decode + Sized,
@@ -65,7 +99,19 @@ where
 	unhashed::get_or_else(hash(key).as_ref(), default_value)
 }
 
+#[cfg(feature = "std")]
+pub fn get_or_else<T, F, HashFn, R>(hash: &HashFn, key: &[u8], default_value: F) -> T
+where
+	T: super::TStorageOverlay,
+	F: FnOnce() -> T,
+	HashFn: Fn(&[u8]) -> R,
+	R: AsRef<[u8]>,
+{
+	unhashed::get_or_else(hash(key).as_ref(), default_value)
+}
+
 /// Put `value` in storage under `key`.
+#[cfg(not(feature = "std"))]
 pub fn put<T, HashFn, R>(hash: &HashFn, key: &[u8], value: &T)
 where
 	T: Encode,
@@ -75,7 +121,18 @@ where
 	unhashed::put(hash(key).as_ref(), value)
 }
 
+#[cfg(feature = "std")]
+pub fn put<T, HashFn, R>(hash: &HashFn, key: &[u8], value: &T)
+where
+	T: super::TStorageOverlay,
+	HashFn: Fn(&[u8]) -> R,
+	R: AsRef<[u8]>,
+{
+	unhashed::put(hash(key).as_ref(), value.clone())
+}
+
 /// Remove `key` from storage, returning its value if it had an explicit entry or `None` otherwise.
+#[cfg(not(feature = "std"))]
 pub fn take<T, HashFn, R>(hash: &HashFn, key: &[u8]) -> Option<T>
 where
 	T: Decode + Sized,
@@ -85,8 +142,19 @@ where
 	unhashed::take(hash(key).as_ref())
 }
 
+#[cfg(feature = "std")]
+pub fn take<T, HashFn, R>(hash: &HashFn, key: &[u8]) -> Option<T>
+where
+	T: super::TStorageOverlay,
+	HashFn: Fn(&[u8]) -> R,
+	R: AsRef<[u8]>,
+{
+	unhashed::take(hash(key).as_ref())
+}
+
 /// Remove `key` from storage, returning its value, or, if there was no explicit entry in storage,
 /// the default for its type.
+#[cfg(not(feature = "std"))]
 pub fn take_or_default<T, HashFn, R>(hash: &HashFn, key: &[u8]) -> T
 where
 	T: Decode + Sized + Default,
@@ -96,8 +164,19 @@ where
 	unhashed::take_or_default(hash(key).as_ref())
 }
 
+#[cfg(feature = "std")]
+pub fn take_or_default<T, HashFn, R>(hash: &HashFn, key: &[u8]) -> T
+where
+	T: super::TStorageOverlay + Default,
+	HashFn: Fn(&[u8]) -> R,
+	R: AsRef<[u8]>,
+{
+	unhashed::take_or_default(hash(key).as_ref())
+}
+
 /// Return the value of the item in storage under `key`, or `default_value` if there is no
 /// explicit entry. Ensure there is no explicit entry on return.
+#[cfg(not(feature = "std"))]
 pub fn take_or<T, HashFn, R>(hash: &HashFn, key: &[u8], default_value: T) -> T
 where
 	T: Decode + Sized,
@@ -107,11 +186,33 @@ where
 	unhashed::take_or(hash(key).as_ref(), default_value)
 }
 
+#[cfg(feature = "std")]
+pub fn take_or<T, HashFn, R>(hash: &HashFn, key: &[u8], default_value: T) -> T
+where
+	T: super::TStorageOverlay,
+	HashFn: Fn(&[u8]) -> R,
+	R: AsRef<[u8]>,
+{
+	unhashed::take_or(hash(key).as_ref(), default_value)
+}
+
 /// Return the value of the item in storage under `key`, or `default_value()` if there is no
 /// explicit entry. Ensure there is no explicit entry on return.
+#[cfg(not(feature = "std"))]
 pub fn take_or_else<T, F, HashFn, R>(hash: &HashFn, key: &[u8], default_value: F) -> T
 where
 	T: Decode + Sized,
+	F: FnOnce() -> T,
+	HashFn: Fn(&[u8]) -> R,
+	R: AsRef<[u8]>,
+{
+	unhashed::take_or_else(hash(key).as_ref(), default_value)
+}
+
+#[cfg(feature = "std")]
+pub fn take_or_else<T, F, HashFn, R>(hash: &HashFn, key: &[u8], default_value: F) -> T
+where
+	T: super::TStorageOverlay,
 	F: FnOnce() -> T,
 	HashFn: Fn(&[u8]) -> R,
 	R: AsRef<[u8]>,

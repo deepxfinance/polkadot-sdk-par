@@ -94,6 +94,9 @@ impl<K: Decode + Sized, V: Decode + Sized, Hasher: ReversibleStorageHasher> Iter
 
 	// TODO support with `typed_cache`
 	fn next(&mut self) -> Option<(K, V)> {
+		#[cfg(feature = "std")]
+		panic!("StorageMapIterator no supported");
+		#[cfg(not(feature = "std"))]
 		loop {
 			let maybe_next = sp_io::storage::next_key(&self.previous_key)
 				.filter(|n| n.starts_with(&self.prefix));
@@ -190,33 +193,36 @@ where
 
 	fn translate<O: Decode, F: FnMut(K, O) -> Option<V>>(mut f: F) {
 		#[cfg(feature = "std")]
-		if sp_io::mut_typed_cache(|_| ()).is_some() { panic!("`StorageMap::translate` not supported") };
-		let prefix = G::prefix_hash();
-		let mut previous_key = prefix.clone();
-		while let Some(next) =
-			sp_io::storage::next_key(&previous_key).filter(|n| n.starts_with(&prefix))
+		panic!("StorageMapIterator no supported");
+		#[cfg(not(feature = "std"))]
 		{
-			previous_key = next;
-			let value = match unhashed::get::<O>(&previous_key) {
-				Some(value) => value,
-				None => {
-					log::error!("Invalid translate: fail to decode old value");
-					continue
-				},
-			};
+			let prefix = G::prefix_hash();
+			let mut previous_key = prefix.clone();
+			while let Some(next) =
+				sp_io::storage::next_key(&previous_key).filter(|n| n.starts_with(&prefix))
+			{
+				previous_key = next;
+				let value = match unhashed::get::<O>(&previous_key) {
+					Some(value) => value,
+					None => {
+						log::error!("Invalid translate: fail to decode old value");
+						continue;
+					}
+				};
 
-			let mut key_material = G::Hasher::reverse(&previous_key[prefix.len()..]);
-			let key = match K::decode(&mut key_material) {
-				Ok(key) => key,
-				Err(_) => {
-					log::error!("Invalid translate: fail to decode key");
-					continue
-				},
-			};
+				let mut key_material = G::Hasher::reverse(&previous_key[prefix.len()..]);
+				let key = match K::decode(&mut key_material) {
+					Ok(key) => key,
+					Err(_) => {
+						log::error!("Invalid translate: fail to decode key");
+						continue;
+					}
+				};
 
-			match f(key, value) {
-				Some(new) => unhashed::put::<V>(&previous_key, &new),
-				None => unhashed::kill(&previous_key),
+				match f(key, value) {
+					Some(new) => unhashed::put::<V>(&previous_key, &new),
+					None => unhashed::kill(&previous_key),
+				}
 			}
 		}
 	}
@@ -235,16 +241,16 @@ impl<K: FullEncode, V: FullCodec + TStorage, G: StorageMap<K, V>> storage::Stora
 
 		#[cfg(feature = "std")]
 		{
-			let v1 = unhashed::get_cache(&k1, unhashed::non_f::<V>);
-			if let Some(val) = unhashed::get_cache(&k2, unhashed::non_f::<V>) {
-				unhashed::put_cache(&k1, val);
+			let v1 = unhashed::get::<V>(&k1);
+			if let Some(val) = unhashed::get::<V>(&k2) {
+				unhashed::put(&k1, val);
 			} else {
-				unhashed::kill_cache::<V>(&k1);
+				unhashed::kill(&k1);
 			}
 			if let Some(val) = v1 {
-				unhashed::put_cache(&k2, val);
+				unhashed::put(&k2, val);
 			} else {
-				unhashed::kill_cache::<V>(&k2);
+				unhashed::kill(&k2);
 			}
 		}
 
@@ -265,43 +271,18 @@ impl<K: FullEncode, V: FullCodec + TStorage, G: StorageMap<K, V>> storage::Stora
 	}
 
 	fn contains_key<KeyArg: EncodeLike<K>>(key: KeyArg) -> bool {
-		let key = Self::storage_map_final_key(key);
-		#[cfg(feature = "std")]
-		{ unhashed::contains_key_cache::<V>(&key) }
-		#[cfg(not(feature = "std"))]
-		unhashed::exists(key.as_ref())
+		unhashed::exists(Self::storage_map_final_key(key).as_ref())
 	}
 
 	fn get<KeyArg: EncodeLike<K>>(key: KeyArg) -> Self::Query {
-		#[cfg(feature = "std")]
-		{
-			G::from_optional_value_to_query(unhashed::get_cache(
-				Self::storage_map_final_key(key).as_ref(),
-				unhashed::non_f::<V>,
-			))
-		}
-
-		#[cfg(not(feature = "std"))]
 		G::from_optional_value_to_query(unhashed::get(Self::storage_map_final_key(key).as_ref()))
 	}
 
 	fn get_ref<KeyArg: EncodeLike<K>>(key: KeyArg) -> RcT<V> {
-		unhashed::get_cache_ref(
-			Self::storage_map_final_key(key).as_ref(),
-			#[cfg(feature = "std")] unhashed::non_t::<V>,
-		)
+		unhashed::get_cache_ref(Self::storage_map_final_key(key).as_ref())
 	}
 
 	fn try_get<KeyArg: EncodeLike<K>>(key: KeyArg) -> Result<V, ()> {
-		#[cfg(feature = "std")]
-		{
-			unhashed::get_cache(
-				Self::storage_map_final_key(key).as_ref(),
-				unhashed::non_f::<V>,
-			)
-				.ok_or(())
-		}
-		#[cfg(not(feature = "std"))]
 		unhashed::get(Self::storage_map_final_key(key).as_ref()).ok_or(())
 	}
 
@@ -315,7 +296,7 @@ impl<K: FullEncode, V: FullCodec + TStorage, G: StorageMap<K, V>> storage::Stora
 	#[cfg(feature = "std")]
 	fn insert<KeyArg: EncodeLike<K>>(key: KeyArg, val: V) {
 		#[cfg(feature = "std")]
-		unhashed::put_cache(Self::storage_map_final_key(key).as_ref(), val);
+		unhashed::put(Self::storage_map_final_key(key).as_ref(), val);
 		#[cfg(not(feature = "std"))]
 		unhashed::put(Self::storage_map_final_key(key).as_ref(), &val)
 	}
@@ -326,9 +307,6 @@ impl<K: FullEncode, V: FullCodec + TStorage, G: StorageMap<K, V>> storage::Stora
 	}
 
 	fn remove<KeyArg: EncodeLike<K>>(key: KeyArg) {
-		#[cfg(feature = "std")]
-		unhashed::kill_cache::<V>(Self::storage_map_final_key(key).as_ref());
-		#[cfg(not(feature = "std"))]
 		unhashed::kill(Self::storage_map_final_key(key).as_ref())
 	}
 
@@ -354,7 +332,7 @@ impl<K: FullEncode, V: FullCodec + TStorage, G: StorageMap<K, V>> storage::Stora
 		#[cfg(feature = "std")]
 		{
 			let final_key = Self::storage_map_final_key(key);
-			unhashed::mutate_cache::<OptionQT, V, _, _, _, _>(&final_key, || { None::<V> }, |v| Ok::<R, Never>(f(v)))
+			unhashed::mutate::<OptionQT, V, _, _, _, _>(&final_key, || { None::<V> }, |v| Ok::<R, Never>(f(v)))
 				.expect("`Never` can not be constructed; qed")
 		}
 		#[cfg(not(feature = "std"))]
@@ -367,12 +345,6 @@ impl<K: FullEncode, V: FullCodec + TStorage, G: StorageMap<K, V>> storage::Stora
 		f: F,
 	) -> Result<R, E> {
 		let final_key = Self::storage_map_final_key(key);
-		#[cfg(feature = "std")]
-		let mut val = G::from_optional_value_to_query(unhashed::get_cache(
-			final_key.as_ref(),
-			unhashed::non_f::<V>,
-		));
-		#[cfg(not(feature = "std"))]
 		let mut val = G::from_optional_value_to_query(unhashed::get(final_key.as_ref()));
 
 		let ret = f(&mut val);
@@ -380,14 +352,11 @@ impl<K: FullEncode, V: FullCodec + TStorage, G: StorageMap<K, V>> storage::Stora
 			match G::from_query_to_optional_value(val) {
 				Some(ref val) => {
 					#[cfg(feature = "std")]
-					unhashed::put_cache(final_key.as_ref(), val.clone());
+					unhashed::put(final_key.as_ref(), val.clone());
 					#[cfg(not(feature = "std"))]
 					unhashed::put(final_key.as_ref(), &val.borrow())
 				},
 				None => {
-					#[cfg(feature = "std")]
-					unhashed::kill_cache::<V>(final_key.as_ref());
-					#[cfg(not(feature = "std"))]
 					unhashed::kill(final_key.as_ref())
 				},
 			}
@@ -402,7 +371,7 @@ impl<K: FullEncode, V: FullCodec + TStorage, G: StorageMap<K, V>> storage::Stora
 		#[cfg(feature = "std")]
 		{
 			let final_key = Self::storage_map_final_key(key);
-			unhashed::mutate_cache::<G, V, _, _, _, _>(&final_key, || { None::<V> }, |v| f(v))
+			unhashed::mutate::<G, V, _, _, _, _>(&final_key, || { None::<V> }, |v| f(v))
 		}
 		#[cfg(not(feature = "std"))]
 		Self::try_mutate(key, |v| f(v))
@@ -413,9 +382,6 @@ impl<K: FullEncode, V: FullCodec + TStorage, G: StorageMap<K, V>> storage::Stora
 		f: F,
 	) -> Result<R, E> {
 		let final_key = Self::storage_map_final_key(key);
-		#[cfg(feature = "std")]
-		let mut val = unhashed::get_cache(final_key.as_ref(), unhashed::non_f::<V>);
-		#[cfg(not(feature = "std"))]
 		let mut val = unhashed::get(final_key.as_ref());
 
 		let ret = f(&mut val);
@@ -423,14 +389,11 @@ impl<K: FullEncode, V: FullCodec + TStorage, G: StorageMap<K, V>> storage::Stora
 			match val {
 				Some(ref val) => {
 					#[cfg(feature = "std")]
-					unhashed::put_cache(final_key.as_ref(), val.clone());
+					unhashed::put(final_key.as_ref(), val.clone());
 					#[cfg(not(feature = "std"))]
 					unhashed::put(final_key.as_ref(), &val.borrow())
 				},
 				None => {
-					#[cfg(feature = "std")]
-					unhashed::kill_cache::<V>(final_key.as_ref());
-					#[cfg(not(feature = "std"))]
 					unhashed::kill(final_key.as_ref())
 				},
 			}
@@ -441,7 +404,7 @@ impl<K: FullEncode, V: FullCodec + TStorage, G: StorageMap<K, V>> storage::Stora
 	fn take<KeyArg: EncodeLike<K>>(key: KeyArg) -> Self::Query {
 		let key = Self::storage_map_final_key(key);
 		#[cfg(feature = "std")]
-		let value = unhashed::take_cache(&key);
+		let value = unhashed::take(&key);
 		#[cfg(not(feature = "std"))]
 		let value = unhashed::take(key.as_ref());
 		G::from_optional_value_to_query(value)
@@ -453,7 +416,7 @@ impl<K: FullEncode, V: FullCodec + TStorage, G: StorageMap<K, V>> storage::Stora
 		V: TypedAppend<Item> + TStorage
 	{
 		let final_key = Self::storage_map_final_key(key);
-		unhashed::append_cache::<V, Item>(&final_key, item);
+		unhashed::append::<V, Item>(&final_key, item);
 	}
 
 	#[cfg(not(feature = "std"))]
@@ -482,8 +445,8 @@ impl<K: FullEncode, V: FullCodec + TStorage, G: StorageMap<K, V>> storage::Stora
 		};
 		#[cfg(feature = "std")]
 		{
-			unhashed::take_cache::<V>(&old_key).map(|value| {
-				unhashed::put_cache(Self::storage_map_final_key(key).as_ref(), value.clone());
+			unhashed::take::<V>(&old_key).map(|value| {
+				unhashed::put(Self::storage_map_final_key(key).as_ref(), value.clone());
 				value
 			})
 		}

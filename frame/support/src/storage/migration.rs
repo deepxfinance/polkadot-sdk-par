@@ -69,6 +69,9 @@ impl<T: Decode + Sized> Iterator for StorageIterator<T> {
 	type Item = (Vec<u8>, T);
 
 	fn next(&mut self) -> Option<(Vec<u8>, T)> {
+		#[cfg(feature = "std")]
+		unimplemented!("StorageIterator not supported");
+		#[cfg(not(feature = "std"))]
 		loop {
 			let maybe_next = sp_io::storage::next_key(&self.previous_key)
 				.filter(|n| n.starts_with(&self.prefix));
@@ -136,6 +139,9 @@ impl<K: Decode + Sized, T: Decode + Sized, H: ReversibleStorageHasher> Iterator
 	type Item = (K, T);
 
 	fn next(&mut self) -> Option<(K, T)> {
+		#[cfg(feature = "std")]
+		unimplemented!("StorageKeyIterator not supported");
+		#[cfg(not(feature = "std"))]
 		loop {
 			let maybe_next = sp_io::storage::next_key(&self.previous_key)
 				.filter(|n| n.starts_with(&self.prefix));
@@ -228,6 +234,16 @@ pub fn have_storage_value(module: &[u8], item: &[u8], hash: &[u8]) -> bool {
 }
 
 /// Get a particular value in storage by the `module`, the map's `item` name and the key `hash`.
+#[cfg(feature = "std")]
+pub fn get_storage_value<T: super::TStorageOverlay>(module: &[u8], item: &[u8], hash: &[u8]) -> Option<T> {
+	let mut key = vec![0u8; 32 + hash.len()];
+	let storage_prefix = storage_prefix(module, item);
+	key[0..32].copy_from_slice(&storage_prefix);
+	key[32..].copy_from_slice(hash);
+	frame_support::storage::unhashed::get::<T>(&key)
+}
+
+#[cfg(not(feature = "std"))]
 pub fn get_storage_value<T: Decode + Sized>(module: &[u8], item: &[u8], hash: &[u8]) -> Option<T> {
 	let mut key = vec![0u8; 32 + hash.len()];
 	let storage_prefix = storage_prefix(module, item);
@@ -236,7 +252,18 @@ pub fn get_storage_value<T: Decode + Sized>(module: &[u8], item: &[u8], hash: &[
 	frame_support::storage::unhashed::get::<T>(&key)
 }
 
+#[cfg(feature = "std")]
+pub fn take_storage_value<T: super::TStorageOverlay>(module: &[u8], item: &[u8], hash: &[u8]) -> Option<T> {
+	let mut key = vec![0u8; 32 + hash.len()];
+	let storage_prefix = storage_prefix(module, item);
+	key[0..32].copy_from_slice(&storage_prefix);
+	key[32..].copy_from_slice(hash);
+	frame_support::storage::unhashed::take::<T>(&key)
+}
+
 /// Take a particular value in storage by the `module`, the map's `item` name and the key `hash`.
+
+#[cfg(not(feature = "std"))]
 pub fn take_storage_value<T: Decode + Sized>(module: &[u8], item: &[u8], hash: &[u8]) -> Option<T> {
 	let mut key = vec![0u8; 32 + hash.len()];
 	let storage_prefix = storage_prefix(module, item);
@@ -245,7 +272,17 @@ pub fn take_storage_value<T: Decode + Sized>(module: &[u8], item: &[u8], hash: &
 	frame_support::storage::unhashed::take::<T>(&key)
 }
 
+#[cfg(feature = "std")]
+pub fn put_storage_value<T: super::TStorageOverlay>(module: &[u8], item: &[u8], hash: &[u8], value: T) {
+	let mut key = vec![0u8; 32 + hash.len()];
+	let storage_prefix = storage_prefix(module, item);
+	key[0..32].copy_from_slice(&storage_prefix);
+	key[32..].copy_from_slice(hash);
+	frame_support::storage::unhashed::put(&key, value);
+}
+
 /// Put a particular value into storage by the `module`, the map's `item` name and the key `hash`.
+#[cfg(not(feature = "std"))]
 pub fn put_storage_value<T: Encode>(module: &[u8], item: &[u8], hash: &[u8], value: T) {
 	let mut key = vec![0u8; 32 + hash.len()];
 	let storage_prefix = storage_prefix(module, item);
@@ -295,7 +332,17 @@ pub fn clear_storage_prefix(
 	frame_support::storage::unhashed::clear_prefix(&key, maybe_limit, maybe_cursor)
 }
 
+#[cfg(feature = "std")]
+pub fn take_storage_item<K: Encode + Sized, T: super::TStorageOverlay, H: StorageHasher>(
+	module: &[u8],
+	item: &[u8],
+	key: K,
+) -> Option<T> {
+	take_storage_value(module, item, key.using_encoded(H::hash).as_ref())
+}
+
 /// Take a particular item in storage by the `module`, the map's `item` name and the key `hash`.
+#[cfg(not(feature = "std"))]
 pub fn take_storage_item<K: Encode + Sized, T: Decode + Sized, H: StorageHasher>(
 	module: &[u8],
 	item: &[u8],

@@ -9,6 +9,7 @@ use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 use codec::Decode;
+use frame_support::storage::TStorageOverlay;
 use sp_api::{ApiExt, HeaderT};
 use sp_consensus::Proposal;
 use sp_runtime::traits::Block as BlockT;
@@ -103,19 +104,38 @@ pub trait ExtraExecute<Block: BlockT, Api: ApiExt<Block>> {
     fn extra_execute(_api: &Api, _hash: <Block as BlockT>::Hash) {}
 }
 
-pub fn parse_entry_value<T: codec::Decode>(entry: &OverlayedEntry<Option<StorageValue>>) -> Option<T> {
-    entry.value_ref().as_ref().map(|v| Decode::decode(&mut v.as_slice()).unwrap())
+pub fn parse_entry_value<T: TStorageOverlay>(entry: &OverlayedEntry<Option<StorageValue>>) -> Option<T> {
+    #[cfg(not(feature = "typed-cache"))]
+    { entry.value_ref().as_ref().map(|v| Decode::decode(&mut v.as_slice()).unwrap()) }
+    #[cfg(feature = "typed-cache")]
+    {
+        entry.value_ref().as_ref()
+            .and_then(|v| if v.muted() {
+                v.get_t()
+            } else {
+                None
+            })
+    }
 }
 
-pub fn get_map_value<T: codec::Decode>(map: &BTreeMap<StorageKey, OverlayedEntry<Option<StorageValue>>>, key: &Vec<u8>) -> Option<T> {
+pub fn get_map_value<T: TStorageOverlay>(map: &BTreeMap<StorageKey, OverlayedEntry<Option<StorageValue>>>, key: &Vec<u8>) -> Option<T> {
+    #[cfg(not(feature = "typed-cache"))]
+    {
+        map.get(key)
+            .map(|e| e.value_ref().as_ref().map(|v| codec::Decode::decode(&mut v.as_slice()).unwrap()))
+            .unwrap_or_default()
+    }
+    #[cfg(feature = "typed-cache")]
     map.get(key)
-        .map(|e| e.value_ref().as_ref().map(|v| codec::Decode::decode(&mut v.as_slice()).unwrap()))
-        .unwrap_or_default()
+        .and_then(|e| e.value_ref().value_ref().as_ref()
+            .and_then(|v| if v.muted() {
+                v.get_t()
+            } else {
+                None
+            })
+        )?
 }
 
-pub fn get_top_value<Block: BlockT, Api: ApiExt<Block>, T: Decode>(api: &Api, key: &Vec<u8>) -> Option<T> {
-    api
-        .get_top_change(key)
-        .map(|data| data.map(|d| Decode::decode(&mut d.as_slice()).unwrap()))
-        .unwrap_or_default()
+pub fn get_top_value<Block: BlockT, Api: ApiExt<Block>, T: TStorageOverlay>(api: &Api, key: &Vec<u8>) -> Option<T> {
+    api.get_typed_change(key)?
 }

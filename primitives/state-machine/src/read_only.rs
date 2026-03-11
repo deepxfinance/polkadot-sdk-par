@@ -93,13 +93,13 @@ where
 		None
 	}
 
-	fn storage(&self, key: &[u8]) -> Option<StorageValue> {
+	fn storage(&mut self, key: &[u8]) -> Option<StorageValue> {
 		self.backend
 			.storage(key)
 			.expect("Backed failed for storage in ReadOnlyExternalities")
 	}
 
-	fn storage_hash(&self, key: &[u8]) -> Option<Vec<u8>> {
+	fn storage_hash(&mut self, key: &[u8]) -> Option<Vec<u8>> {
 		self.backend
 			.storage_hash(key)
 			.expect("Backed failed for storage_hash in ReadOnlyExternalities")
@@ -170,6 +170,11 @@ where
 		_maybe_cursor: Option<&[u8]>,
 	) -> MultiRemovalResults {
 		unimplemented!("clear_child_prefix is not supported in ReadOnlyExternalities")
+	}
+
+	#[cfg(feature = "typed-cache")]
+	fn exists_storage(&mut self, key: &[u8]) -> bool {
+		self.storage(key).map(|v| v.exists()).unwrap_or(false)
 	}
 
 	fn storage_append(&mut self, _key: Vec<u8>, _value: Vec<u8>) {

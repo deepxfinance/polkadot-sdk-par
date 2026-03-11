@@ -30,7 +30,12 @@ pub mod kvdbmut;
 pub mod kv_memory_db;
 
 /// Database value
+#[cfg(not(feature = "typed-cache"))]
 pub type DBValue = Vec<u8>;
+#[cfg(feature = "typed-cache")]
+pub use typed_cache::StorageValue as DBValue;
+#[cfg(feature = "typed-cache")]
+pub use typed_cache::*;
 
 /// storage Prefix following pad for special key storage_hash(e.g. CODE).
 pub const STORAGE_HASH: u8 = 1;
@@ -38,9 +43,7 @@ pub const STORAGE_HASH: u8 = 1;
 /// A key-value datastore implemented as a database-backed.
 pub trait KV<H: Hasher> {
     /// Does the db contain a given key?
-    fn contains(&self, key: &[u8]) -> bool {
-        self.get(key).is_some()
-    }
+    fn contains(&self, key: &[u8]) -> bool;
 
     /// What is the value of the given key?
     fn get(&self, key: &[u8]) -> Option<DBValue>;
@@ -49,9 +52,7 @@ pub trait KV<H: Hasher> {
 /// A key-value datastore implemented as a database-backed modified.
 pub trait KVMut<'db, H: Hasher> {
     /// Does the trie contain a given key?
-    fn contains(&self, key: &[u8]) -> bool {
-        self.get(key).is_some()
-    }
+    fn contains(&self, key: &[u8]) -> bool;
 
     /// What is the value of the given key?
     fn get<'a, 'key>(&'a self, key: &'key [u8]) -> Option<DBValue>

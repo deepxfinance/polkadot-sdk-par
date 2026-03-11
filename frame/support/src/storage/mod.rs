@@ -39,14 +39,8 @@ pub use self::{
 pub use sp_runtime::TransactionOutcome;
 pub use types::Key;
 
-pub use typed_cache::TStorageOverlay;
-#[cfg(feature = "std")]
-pub use typed_cache::{RcT, TStorage};
-#[cfg(not(feature = "std"))]
-pub use no_std_rct::RcT;
+pub use typed_cache::{RcT, OverlayCache, TStorage, TStorageOverlay};
 
-#[cfg(not(feature = "std"))]
-pub mod no_std_rct;
 pub mod bounded_btree_map;
 pub mod bounded_btree_set;
 pub mod bounded_vec;
@@ -1414,22 +1408,27 @@ pub trait StoragePrefixedMap<Value: FullCodec + TStorage> {
 	///
 	/// This would typically be called inside the module implementation of on_runtime_upgrade.
 	fn translate_values<OldValue: Decode, F: FnMut(OldValue) -> Option<Value>>(mut f: F) {
-		let prefix = Self::final_prefix();
-		let mut previous_key = prefix.clone().to_vec();
-		while let Some(next) =
-			sp_io::storage::next_key(&previous_key).filter(|n| n.starts_with(&prefix))
+		#[cfg(feature = "std")]
+		panic!("StoragePrefixedMap no supported");
+		#[cfg(not(feature = "std"))]
 		{
-			previous_key = next;
-			let maybe_value = unhashed::get::<OldValue>(&previous_key);
-			match maybe_value {
-				Some(value) => match f(value) {
-					Some(new) => unhashed::put::<Value>(&previous_key, &new),
-					None => unhashed::kill(&previous_key),
-				},
-				None => {
-					log::error!("old key failed to decode at {:?}", previous_key);
-					continue
-				},
+			let prefix = Self::final_prefix();
+			let mut previous_key = prefix.clone().to_vec();
+			while let Some(next) =
+				sp_io::storage::next_key(&previous_key).filter(|n| n.starts_with(&prefix))
+			{
+				previous_key = next;
+				let maybe_value = unhashed::get::<OldValue>(&previous_key);
+				match maybe_value {
+					Some(value) => match f(value) {
+						Some(new) => unhashed::put::<Value>(&previous_key, &new),
+						None => unhashed::kill(&previous_key),
+					},
+					None => {
+						log::error!("old key failed to decode at {:?}", previous_key);
+						continue;
+					}
+				}
 			}
 		}
 	}

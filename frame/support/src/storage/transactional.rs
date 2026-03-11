@@ -45,6 +45,9 @@ fn get_transaction_level() -> Layer {
 
 /// Set the current number of nested transactional layers.
 fn set_transaction_level(level: Layer) {
+	#[cfg(feature = "std")]
+	crate::storage::unhashed::put::<Layer>(TRANSACTION_LEVEL_KEY, level);
+	#[cfg(not(feature = "std"))]
 	crate::storage::unhashed::put::<Layer>(TRANSACTION_LEVEL_KEY, &level);
 }
 

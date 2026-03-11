@@ -32,6 +32,7 @@ futures = { version = "0.3.21", features = ["thread-pool"], optional = true }
 secp256k1 = { version = "0.24.0", features = ["recovery", "global-context"], optional = true }
 tracing = { version = "0.1.29", default-features = false }
 tracing-core = { version = "0.1.28", default-features = false}
+typed-cache = { path = "../typed-cache" }
 
 # Required for backwards compatibility reason, but only used for verifying when `UseDalekExt` is set.
 ed25519-dalek = { version = "1.0.1", default-features = false, optional = true }
@@ -62,7 +63,9 @@ std = [
 	"futures",
 	"ed25519-dalek",
 	"ed25519",
+	"typed-cache/std",
 ]
+typed-cache = ["sp-state-machine/typed-cache"]
 
 bls-experimental = ["sp-keystore/bls-experimental"]
 

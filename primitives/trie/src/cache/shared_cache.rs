@@ -18,8 +18,6 @@
 ///! Provides the [`SharedNodeCache`], the [`SharedValueCache`] and the [`SharedTrieCache`]
 ///! that combines both caches and is exported to the outside.
 use super::{CacheSize, NodeCached};
-#[cfg(feature = "kvdb")]
-use crate::cache::kv_cache::{KValueCacheMap, LocalValueCacheLimiter};
 use hash_db::Hasher;
 use hashbrown::{hash_set::Entry as SetEntry, HashSet};
 use nohash_hasher::BuildNoHashHasher;
@@ -567,75 +565,98 @@ impl<H: Eq + std::hash::Hash + Clone + Copy + AsRef<[u8]>> SharedValueCache<H> {
 
 /// The shared kv cache
 #[cfg(feature = "kvdb")]
-pub(super) struct SharedKVCache {
-	/// The cached kv values, ordered by least recently used.
-	pub(super) lru: KValueCacheMap,
-}
+pub mod shared_kv_cache {
+	use kv_db::{OverlayedEntry, StorageValue};
+	use sp_std::collections::btree_map::BTreeMap;
+	use crate::cache::kv_cache::KValueCacheMap;
 
-#[cfg(feature = "kvdb")]
-impl SharedKVCache {
-	/// Create a new instance.
-	fn new(max_inline_size: usize, max_heap_size: usize) -> Self {
-		Self {
-			lru: schnellru::LruMap::with_hasher(
-				LocalValueCacheLimiter {
-					max_inline_size,
-					max_heap_size,
-					heap_size: 0,
-					items_evicted: 0,
-					max_items_evicted: 0, // Will be set during `update`.
-				},
-				Default::default(),
-			),
-		}
+	pub struct SharedKVCache {
+		/// The cached kv values, ordered by least recently used.
+		/// TODO support cache by block.
+		pub lru: KValueCacheMap,
 	}
 
-	/// Update the cache with the `added` values.
-	pub fn update(
-		&mut self,
-		added: impl IntoIterator<Item = (super::kv_cache::ValueCacheKey, kv_db::DBValue)>,
-	) {
-		let mut add_count = 0;
-		let mut remove_count = 0;
-
-		self.lru.limiter_mut().items_evicted = 0;
-		self.lru.limiter_mut().max_items_evicted =
-			self.lru.len() * 100 / super::SHARED_KV_CACHE_MAX_REPLACE_PERCENT;
-
-		for (key, value) in added {
-			if value.is_empty() {
-				remove_count += 1;
-				self.lru.insert(key, value);
-			} else {
-				add_count += 1;
-				self.lru.insert(key, value);
+	impl SharedKVCache {
+		/// Create a new instance.
+		pub fn new(max_inline_size: usize, max_heap_size: usize) -> Self {
+			#[cfg(not(feature = "typed-cache"))]
+			{
+				Self {
+					lru: schnellru::LruMap::with_hasher(
+						crate::cache::kv_cache::LocalValueCacheLimiter {
+							max_inline_size,
+							max_heap_size,
+							heap_size: 0,
+							items_evicted: 0,
+							max_items_evicted: 0, // Will be set during `update`.
+						},
+						Default::default(),
+					),
+				}
 			}
-
-			if self.lru.limiter().items_evicted > self.lru.limiter().max_items_evicted {
-				// Stop when we've evicted a big enough chunk of the shared cache.
-				break
-			}
+			Self { lru: KValueCacheMap::new() }
 		}
 
-		if add_count == 0 && remove_count == 0 { return; }
-		tracing::debug!(
-			target: super::KV_LOG_TARGET,
-			"Updated the shared kv cache: {} new values, {} removed, {}/{} evicted (length = {}, inline size={}/{}, heap size={}/{})",
-			add_count,
-			remove_count,
-			self.lru.limiter().items_evicted,
-			self.lru.limiter().max_items_evicted,
-			self.lru.len(),
-			self.lru.memory_usage(),
-			self.lru.limiter().max_inline_size,
-			self.lru.limiter().heap_size,
-			self.lru.limiter().max_heap_size,
-		);
-	}
+		/// Update the cache with the `added` values.
+		#[cfg(not(feature = "typed-cache"))]
+		pub fn update(
+			&mut self,
+			added: impl IntoIterator<Item = (Vec<u8>, kv_db::DBValue)>,
+		) {
+			let mut add_count = 0;
+			let mut remove_count = 0;
 
-	/// Reset the cache.
-	fn reset(&mut self) {
-		self.lru.clear();
+			self.lru.limiter_mut().items_evicted = 0;
+			self.lru.limiter_mut().max_items_evicted =
+				self.lru.len() * 100 / super::SHARED_KV_CACHE_MAX_REPLACE_PERCENT;
+
+			for (key, value) in added {
+				if value.is_empty() {
+					remove_count += 1;
+					self.lru.insert(key, value);
+				} else {
+					add_count += 1;
+					self.lru.insert(key, value);
+				}
+
+				if self.lru.limiter().items_evicted > self.lru.limiter().max_items_evicted {
+					// Stop when we've evicted a big enough chunk of the shared cache.
+					break
+				}
+			}
+
+			if add_count == 0 && remove_count == 0 { return; }
+			tracing::debug!(
+				target: super::KV_LOG_TARGET,
+				"Updated the shared kv cache: {} new values, {} removed, {}/{} evicted (length = {}, inline size={}/{}, heap size={}/{})",
+				add_count,
+				remove_count,
+				self.lru.limiter().items_evicted,
+				self.lru.limiter().max_items_evicted,
+				self.lru.len(),
+				self.lru.memory_usage(),
+				self.lru.limiter().max_inline_size,
+				self.lru.limiter().heap_size,
+				self.lru.limiter().max_heap_size,
+			);
+		}
+		#[cfg(feature = "typed-cache")]
+		pub fn update(
+			&mut self,
+			added: BTreeMap<Vec<u8>, OverlayedEntry<Option<StorageValue>>>,
+		) {
+			added.into_iter().for_each(|(k, entry)| {
+				let value = entry.into_value().expect("MustSome");
+				if value.muted() {
+					self.lru.set(k, Some(value), None);
+				}
+			})
+		}
+
+		/// Reset the cache.
+		pub fn reset(&mut self) {
+			self.lru.clear();
+		}
 	}
 }
 
@@ -644,7 +665,7 @@ pub(super) struct SharedTrieCacheInner<H: Hasher> {
 	node_cache: SharedNodeCache<H::Out>,
 	value_cache: SharedValueCache<H::Out>,
 	#[cfg(feature = "kvdb")]
-	kv_cache: SharedKVCache,
+	kv_cache: shared_kv_cache::SharedKVCache,
 }
 
 impl<H: Hasher> SharedTrieCacheInner<H> {
@@ -661,7 +682,7 @@ impl<H: Hasher> SharedTrieCacheInner<H> {
 
 	/// Returns a mutable reference to the [`KVValueCache`].
 	#[cfg(feature = "kvdb")]
-	pub(super) fn kv_cache_mut(&mut self) -> &mut SharedKVCache {
+	pub(super) fn kv_cache_mut(&mut self) -> &mut shared_kv_cache::SharedKVCache {
 		&mut self.kv_cache
 	}
 
@@ -724,9 +745,11 @@ impl<H: Hasher> SharedTrieCache<H> {
 		let node_cache_max_inline_size =
 			SharedNodeCacheMap::<H::Out>::memory_usage_for_memory_budget(node_cache_inline_budget);
 
-		#[cfg(feature = "kvdb")]
+		#[cfg(all(feature = "kvdb", not(feature = "typed-cache")))]
 		let kv_cache_max_inline_size =
 			KValueCacheMap::memory_usage_for_memory_budget(kv_cache_inline_budget);
+		#[cfg(all(feature = "kvdb", feature = "typed-cache"))]
+		let kv_cache_max_inline_size = 0;
 
 		// And this is how much data we'll at most keep on the heap for each cache.
 		let value_cache_max_heap_size = value_cache_budget - value_cache_max_inline_size;
@@ -758,7 +781,7 @@ impl<H: Hasher> SharedTrieCache<H> {
 					value_cache_max_heap_size,
 				),
 				#[cfg(feature = "kvdb")]
-				kv_cache: SharedKVCache::new(
+				kv_cache: shared_kv_cache::SharedKVCache::new(
 					kv_cache_max_inline_size,
 					kv_cache_max_heap_size,
 				),
@@ -796,7 +819,10 @@ impl<H: Hasher> SharedTrieCache<H> {
 	#[cfg(feature = "kvdb")]
 	#[inline]
 	pub fn peek_kv_value(&self, key: &[u8]) -> Option<kv_db::DBValue> {
-		self.inner.read().kv_cache.lru.peek(key).cloned()
+		#[cfg(not(feature = "typed-cache"))]
+		{ self.inner.read().kv_cache.lru.peek(key).cloned() }
+		#[cfg(feature = "typed-cache")]
+		self.inner.read().kv_cache.lru.get(key)?.value_ref().clone()
 	}
 
 	/// Get a copy of the [`CachedValue`] for `key`.

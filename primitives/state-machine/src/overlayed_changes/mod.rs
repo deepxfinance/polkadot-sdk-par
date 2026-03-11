@@ -17,10 +17,14 @@
 
 //! The overlayed changes to state.
 
+#[cfg(not(feature = "typed-cache"))]
 mod changeset;
 mod offchain;
 
-use self::changeset::OverlayedChangeSet;
+#[cfg(not(feature = "typed-cache"))]
+use changeset::OverlayedChangeSet;
+#[cfg(feature = "typed-cache")]
+use typed_cache::OverlayedChangeSet;
 use crate::{backend::Backend, stats::StateMachineStats, DefaultError};
 use codec::{Decode, Encode};
 use hash_db::Hasher;
@@ -44,8 +48,18 @@ use std::{
 #[cfg(feature = "std")]
 use sp_core::bytes::to_hex;
 use crate::backend::Consolidate;
-pub use crate::overlayed_changes::changeset::{OverlayedEntry, MergeChange};
-pub use self::changeset::{AlreadyInRuntime, NoOpenTransaction, NotInRuntime, OverlayedValue};
+#[cfg(not(feature = "typed-cache"))]
+pub use changeset::{MergeChange, DefaultMerge};
+#[cfg(feature = "typed-cache")]
+pub use typed_cache::{MergeChange, DefaultMerge};
+#[cfg(not(feature = "typed-cache"))]
+pub use changeset::OverlayedEntry;
+#[cfg(not(feature = "typed-cache"))]
+pub use changeset::{AlreadyInRuntime, NoOpenTransaction, NotInRuntime, OverlayedValue};
+#[cfg(feature = "typed-cache")]
+pub use typed_cache::changeset::OverlayedEntry;
+#[cfg(feature = "typed-cache")]
+pub use typed_cache::{AlreadyInRuntime, NoOpenTransaction, NotInRuntime, OverlayedValue};
 
 /// Changes that are made outside of extrinsics are marked with this index;
 pub const NO_EXTRINSIC_INDEX: u32 = 0xffffffff;
@@ -54,9 +68,17 @@ pub const NO_EXTRINSIC_INDEX: u32 = 0xffffffff;
 pub type StorageKey = Vec<u8>;
 
 /// Storage value.
-pub type StorageValue = Vec<u8>;
+#[cfg(not(feature = "typed-cache"))]
+pub use changeset::StorageValue;
+#[cfg(feature = "typed-cache")]
+pub use typed_cache::StorageValue;
 
-pub type Changes = sp_std::collections::btree_map::BTreeMap<StorageKey, OverlayedEntry<Option<StorageValue>>>;
+#[cfg(not(feature = "typed-cache"))]
+pub use changeset::Changes;
+
+#[cfg(feature = "typed-cache")]
+pub use typed_cache::Changes;
+use typed_cache::TStorageOverlay;
 
 /// In memory array of storage values.
 pub type StorageCollection = Vec<(StorageKey, Option<StorageValue>)>;
@@ -231,8 +253,28 @@ impl OverlayedChanges {
 	}
 
 	/// get top change for some key
-	pub fn top_change(&self, key: &StorageKey) -> Option<Option<StorageValue>> {
-		self.top.get(key).map(|e| e.value_ref().clone())
+	pub fn top_change(&self, key: &StorageKey) -> Option<StorageValue> {
+		#[cfg(not(feature = "typed-cache"))]
+		{ self.top.get(key).map(|e| e.value_ref().clone())? }
+		#[cfg(feature = "typed-cache")]
+		self.top.get(key).map(|e| e.value_ref().clone())?
+	}
+	
+	pub fn get_change_encode(&self, key: &StorageKey) -> Option<Vec<u8>> {
+		#[cfg(not(feature = "typed-cache"))]
+		{ self.top.get(key).map(|e| e.value_ref().clone())? }
+		#[cfg(feature = "typed-cache")]
+		self.top.get_raw_changes(key)?
+	}
+	
+	pub fn get_change_t<T: TStorageOverlay>(&self, key: &StorageKey) -> Option<T> {
+		#[cfg(not(feature = "typed-cache"))]
+		{ 
+			self.top.get(key)
+			.map(|e| Decode::decode::<T>(&mut e.value_ref()).ok())?
+		}
+		#[cfg(feature = "typed-cache")]
+		self.top.get_muted_t(key)?
 	}
 	
 	/// return merge weight of `merge self to others`. 
@@ -460,13 +502,18 @@ impl OverlayedChanges {
 	/// Returns a double-Option: None if the key is unknown (i.e. and the query should be referred
 	/// to the backend); Some(None) if the key has been deleted. Some(Some(...)) for a key whose
 	/// value has been set.
-	pub fn storage(&self, key: &[u8]) -> Option<Option<&[u8]>> {
-		self.top.get(key).map(|x| {
-			let value = x.value();
-			let size_read = value.map(|x| x.len() as u64).unwrap_or(0);
-			self.stats.tally_read_modified(size_read);
-			value.map(AsRef::as_ref)
-		})
+	pub fn storage(&self, key: &[u8]) -> Option<Option<&StorageValue>> {
+		#[cfg(not(feature = "typed-cache"))]
+		{
+			self.top.get(key).map(|x| {
+				let value = x.value();
+				let size_read = value.map(|x| x.len() as u64).unwrap_or(0);
+				self.stats.tally_read_modified(size_read);
+				value.map(AsRef::as_ref)
+			})
+		}
+		#[cfg(feature = "typed-cache")]
+		self.top.get(&key.to_vec()).map(|v| v.value_ref().as_ref())
 	}
 
 	/// Returns mutable reference to current value.
@@ -480,29 +527,44 @@ impl OverlayedChanges {
 		key: &[u8],
 		init: impl Fn() -> StorageValue,
 	) -> &mut StorageValue {
-		let value = self.top.modify(key.to_vec(), init, self.extrinsic_index());
-
-		// if the value was deleted initialise it back with an empty vec
-		value.get_or_insert_with(StorageValue::default)
+		#[cfg(not(feature = "typed-cache"))]
+		{
+			// if the value was deleted initialise it back with an empty vec
+			self.top.modify(key.to_vec(), init, self.extrinsic_index())
+				.get_or_insert_with(StorageValue::default)
+		}
+		#[cfg(feature = "typed-cache")]
+		self.top.modify(key.to_vec(), || { Some(init()) } , self.extrinsic_index()).as_mut().expect("Must Some")
 	}
 
 	/// Returns a double-Option: None if the key is unknown (i.e. and the query should be referred
 	/// to the backend); Some(None) if the key has been deleted. Some(Some(...)) for a key whose
 	/// value has been set.
-	pub fn child_storage(&self, child_info: &ChildInfo, key: &[u8]) -> Option<Option<&[u8]>> {
+	pub fn child_storage(&self, child_info: &ChildInfo, key: &[u8]) -> Option<Option<&StorageValue>> {
 		let map = self.children.get(child_info.storage_key())?;
-		let value = map.0.get(key)?.value();
-		let size_read = value.map(|x| x.len() as u64).unwrap_or(0);
-		self.stats.tally_read_modified(size_read);
-		Some(value.map(AsRef::as_ref))
+		#[cfg(not(feature = "typed-cache"))]
+		{
+			let value = map.0.get(key)?.value();
+			let size_read = value.map(|x| x.len() as u64).unwrap_or(0);
+			self.stats.tally_read_modified(size_read);
+			Some(value.map(AsRef::as_ref))
+		}
+		#[cfg(feature = "typed-cache")]
+		map.0.get(key).map(|e| e.value())
 	}
 
 	/// Set a new value for the specified key.
 	///
 	/// Can be rolled back or committed when called inside a transaction.
+	#[cfg(not(feature = "typed-cache"))]
 	pub fn set_storage(&mut self, key: StorageKey, val: Option<StorageValue>) {
 		let size_write = val.as_ref().map(|x| x.len() as u64).unwrap_or(0);
 		self.stats.tally_write_overlay(size_write);
+		self.top.set(key, val, self.extrinsic_index());
+	}
+
+	#[cfg(feature = "typed-cache")]
+	pub fn set_storage(&mut self, key: StorageKey, val: Option<StorageValue>) {
 		self.top.set(key, val, self.extrinsic_index());
 	}
 
@@ -511,6 +573,7 @@ impl OverlayedChanges {
 	/// `None` can be used to delete a value specified by the given key.
 	///
 	/// Can be rolled back or committed when called inside a transaction.
+	#[cfg(not(feature = "typed-cache"))]
 	pub(crate) fn set_child_storage(
 		&mut self,
 		child_info: &ChildInfo,
@@ -520,6 +583,24 @@ impl OverlayedChanges {
 		let extrinsic_index = self.extrinsic_index();
 		let size_write = val.as_ref().map(|x| x.len() as u64).unwrap_or(0);
 		self.stats.tally_write_overlay(size_write);
+		let storage_key = child_info.storage_key().to_vec();
+		let top = &self.top;
+		let (changeset, info) = self
+			.children
+			.entry(storage_key)
+			.or_insert_with(|| (top.spawn_child(), child_info.clone()));
+		let updatable = info.try_update(child_info);
+		debug_assert!(updatable);
+		changeset.set(key, val, extrinsic_index);
+	}
+	#[cfg(feature = "typed-cache")]
+	pub(crate) fn set_child_storage(
+		&mut self,
+		child_info: &ChildInfo,
+		key: StorageKey,
+		val: Option<StorageValue>,
+	) {
+		let extrinsic_index = self.extrinsic_index();
 		let storage_key = child_info.storage_key().to_vec();
 		let top = &self.top;
 		let (changeset, info) = self
@@ -794,9 +875,14 @@ impl OverlayedChanges {
 	}
 
 	/// Inserts storage entry responsible for current extrinsic index.
-	#[cfg(test)]
+	#[cfg(all(test, not(feature = "typed-cache")))]
 	pub(crate) fn set_extrinsic_index(&mut self, extrinsic_index: u32) {
 		self.top.set(EXTRINSIC_INDEX.to_vec(), Some(extrinsic_index.encode()), None);
+	}
+
+	#[cfg(all(test, feature = "typed-cache"))]
+	pub(crate) fn set_extrinsic_index(&mut self, extrinsic_index: u32) {
+		self.top.put_t(EXTRINSIC_INDEX, extrinsic_index);
 	}
 
 	/// Returns current extrinsic index to use in changes trie construction.
@@ -807,11 +893,18 @@ impl OverlayedChanges {
 	/// `NO_EXTRINSIC_INDEX` index.
 	fn extrinsic_index(&self) -> Option<u32> {
 		match self.collect_extrinsics {
-			true => Some(
-				self.storage(EXTRINSIC_INDEX)
-					.and_then(|idx| idx.and_then(|idx| Decode::decode(&mut &*idx).ok()))
-					.unwrap_or(NO_EXTRINSIC_INDEX),
-			),
+			true => {
+				#[cfg(not(feature = "typed-cache"))]
+				{
+					Some(
+						self.storage(EXTRINSIC_INDEX)
+							.and_then(|idx| idx.and_then(|idx| Decode::decode(&mut idx.as_slice()).ok()))
+							.unwrap_or(NO_EXTRINSIC_INDEX)
+					)
+				}
+				#[cfg(feature = "typed-cache")]
+				Some(self.top.get_t::<u32>(EXTRINSIC_INDEX)?.unwrap_or(NO_EXTRINSIC_INDEX))
+			},
 			false => None,
 		}
 	}
@@ -829,9 +922,9 @@ impl OverlayedChanges {
 	where
 		H::Out: Ord + Encode,
 	{
-		let delta = self.changes().map(|(k, v)| (&k[..], v.value().map(|v| &v[..])));
+		let delta = self.changes().map(|(k, v)| (&k[..], v.value()));
 		let child_delta = self.children().map(|(changes, info)| {
-			(info, changes.map(|(k, v)| (&k[..], v.value().map(|v| &v[..]))))
+			(info, changes.map(|(k, v)| (&k[..], v.value())))
 		});
 
 		let (root, transaction) = backend.full_storage_root(delta, child_delta, state_version);
@@ -1117,7 +1210,7 @@ mod tests {
 		overlay.set_storage(b"doug".to_vec(), None);
 
 		let mut cache = StorageTransactionCache::default();
-		let mut ext = Ext::new(None, &mut overlay, &mut cache, &backend, None);
+		let mut ext = Ext::new(&mut overlay, &mut cache, &backend, None);
 		let root = array_bytes::hex2bytes_unchecked(
 			"39245109cef3758c2eed2ccba8d9b370a917850af3824bc8348d505df2c298fa",
 		);

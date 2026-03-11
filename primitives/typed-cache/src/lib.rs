@@ -1,11 +1,14 @@
 #![cfg_attr(not(feature = "std"), no_std)]
-pub mod static_cache;
 pub mod overlayed_changes;
 pub mod traits;
+#[cfg(not(feature = "sync"))]
 pub mod rc_wrapper;
-
+#[cfg(feature = "sync")]
+pub mod sync_wrapper;
+#[cfg(not(feature = "sync"))]
 pub use rc_wrapper::*;
-pub use static_cache::*;
+#[cfg(feature = "sync")]
+pub use sync_wrapper::*;
 pub use overlayed_changes::*;
 pub use traits::*;
 

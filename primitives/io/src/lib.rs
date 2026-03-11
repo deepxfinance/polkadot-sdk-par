@@ -73,13 +73,12 @@ use secp256k1::{
 	ecdsa::{RecoverableSignature, RecoveryId},
 	Message, SECP256K1,
 };
-#[cfg(feature = "std")]
-use sp_state_machine::OverlayCache;
 
 #[cfg(feature = "std")]
 use sp_externalities::{Externalities, ExternalitiesExt};
 
 pub use sp_externalities::MultiRemovalResults;
+use typed_cache::{OverlayCache, RawValue};
 
 #[cfg(feature = "std")]
 const LOG_TARGET: &str = "runtime::io";
@@ -119,7 +118,6 @@ impl From<MultiRemovalResults> for KillStorageResult {
 	}
 }
 
-#[cfg(feature = "std")]
 /// Returns the typed cache for only `std` feature.
 pub fn mut_typed_cache<F, O>(f: F) -> Option<O>
 where
@@ -133,7 +131,6 @@ where
 	)
 }
 
-#[cfg(feature = "std")]
 /// Returns the typed cache for only `std` feature.
 pub fn mut_externalities<F, O>(f: F) -> O
 where
@@ -147,8 +144,8 @@ where
 #[runtime_interface]
 pub trait Storage {
 	/// Returns the data for `key` in the storage or `None` if the key can not be found.
-	fn get(&self, key: &[u8]) -> Option<bytes::Bytes> {
-		self.storage(key).map(|s| bytes::Bytes::from(s.to_vec()))
+	fn get(&mut self, key: &[u8]) -> Option<bytes::Bytes> {
+		self.storage(key).and_then(|s| s.get_raw(true).map(|s| bytes::Bytes::from(s.to_vec())))
 	}
 
 	/// Get `key` from storage, placing the value into `value_out` and return the number of
@@ -156,9 +153,10 @@ pub trait Storage {
 	/// doesn't exist at all.
 	/// If `value_out` length is smaller than the returned length, only `value_out` length bytes
 	/// are copied into `value_out`.
-	fn read(&self, key: &[u8], value_out: &mut [u8], value_offset: u32) -> Option<u32> {
+	fn read(&mut self, key: &[u8], value_out: &mut [u8], value_offset: u32) -> Option<u32> {
 		self.storage(key).map(|value| {
 			let value_offset = value_offset as usize;
+			let value = value.get_raw(true).unwrap_or_default();
 			let data = &value[value_offset.min(value.len())..];
 			let written = std::cmp::min(data.len(), value_out.len());
 			value_out[..written].copy_from_slice(&data[..written]);
@@ -168,7 +166,7 @@ pub trait Storage {
 
 	/// Set `key` to `value` in the storage.
 	fn set(&mut self, key: &[u8], value: &[u8]) {
-		self.set_storage(key.to_vec(), value.to_vec());
+		self.set_storage(key.to_vec(), value.to_vec().into());
 	}
 
 	/// Clear the storage of the given `key` and its value.
@@ -177,7 +175,7 @@ pub trait Storage {
 	}
 
 	/// Check whether the given `key` exists in storage.
-	fn exists(&self, key: &[u8]) -> bool {
+	fn exists(&mut self, key: &[u8]) -> bool {
 		self.exists_storage(key)
 	}
 
@@ -355,7 +353,7 @@ pub trait DefaultChildStorage {
 	/// parent trie. Result is `None` if the value for `key` in the child storage can not be found.
 	fn get(&self, storage_key: &[u8], key: &[u8]) -> Option<Vec<u8>> {
 		let child_info = ChildInfo::new_default(storage_key);
-		self.child_storage(&child_info, key).map(|s| s.to_vec())
+		self.child_storage(&child_info, key).map(|s| s.get_raw(true))?
 	}
 
 	/// Allocation efficient variant of `get`.
@@ -375,6 +373,7 @@ pub trait DefaultChildStorage {
 		let child_info = ChildInfo::new_default(storage_key);
 		self.child_storage(&child_info, key).map(|value| {
 			let value_offset = value_offset as usize;
+			let value = value.get_raw(true).unwrap_or_default();
 			let data = &value[value_offset.min(value.len())..];
 			let written = std::cmp::min(data.len(), value_out.len());
 			value_out[..written].copy_from_slice(&data[..written]);
@@ -387,7 +386,7 @@ pub trait DefaultChildStorage {
 	/// Set `key` to `value` in the child storage denoted by `storage_key`.
 	fn set(&mut self, storage_key: &[u8], key: &[u8], value: &[u8]) {
 		let child_info = ChildInfo::new_default(storage_key);
-		self.set_child_storage(&child_info, key.to_vec(), value.to_vec());
+		self.set_child_storage(&child_info, key.to_vec(), value.to_vec().into());
 	}
 
 	/// Clear a child storage key.

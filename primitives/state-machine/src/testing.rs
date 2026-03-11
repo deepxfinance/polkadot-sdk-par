@@ -45,7 +45,6 @@ where
 	H: Hasher + 'static,
 	H::Out: codec::Codec + Ord,
 {
-	cache: OverlayCache,
 	/// The overlay changed storage.
 	overlay: OverlayedChanges,
 	offchain_db: TestPersistentOffchainDB,
@@ -67,7 +66,6 @@ where
 	/// Get externalities implementation.
 	pub fn ext(&mut self) -> Ext<H, InMemoryBackend<H>> {
 		Ext::new(
-			Some(&mut self.cache),
 			&mut self.overlay,
 			&mut self.storage_transaction_cache,
 			&self.backend,
@@ -111,7 +109,6 @@ where
 		let backend = (storage, state_version).into();
 
 		TestExternalities {
-			cache: OverlayCache::default(),
 			overlay: OverlayedChanges::default(),
 			offchain_db,
 			extensions: Default::default(),
@@ -170,7 +167,7 @@ where
 	/// does not need to be computed.
 	pub fn from_raw_snapshot(&mut self, raw_storage: Vec<(H::Out, Vec<u8>)>, storage_root: H::Out) {
 		for (k, v) in raw_storage {
-			self.backend.backend_storage_mut().emplace(k, hash_db::EMPTY_PREFIX, v);
+			self.backend.backend_storage_mut().emplace(k, hash_db::EMPTY_PREFIX, v.into());
 		}
 		self.backend.set_root(storage_root);
 	}
@@ -181,12 +178,16 @@ where
 	///
 	/// Note: This DB will be inoperable after this call.
 	pub fn into_raw_snapshot(mut self) -> (Vec<(H::Out, Vec<u8>)>, H::Out) {
-		let raw_key_values = self
+		let raw_iter = self
 			.backend
 			.backend_storage_mut()
 			.drain()
-			.into_iter()
-			.map(|(k, v)| (k, v.0))
+			.into_iter();
+		#[cfg(not(feature = "typed-cache"))]
+		let raw_key_values = raw_iter.map(|(k, v)| (k, v.0))
+			.collect::<Vec<(H::Out, Vec<u8>)>>();;
+		#[cfg(feature = "typed-cache")]
+		let raw_key_values = raw_iter.map(|(k, v)| (k, v.0.get_raw(false).unwrap()))
 			.collect::<Vec<(H::Out, Vec<u8>)>>();
 
 		(raw_key_values, *self.backend.root())
@@ -246,7 +247,6 @@ where
 			.with_recorder(Default::default())
 			.build();
 		let mut proving_ext = Ext::new(
-			None,
 			&mut self.overlay,
 			&mut self.storage_transaction_cache,
 			&proving_backend,

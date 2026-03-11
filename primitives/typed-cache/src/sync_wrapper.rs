@@ -1,72 +1,30 @@
-use codec::{Decode, Encode, Error};
-use downcast_rs::{impl_downcast, Downcast};
+use codec::{Decode, Encode};
+use downcast_rs::{impl_downcast, DowncastSync};
 use sp_std::fmt::{self, Debug, Formatter};
-use sp_std::hash::{Hash, Hasher};
 use sp_std::ops::{Deref, DerefMut};
-use sp_std::cell::RefCell;
-use sp_std::rc::Rc;
+use sp_std::sync::Arc;
 use sp_std::boxed::Box;
+use parking_lot::RwLock;
 #[cfg(not(feature = "std"))]
-use sp_std::vec::{self, Vec};
+use sp_std::vec::Vec;
 use crate::TStorageOverlay;
 
-pub trait RawValue: Downcast {
+pub trait RawValue: DowncastSync {
     fn clone_ref(&self) -> Box<dyn RawValue>;
     fn clone_box(&self) -> Box<dyn RawValue>;
     fn muted(&self) -> bool;
-    fn set_muted(&mut self, muted: bool);
+    fn set_muted(&self, muted: bool);
     fn exists(&self) -> bool;
-    fn kill(&mut self) -> bool;
+    fn kill(&self) -> bool;
     fn put_raw(&self, value: Vec<u8>, cache: bool) -> Result<(), codec::Error>;
     fn get_raw(&self, cache: bool) -> Option<Vec<u8>>;
-    fn take_raw(&mut self) -> Option<Vec<u8>>;
 }
 
-impl_downcast!(RawValue);
+impl_downcast!(sync RawValue);
 
 impl Clone for Box<dyn RawValue> {
     fn clone(&self) -> Self {
         self.clone_box()
-    }
-}
-
-impl RawValue for Vec<u8> {
-    fn clone_ref(&self) -> Box<dyn RawValue> {
-        unimplemented!("Not support for Vec<u8>")
-    }
-
-    fn clone_box(&self) -> Box<dyn RawValue> {
-        Box::new(self.clone())
-    }
-
-    fn muted(&self) -> bool {
-        unimplemented!("Not support for Vec<u8>")
-    }
-
-    fn set_muted(&mut self, _muted: bool) {
-        unimplemented!("Not support for Vec<u8>")
-    }
-
-    fn exists(&self) -> bool {
-        true
-    }
-
-    fn kill(&mut self) -> bool {
-        unimplemented!("Not support for Vec<u8>")
-    }
-
-    fn put_raw(&self, _value: Vec<u8>, _cache: bool) -> Result<(), Error> {
-        unimplemented!("Not support for Vec<u8>")
-    }
-
-    fn get_raw(&self, _cache: bool) -> Option<Vec<u8>> {
-        Some(self.clone())
-    }
-    
-    fn take_raw(&mut self) -> Option<Vec<u8>> {
-        let res = self.clone();
-        self.clear();
-        Some(res)
     }
 }
 
@@ -76,15 +34,6 @@ pub type AnyRc = Box<dyn RawValue>;
 pub enum StorageValue {
     Raw(RcT<Vec<u8>>),
     Any(Box<dyn RawValue>),
-}
-
-unsafe impl Sync for StorageValue {}
-unsafe impl Send for StorageValue {}
-
-impl Hash for StorageValue {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.get_raw(true).hash(state);
-    }
 }
 
 impl Default for StorageValue {
@@ -108,12 +57,6 @@ impl Debug for StorageValue {
     }
 }
 
-impl AsRef<[u8]> for StorageValue {
-    fn as_ref(&self) -> &[u8] {
-        panic!("TypedStorageValue not support `AsRef<[u8]>`")
-    }
-}
-
 impl StorageValue {
     pub fn new_raw(value: Option<Vec<u8>>, muted: bool) -> StorageValue {
         Self::Raw(RcT::new(value, muted))
@@ -123,13 +66,6 @@ impl StorageValue {
         Self::Any(Box::new(RcT::new(value, muted)))
     }
 
-    pub fn is_raw(&self) -> bool {
-        match self {
-            Self::Any(_) => false,
-            Self::Raw(_) => true,
-        }
-    }
-    
     pub fn clone_ref(&self) -> Self {
         match self {
             Self::Raw(r) => Self::Raw(r.clone_ref()),
@@ -151,16 +87,16 @@ impl StorageValue {
         }
     }
 
-    pub fn set_muted(&mut self, muted: bool) {
+    pub fn set_muted(&self, muted: bool) {
         match self {
             Self::Raw(rct) => {
-                rct.0.borrow_mut().muted = muted;
+                rct.0.write().muted = muted;
             },
             Self::Any(rct) => rct.set_muted(muted)
         }
     }
 
-    pub fn kill(&mut self) -> bool {
+    pub fn kill(&self) -> bool {
         match self {
             Self::Raw(rct) => rct.kill(),
             Self::Any(rct) => rct.kill(),
@@ -183,26 +119,10 @@ impl StorageValue {
             Self::Any(rct) => rct.get_raw(cache),
         }
     }
-    
-    pub fn take_raw(&mut self) -> Option<Vec<u8>> {
-        match self {
-            Self::Raw(rct) => rct.take_value(),
-            Self::Any(rct) => rct.take_raw(),
-        }
-    }
 
-    pub fn get_option_encoded(&self, cache: bool) -> Vec<u8> {
-        match self {
-            Self::Raw(rct) => rct.clone_inner(),
-            Self::Any(rct) => rct.get_raw(cache),
-        }
-            .map(|v| [vec![1], v].concat())
-            .unwrap_or(vec![0])
-    }
-    
     pub fn downcast<T: TStorageOverlay>(self) -> RcT<T> {
         match self {
-            Self::Raw(mut raw) => {
+            Self::Raw(raw) => {
                 RcT::<T>::new(
                     raw.take_value()
                         .map(|v| Decode::decode(&mut v.as_slice()).expect("invalid Raw value")),
@@ -214,7 +134,7 @@ impl StorageValue {
             }
         }
     }
-    
+
     pub fn downcast_mut<T: TStorageOverlay>(&mut self) -> &mut RcT<T> {
         match self {
             Self::Raw(raw) => {
@@ -233,7 +153,20 @@ impl StorageValue {
     }
 
     pub fn get_ref<T: TStorageOverlay>(&mut self) -> RcT<T> {
-        self.downcast_mut().clone_ref()
+        match self {
+            Self::Raw(raw) => {
+                let rct = RcT::<T>::new(
+                    raw.take_value()
+                        .map(|v| Decode::decode(&mut v.as_slice()).expect("invalid Raw value")),
+                    raw.muted()
+                );
+                *self = Self::Any(Box::new(rct));
+                self.get_ref()
+            },
+            Self::Any(any) => {
+                *any.clone_ref().downcast::<RcT<T>>().map_err(|_| "invalid T").unwrap()
+            }
+        }
     }
 
     pub fn get_muted_ref<T: TStorageOverlay>(&mut self) -> Option<RcT<T>> {
@@ -245,7 +178,7 @@ impl StorageValue {
         if !self.muted() { return None; }
         self.get_t()
     }
-    
+
     pub fn get_t<T: TStorageOverlay>(&self) -> Option<T> {
         match self {
             Self::Raw(raw) => {
@@ -258,7 +191,7 @@ impl StorageValue {
             }
         }
     }
-    
+
     pub fn take_t<T: TStorageOverlay>(&mut self) -> Option<T> {
         match self {
             Self::Raw(raw) => {
@@ -273,21 +206,10 @@ impl StorageValue {
         }
     }
 }
-impl From<&Vec<u8>> for StorageValue {
-    fn from(value: &Vec<u8>) -> Self {
-        Self::new_raw(Some(value.clone()), false)
-    }
-}
 
-impl From<Vec<u8>> for StorageValue {
-    fn from(value: Vec<u8>) -> Self {
-        Self::new_raw(Some(value), false)
-    }
-}
-
-impl From<&[u8]> for StorageValue {
-    fn from(value: &[u8]) -> Self {
-        Self::new_raw(Some(value.to_vec()), false)
+impl<T: AsRef<[u8]>> From<T> for StorageValue {
+    fn from(value: T) -> Self {
+        Self::new_raw(Some(value.as_ref().to_vec()), false)
     }
 }
 
@@ -330,13 +252,13 @@ impl<T> DerefMut for MutT<T> {
 /// ERROR: `DO NOT` use this reference cross `Transactional`.
 /// Including transfer `input ot` or `output from` `Transactional` code block.
 /// If you did, you will find the value is not changed as expected.
-pub struct RcT<T>(Rc<RefCell<MutT<T>>>);
+pub struct RcT<T>(Arc<RwLock<MutT<T>>>);
 
 impl<T: TStorageOverlay> RawValue for RcT<T> {
     fn clone_ref(&self) -> Box<dyn RawValue> {
         Box::new(self.clone_ref())
     }
-    
+
     fn clone_box(&self) -> Box<dyn RawValue> {
         Box::new(self.clone())
     }
@@ -345,15 +267,16 @@ impl<T: TStorageOverlay> RawValue for RcT<T> {
         self.muted()
     }
 
-    fn set_muted(&mut self, muted: bool) {
-        self.0.borrow_mut().muted = muted;
+    fn set_muted(&self, muted: bool) {
+        self.0.write().muted = muted;
     }
 
     fn exists(&self) -> bool {
-        RefCell::borrow(&self.0).inner.is_some() || RefCell::borrow(&self.0).raw.is_some()
+        let mut_t = self.0.read();
+        mut_t.inner.is_some() || mut_t.raw.is_some()
     }
 
-    fn kill(&mut self) -> bool {
+    fn kill(&self) -> bool {
         self.mutate(|v| v.take().is_some())
     }
 
@@ -364,20 +287,16 @@ impl<T: TStorageOverlay> RawValue for RcT<T> {
     fn get_raw(&self, cache: bool) -> Option<Vec<u8>> {
         self.get_raw(cache)
     }
-
-    fn take_raw(&mut self) -> Option<Vec<u8>> {
-        self.take_value().map(|v| v.encode())
-    }
 }
 
 impl<T: Debug> Debug for RcT<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        Debug::fmt(&RefCell::borrow(&self.0).inner, f)
+        Debug::fmt(&self.0.read().inner, f)
     }
 }
 
 impl<T> Deref for RcT<T> {
-    type Target = Rc<RefCell<MutT<T>>>;
+    type Target = Arc<RwLock<MutT<T>>>;
     fn deref(&self) -> &Self::Target {
         &self.0
     }
@@ -386,7 +305,7 @@ impl<T> Deref for RcT<T> {
 /// Default clone all inner data.
 impl<T: Clone> Clone for RcT<T> {
     fn clone(&self) -> Self {
-        RcT(Rc::new(RefCell::new(RefCell::borrow(&self.0).clone())))
+        RcT(Arc::new(RwLock::new(self.0.read().clone())))
     }
 }
 
@@ -395,29 +314,29 @@ pub struct Never;
 
 impl<T> RcT<T> {
     pub fn new(t: Option<T>, muted: bool) -> Self {
-        RcT(Rc::new(RefCell::new(MutT { inner: t, raw: None, muted })))
+        RcT(Arc::new(RwLock::new(MutT { inner: t, raw: None, muted })))
     }
 
-    pub fn take_value(&mut self) -> Option<T> {
+    pub fn take_value(&self) -> Option<T> {
         self.mutate(|v| v.take())
     }
 
     /// Mark storage as not changed.
     ///
     /// `Invalid` for `no_std` environment.
-    pub fn clear_muted(&mut self) {
-        self.0.borrow_mut().muted = false;
+    pub fn clear_muted(&self) {
+        self.0.write().muted = false;
     }
 
     /// Return inner state if the value is changed.
     /// Only valid at this crate for inner value change detect.
     pub(crate) fn muted(&self) -> bool {
-        RefCell::borrow(&self.0).muted
+        self.0.read().muted
     }
 
     /// Apply a closure for inner value reference.
     pub fn map<O>(&self, f: impl FnOnce(&Option<T>) -> O) -> O {
-        f(&RefCell::borrow(&self.0).deref().inner)
+        f(&self.0.read().inner)
     }
 
     /// Mutate inner optional `Value` withing input closure.
@@ -435,8 +354,8 @@ impl<T> RcT<T> {
     /// The result correctness is not ensured!
     /// `DO NOT` change inner `Value` if your closure return `Error`
     pub fn try_mutate<R, E>(&self, f: impl FnOnce(&mut Option<T>) -> Result<R, E>) -> Result<R, E> {
-        let mut mut_inner = self.0.borrow_mut();
-        let res = f(&mut mut_inner.deref_mut().inner);
+        let mut mut_inner = self.0.write();
+        let res = f(&mut mut_inner.inner);
         if res.is_ok() {
             mut_inner.raw.take();
             mut_inner.muted = true;
@@ -449,11 +368,11 @@ impl<T> RcT<T> {
     }
 
     pub fn into_inner(self) -> Result<Option<T>, u32> {
-        let rc_count = Rc::strong_count(&self.0);
+        let rc_count = Arc::strong_count(&self.0);
         if rc_count > 1 {
             Err(rc_count as u32)
         } else {
-            Ok(Rc::into_inner(self.0).map(|r| r.into_inner().inner).unwrap_or_default())
+            Ok(Arc::into_inner(self.0).map(|r| r.into_inner().inner).unwrap_or_default())
         }
     }
 }
@@ -461,7 +380,7 @@ impl<T> RcT<T> {
 impl<T: Default> RcT<T> {
     /// Apply a closure for inner value reference.
     pub fn map_value_query<O>(&self, f: impl FnOnce(&T) -> O) -> O {
-        if let Some(value) = RefCell::borrow(&self.0).deref().inner.as_ref() {
+        if let Some(value) = self.0.read().inner.as_ref() {
             f(value)
         } else {
             f(&T::default())
@@ -485,14 +404,14 @@ impl<T: Default> RcT<T> {
     /// `DO NOT` use this function if the storage type is not `ValueQuery`
     /// `DO NOT` change inner `Value` if your closure return `Error`
     pub fn try_mutate_value_query<R, E>(&mut self, f: impl FnOnce(&mut T) -> Result<R, E>) -> Result<R, E> {
-        let mut mut_inner = self.0.borrow_mut();
+        let mut mut_inner = self.0.write();
         let res = if let Some(inner) = mut_inner.as_mut() {
             f(inner)
         } else {
             let mut tmp = T::default();
             let res = f(&mut tmp);
             if res.is_ok() {
-                mut_inner.deref_mut().inner = Some(tmp);
+                mut_inner.inner = Some(tmp);
             }
             res
         };
@@ -507,13 +426,13 @@ impl<T: Default> RcT<T> {
 
 impl<T: Clone> RcT<T> {
     pub fn clone_inner(&self) -> Option<T> {
-        RefCell::borrow(&self.0).inner.clone()
+        self.0.read().inner.clone()
     }
 }
 
 impl<T: Decode> RcT<T> {
     pub fn put_raw(&self, value: Vec<u8>, cache: bool) -> Result<(), codec::Error> {
-        let mut mut_inner = self.0.borrow_mut();
+        let mut mut_inner = self.0.write();
         // `inner` is the main data, we `MUST` update it.
         mut_inner.inner = Some(T::decode(&mut value.as_slice())?);
         if cache {
@@ -526,7 +445,7 @@ impl<T: Decode> RcT<T> {
 
 impl<T: Encode> RcT<T> {
     pub fn get_raw(&self, cache: bool) -> Option<Vec<u8>> {
-        let mut mut_inner = self.0.borrow_mut();
+        let mut mut_inner = self.0.write();
         if let Some(raw_value) = &mut_inner.raw {
             Some(raw_value.clone())
         } else if let Some(raw_value) = mut_inner.inner.as_ref().map(|t| t.encode()) {

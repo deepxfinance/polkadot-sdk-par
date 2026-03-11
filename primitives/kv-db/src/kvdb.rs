@@ -43,7 +43,7 @@ impl <'db, 'cache, H: Hasher> KVDB<'db, 'cache, H> {
         let cache = self.cache.as_ref().map(|c| c.borrow_mut());
         if let Some(mut c) = cache {
             if let Some(value) = (*c).lookup_value_for_key(&memory_db::prefixed_key::<H>(&hash, prefix)) {
-                return Ok(value.to_vec());
+                return Ok(value);
             }
         };
         match self.db.get(&hash, prefix) {
@@ -52,7 +52,7 @@ impl <'db, 'cache, H: Hasher> KVDB<'db, 'cache, H> {
                 cache.map(|mut c| {
                     (*c).cache_value_for_key(&memory_db::prefixed_key::<H>(&hash, prefix), value.clone())
                 });
-                Ok(value.to_vec())
+                Ok(value)
             },
             None => Err("not found".into())
         }
@@ -61,7 +61,18 @@ impl <'db, 'cache, H: Hasher> KVDB<'db, 'cache, H> {
     pub fn get_hash(&self, key: &[u8]) -> Result<Option<H::Out>, String> {
         if self.extend_storage_hash(key) {
             return match self.fetch_value(H::hash(key), (key, Some(STORAGE_HASH))) {
-                Ok(base) => Ok(Some(H::hash([base.as_slice(), key].concat().as_slice()))),
+                Ok(base) => {
+                    #[cfg(not(feature = "typed-cache"))]
+                    { Ok(Some(H::hash([base.as_slice(), key].concat().as_slice()))) }
+                    #[cfg(feature = "typed-cache")]
+                    match base.get_raw(true) {
+                        Some(base) => {
+                            Ok(Some(H::hash(base.as_slice())))
+                        },
+                        None => return Ok(None)
+                    }
+
+                },
                 Err(_) => Ok(None),
             }
         }
@@ -74,14 +85,22 @@ impl <'db, 'cache, H: Hasher> KVDB<'db, 'cache, H> {
 
 impl<'db, 'cache, H: Hasher> KV<H> for KVDB<'db, 'cache, H> {
     fn get(&self, key: &[u8]) -> Option<DBValue> {
-        match self.fetch_value(H::hash(key), (key, None)).ok() {
-            Some(v) => if v.is_empty() {
-                None
-            } else {
-                Some(v)
-            },
-            None => None
+        let v = self.fetch_value(H::hash(key), (key, None)).ok()?;
+        #[cfg(feature = "typed-cache")]
+        return Some(v);
+        #[cfg(not(feature = "typed-cache"))]
+        if v.is_empty() {
+            None
+        } else {
+            Some(v)
         }
+    }
+
+    fn contains(&self, key: &[u8]) -> bool {
+        #[cfg(not(feature = "typed-cache"))]
+        { self.get(key).is_some() }
+        #[cfg(feature = "typed-cache")]
+        self.get(key).map(|v| v.exists()).unwrap_or(false)
     }
 }
 

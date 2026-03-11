@@ -1383,12 +1383,12 @@ impl<T: Config> Pallet<T> {
 		// populate environment
 		ExecutionPhase::<T>::put(Phase::Initialization);
 		#[cfg(feature = "std")]
-		storage::unhashed::put_cache(well_known_keys::EXTRINSIC_INDEX, 0u32);
+		storage::unhashed::put(well_known_keys::EXTRINSIC_INDEX, 0u32);
 		#[cfg(not(feature = "std"))]
 		storage::unhashed::put(well_known_keys::EXTRINSIC_INDEX, &0u32);
 		let entropy = (b"frame_system::initialize", parent_hash).using_encoded(blake2_256);
 		#[cfg(feature = "std")]
-		storage::unhashed::put_cache(well_known_keys::INTRABLOCK_ENTROPY, entropy);
+		storage::unhashed::put(well_known_keys::INTRABLOCK_ENTROPY, entropy);
 		#[cfg(not(feature = "std"))]
 		storage::unhashed::put_raw(well_known_keys::INTRABLOCK_ENTROPY, &entropy[..]);
 		<Number<T>>::put(*number);
@@ -1470,7 +1470,7 @@ impl<T: Config> Pallet<T> {
 		ExecutionPhase::<T>::kill();
 		AllExtrinsicsLen::<T>::kill();
 		#[cfg(feature = "std")]
-		storage::unhashed::kill_cache::<[u8; 32]>(well_known_keys::INTRABLOCK_ENTROPY);
+		storage::unhashed::kill::<[u8; 32]>(well_known_keys::INTRABLOCK_ENTROPY);
 		#[cfg(not(feature = "std"))]
 		storage::unhashed::kill(well_known_keys::INTRABLOCK_ENTROPY);
 
@@ -1600,7 +1600,7 @@ impl<T: Config> Pallet<T> {
 	#[cfg(any(feature = "std", test))]
 	pub fn set_extrinsic_index(extrinsic_index: u32) {
 		#[cfg(feature = "std")]
-		storage::unhashed::put_cache(well_known_keys::EXTRINSIC_INDEX, extrinsic_index);
+		storage::unhashed::put(well_known_keys::EXTRINSIC_INDEX, extrinsic_index);
 		#[cfg(not(feature = "std"))]
 		storage::unhashed::put(well_known_keys::EXTRINSIC_INDEX, &extrinsic_index)
 	}
@@ -1734,7 +1734,7 @@ impl<T: Config> Pallet<T> {
 	pub fn note_finished_extrinsics() {
 		#[cfg(feature = "std")]
 		let extrinsic_index: u32 =
-			storage::unhashed::take_cache(well_known_keys::EXTRINSIC_INDEX).unwrap_or_default();
+			storage::unhashed::take(well_known_keys::EXTRINSIC_INDEX).unwrap_or_default();
 		#[cfg(not(feature = "std"))]
 		let extrinsic_index: u32 =
 			storage::unhashed::take(well_known_keys::EXTRINSIC_INDEX).unwrap_or_default();

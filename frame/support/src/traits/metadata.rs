@@ -202,6 +202,9 @@ impl StorageVersion {
 	pub fn put<P: PalletInfoAccess>(&self) {
 		let key = Self::storage_key::<P>();
 
+		#[cfg(feature = "std")]
+		crate::storage::unhashed::put(&key, self.clone());
+		#[cfg(not(feature = "std"))]
 		crate::storage::unhashed::put(&key, self);
 	}
 

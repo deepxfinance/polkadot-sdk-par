@@ -17,7 +17,7 @@
 
 //! Houses the code that implements the transactional overlay storage.
 
-use super::{Changes, Extrinsics, StorageKey, StorageValue};
+use super::{Extrinsics, StorageKey};
 
 #[cfg(not(feature = "std"))]
 use sp_std::collections::btree_set::BTreeSet as Set;
@@ -30,6 +30,10 @@ use sp_std::{
 	collections::{btree_map::BTreeMap, btree_set::BTreeSet},
 	hash::Hash, vec::Vec,
 };
+
+pub type StorageValue = Vec<u8>;
+
+pub type Changes = sp_std::collections::btree_map::BTreeMap<StorageKey, OverlayedEntry<Option<StorageValue>>>;
 
 const PROOF_OVERLAY_NON_EMPTY: &str = "\
 	An OverlayValue is always created with at least one transaction and dropped as soon

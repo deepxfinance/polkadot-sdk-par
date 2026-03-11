@@ -35,8 +35,12 @@ use sp_trie::{
 	child_delta_trie_root, delta_trie_root, empty_child_trie_root, read_child_trie_hash,
 	read_child_trie_value, read_trie_value,
 	trie_types::{TrieDBBuilder, TrieError},
-	DBValue, KeySpacedDB, NodeCodec, Trie, TrieCache, TrieDBRawIterator, TrieRecorder,
+	KeySpacedDB, NodeCodec, Trie, TrieCache, TrieDBRawIterator, TrieRecorder,
 };
+#[cfg(not(feature = "typed-cache"))]
+use sp_trie::DBValue;
+#[cfg(feature = "typed-cache")]
+use typed_cache::StorageValue as DBValue;
 #[cfg(feature = "std")]
 use std::{collections::HashMap, sync::Arc};
 #[cfg(feature = "kvdb")]
@@ -112,29 +116,34 @@ where
 			&mut TrieDBRawIterator<Layout<H>>,
 		) -> Option<core::result::Result<R, Box<TrieError<<H as Hasher>::Out>>>>,
 	) -> Option<Result<R>> {
-		if !matches!(self.state, IterState::Pending) {
-			return None
-		}
+		#[cfg(feature = "kvdb")]
+		return Some(Err("`RawIter::prepare` unsupported".to_string()));
+		#[cfg(not(feature = "kvdb"))]
+		{
+			if !matches!(self.state, IterState::Pending) {
+				return None;
+			}
 
-		let result = backend.with_trie_db(self.root, self.child_info.as_ref(), |db| {
-			callback(&db, &mut self.trie_iter)
-		});
-		match result {
-			Some(Ok(key_value)) => Some(Ok(key_value)),
-			None => {
-				self.state = IterState::FinishedComplete;
-				None
-			},
-			Some(Err(error)) => {
-				self.state = IterState::FinishedIncomplete;
-				if matches!(*error, TrieError::IncompleteDatabase(_)) &&
-					self.stop_on_incomplete_database
-				{
+			let result = backend.with_trie_db(self.root, self.child_info.as_ref(), |db| {
+				callback(&db, &mut self.trie_iter)
+			});
+			match result {
+				Some(Ok(key_value)) => Some(Ok(key_value)),
+				None => {
+					self.state = IterState::FinishedComplete;
 					None
-				} else {
-					Some(Err(format!("TrieDB iteration error: {}", error)))
 				}
-			},
+				Some(Err(error)) => {
+					self.state = IterState::FinishedIncomplete;
+					if matches!(*error, TrieError::IncompleteDatabase(_)) &&
+						self.stop_on_incomplete_database
+					{
+						None
+					} else {
+						Some(Err(format!("TrieDB iteration error: {}", error)))
+					}
+				}
+			}
 		}
 	}
 }
@@ -194,7 +203,7 @@ where
 					}
 				}
 			}
-			result
+			result.map(|r| r.map(|(k, v)| (k, v.into())))
 		})
 	}
 
@@ -386,7 +395,7 @@ impl<S: TrieBackendStorage<H>, H: Hasher, C: AsLocalTrieCache<H>> TrieBackendEss
 	}
 
 	/// Call the given closure passing it the cache.
-	#[cfg(all(feature = "std", feature = "kvdb"))]
+	#[cfg(feature = "kvdb")]
 	#[inline]
 	fn with_kv_cache<R>(
 		&self,
@@ -422,6 +431,7 @@ where
 	/// Calls the given closure with a [`TrieDb`] constructed for the given
 	/// storage root and (optionally) child trie.
 	#[inline]
+	#[cfg(not(feature = "typed-cache"))]
 	fn with_trie_db<R>(
 		&self,
 		root: H::Out,
@@ -451,6 +461,7 @@ where
 	/// Used only when debug assertions are enabled to crosscheck the results of finding
 	/// the next key through an iterator.
 	#[cfg(debug_assertions)]
+	#[cfg(not(feature = "kvdb"))]
 	pub fn next_storage_key_slow(&self, key: &[u8]) -> Result<Option<StorageKey>> {
 		self.next_storage_key_from_root(&self.root, None, key)
 	}
@@ -464,6 +475,7 @@ where
 			}
 		}
 
+		#[cfg(not(feature = "typed-cache"))]
 		let result = self.storage(child_info.prefixed_storage_key().as_slice())?.map(|r| {
 			let mut hash = H::Out::default();
 
@@ -472,6 +484,15 @@ where
 
 			hash
 		});
+		#[cfg(feature = "typed-cache")]
+		let result = self.storage(child_info.prefixed_storage_key().as_slice())?.map(|r| r
+			.get_raw(false)
+			.map(|r| {
+				let mut hash = H::Out::default();
+				hash.as_mut().copy_from_slice(&r[..]);
+				hash
+			})
+		).expect("Must Some(StorageValue)");
 
 		#[cfg(feature = "std")]
 		{
@@ -488,15 +509,21 @@ where
 		child_info: &ChildInfo,
 		key: &[u8],
 	) -> Result<Option<StorageKey>> {
-		let child_root = match self.child_root(child_info)? {
-			Some(child_root) => child_root,
-			None => return Ok(None),
-		};
+		#[cfg(feature = "typed-cache")]
+		return Err("`next_child_storage_key` Unsupported".to_string());
+		#[cfg(not(feature = "typed-cache"))]
+		{
+			let child_root = match self.child_root(child_info)? {
+				Some(child_root) => child_root,
+				None => return Ok(None),
+			};
 
-		self.next_storage_key_from_root(&child_root, Some(child_info), key)
+			self.next_storage_key_from_root(&child_root, Some(child_info), key)
+		}
 	}
 
 	/// Return next key from main trie or child trie by providing corresponding root.
+	#[cfg(not(feature = "typed-cache"))]
 	fn next_storage_key_from_root(
 		&self,
 		root: &H::Out,
@@ -535,21 +562,18 @@ where
 	pub fn storage_hash(&self, key: &[u8]) -> Result<Option<H::Out>> {
 		let map_e = |e| format!("Trie lookup error: {}", e);
 
-		self.with_recorder_and_cache(None, |recorder, cache| {
-			TrieDBBuilder::new(self, &self.root)
-				.with_optional_cache(cache)
-				.with_optional_recorder(recorder)
-				.build()
-				.get_hash(key)
-				.map_err(map_e)
-		})
-	}
-
-	/// Returns the hash value
-	#[cfg(feature = "kvdb")]
-	pub fn kv_storage_hash(&self, key: &[u8]) -> Result<Option<H::Out>> {
-		let map_e = |e| format!("Trie lookup error: {}", e);
-
+		#[cfg(not(feature = "kvdb"))]
+		{
+			self.with_recorder_and_cache(None, |recorder, cache| {
+				TrieDBBuilder::new(self, &self.root)
+					.with_optional_cache(cache)
+					.with_optional_recorder(recorder)
+					.build()
+					.get_hash(key)
+					.map_err(map_e)
+			})
+		}
+		#[cfg(feature = "kvdb")]
 		self.with_kv_cache(|cache| {
 			KVDB::new(self, &self.root, cache).get_hash(key).map_err(map_e)
 		})
@@ -557,16 +581,15 @@ where
 
 	/// Get the value of storage at given key.
 	pub fn storage(&self, key: &[u8]) -> Result<Option<StorageValue>> {
-		let map_e = |e| format!("Trie lookup error: {}", e);
+		#[cfg(not(feature = "kvdb"))]
+		{
+			let map_e = |e| format!("Trie lookup error: {}", e);
 
-		self.with_recorder_and_cache(None, |recorder, cache| {
-			read_trie_value::<Layout<H>, _>(self, &self.root, key, recorder, cache).map_err(map_e)
-		})
-	}
-
-	/// Get the value of storage at given key by kv_db.
-	#[cfg(feature = "kvdb")]
-	pub fn kv_storage(&self, key: &[u8]) -> Result<Option<StorageValue>> {
+			self.with_recorder_and_cache(None, |recorder, cache| {
+				read_trie_value::<Layout<H>, _>(self, &self.root, key, recorder, cache).map(|r| r.map(|v| v.into())).map_err(map_e)
+			})
+		}
+		#[cfg(feature = "kvdb")]
 		self.with_kv_cache(|cache| {
 			Ok(KVDB::new(self, &self.root, cache).get(key))
 		})
@@ -574,24 +597,29 @@ where
 
 	/// Returns the hash value
 	pub fn child_storage_hash(&self, child_info: &ChildInfo, key: &[u8]) -> Result<Option<H::Out>> {
-		let child_root = match self.child_root(child_info)? {
-			Some(root) => root,
-			None => return Ok(None),
-		};
+		#[cfg(feature = "kvdb")]
+		return Ok(None);
+		#[cfg(not(feature = "kvdb"))]
+		{
+			let child_root = match self.child_root(child_info)? {
+				Some(root) => root,
+				None => return Ok(None),
+			};
 
-		let map_e = |e| format!("Trie lookup error: {}", e);
+			let map_e = |e| format!("Trie lookup error: {}", e);
 
-		self.with_recorder_and_cache(Some(child_root), |recorder, cache| {
-			read_child_trie_hash::<Layout<H>, _>(
-				child_info.keyspace(),
-				self,
-				&child_root,
-				key,
-				recorder,
-				cache,
-			)
-			.map_err(map_e)
-		})
+			self.with_recorder_and_cache(Some(child_root), |recorder, cache| {
+				read_child_trie_hash::<Layout<H>, _>(
+					child_info.keyspace(),
+					self,
+					&child_root,
+					key,
+					recorder,
+					cache,
+				)
+					.map_err(map_e)
+			})
+		}
 	}
 
 	/// Get the value of child storage at given key.
@@ -600,33 +628,30 @@ where
 		child_info: &ChildInfo,
 		key: &[u8],
 	) -> Result<Option<StorageValue>> {
-		let child_root = match self.child_root(child_info)? {
-			Some(root) => root,
-			None => return Ok(None),
-		};
+		#[cfg(not(feature = "kvdb"))]
+		{
+			let child_root = match self.child_root(child_info)? {
+				Some(root) => root,
+				None => return Ok(None),
+			};
 
-		let map_e = |e| format!("Trie lookup error: {}", e);
+			let map_e = |e| format!("Trie lookup error: {}", e);
 
-		self.with_recorder_and_cache(Some(child_root), |recorder, cache| {
-			read_child_trie_value::<Layout<H>, _>(
-				child_info.keyspace(),
-				self,
-				&child_root,
-				key,
-				recorder,
-				cache,
-			)
-			.map_err(map_e)
-		})
-	}
-
-	/// Get the value of child storage at given key by kv_db.
-	#[cfg(feature = "kvdb")]
-	pub fn kv_child_storage(
-		&self,
-		child_info: &ChildInfo,
-		key: &[u8],
-	) -> Result<Option<StorageValue>> {
+			self.with_recorder_and_cache(Some(child_root), |recorder, cache| {
+				read_child_trie_value::<Layout<H>, _>(
+					child_info.keyspace(),
+					self,
+					&child_root,
+					key,
+					recorder,
+					cache,
+				)
+					.map(|v| v.map(|r| r.into()))
+					.map_err(map_e)
+			})
+		}
+		// Get the value of child storage at given key by kv_db.
+		#[cfg(feature = "kvdb")]
 		self.with_kv_cache(|cache| {
 			let child_key = [child_info.storage_key(), key].concat();
 			Ok(KVDB::new(self, &self.root, cache).get(&child_key))
@@ -634,6 +659,7 @@ where
 	}
 
 	/// Create a raw iterator over the storage.
+	#[cfg(not(feature = "kvdb"))]
 	pub fn raw_iter(&self, args: IterArgs) -> Result<RawIter<S, H, C>> {
 		let root = if let Some(child_info) = args.child_info.as_ref() {
 			let root = match self.child_root(&child_info)? {
@@ -677,16 +703,17 @@ where
 	}
 
 	/// Return the storage root after applying the given `delta`.
+	#[cfg(not(feature = "kvdb"))]
 	pub fn storage_root<'a>(
 		&self,
 		delta: impl Iterator<Item = (&'a [u8], Option<&'a [u8]>)>,
-		state_version: StateVersion,
+		_state_version: StateVersion,
 	) -> (H::Out, S::Overlay) {
 		let mut write_overlay = S::Overlay::default();
 
 		let root = self.with_recorder_and_cache_for_storage_root(None, |recorder, cache| {
 			let mut eph = Ephemeral::new(self.backend_storage(), &mut write_overlay);
-			let res = match state_version {
+			let res = match _state_version {
 				StateVersion::V0 => delta_trie_root::<sp_trie::LayoutV0<H>, _, _, _, _, _>(
 					&mut eph, self.root, delta, recorder, cache,
 				),
@@ -703,34 +730,34 @@ where
 				},
 			}
 		});
-
 		(root, write_overlay)
 	}
 
-	/// Return the storage kv_db transaction.
+	/// Return the storage root after applying the given `delta`.
 	#[cfg(feature = "kvdb")]
-	pub fn kv_storage_root<'a>(
+	pub fn storage_root<'a>(
 		&self,
-		delta: impl Iterator<Item = (&'a [u8], Option<&'a [u8]>)>,
+		delta: impl Iterator<Item = (&'a [u8], Option<&'a StorageValue>)>,
 		_state_version: StateVersion,
 	) -> (H::Out, S::Overlay) {
 		let mut write_overlay = S::Overlay::default();
-		self.with_kv_cache(|_cache| {
+		let root = self.with_kv_cache(|_cache| {
 			let mut kvdb = KVDBMut::new(&mut write_overlay, &self.root, None, true);
 			for (k, v) in delta {
 				if let Some(v) = v {
-					kvdb.insert(k, v.to_vec());
+					kvdb.insert(k, v.clone());
 				} else {
 					kvdb.remove(k);
 				}
 			}
-			let changes_root = kvdb.commit();
-			(changes_root, write_overlay)
-		})
+			kvdb.commit()
+		});
+		(root, write_overlay)
 	}
 
-	/// Returns the child storage root for the child trie `child_info` after applying the given
+		/// Returns the child storage root for the child trie `child_info` after applying the given
 	/// `delta`.
+	#[cfg(not(feature = "kvdb"))]
 	pub fn child_storage_root<'a>(
 		&self,
 		child_info: &ChildInfo,
@@ -788,10 +815,10 @@ where
 
 	/// Returns the child storage kv_db transaction.
 	#[cfg(feature = "kvdb")]
-	pub fn kv_child_storage_root<'a>(
+	pub fn child_storage_root<'a>(
 		&self,
 		child_info: &ChildInfo,
-		delta: impl Iterator<Item = (&'a [u8], Option<&'a [u8]>)>,
+		delta: impl Iterator<Item = (&'a [u8], Option<&'a StorageValue>)>,
 		_state_version: StateVersion,
 	) -> (H::Out, bool, S::Overlay) {
 		let mut write_overlay = S::Overlay::default();
@@ -800,7 +827,7 @@ where
 			for (k, v) in delta {
 				let k = [child_info.storage_key(), k].concat();
 				if let Some(v) = v {
-					kvdb.insert(&k, v.to_vec());
+					kvdb.insert(&k, v.clone());
 				} else {
 					kvdb.remove(&k);
 				}
@@ -929,16 +956,14 @@ impl<S: TrieBackendStorage<H>, H: Hasher, C: AsLocalTrieCache<H> + Send + Sync> 
 	for TrieBackendEssence<S, H, C>
 {
 	fn get(&self, key: &H::Out, prefix: Prefix) -> Option<DBValue> {
+		#[cfg(not(feature = "typed-cache"))]
 		if *key == self.empty {
 			return Some([0u8].to_vec())
 		}
-		match self.storage.get(key, prefix) {
-			Ok(x) => x,
-			Err(e) => {
-				warn!(target: "trie", "Failed to read from DB: {}", e);
-				None
-			},
-		}
+		self.storage.get(key, prefix).unwrap_or_else(|e| {
+			warn!(target: "trie", "Failed to read from DB: {}", e);
+			None
+		})
 	}
 
 	fn contains(&self, key: &H::Out, prefix: Prefix) -> bool {

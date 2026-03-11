@@ -388,21 +388,20 @@ where
         merge_in_thread_order: bool,
         limit_execution_time: bool,
     ) {
-        let (init_cache, init_changes, _, init_recorder) = block_builder.api.take_all_changes();
+        let (init_changes, _, init_recorder) = block_builder.api.take_all_changes();
         for (i, pending_txs) in extrinsic_group.into_iter().enumerate() {
             let thread_inherents = inherents.clone();
             let parent_hash = block_builder.parent_hash.clone();
             let estimated_header_size = block_builder.estimated_header_size.clone();
             let extrinsics = block_builder.extrinsics.clone();
             let context = Some(block_builder.context.clone());
-            let mut init_cache = init_cache.copy_data();
             let mut init_changes = init_changes.clone();
             let init_recorder = init_recorder.clone();
             let thread_client = self.client.clone();
             let block = parent_number + One::one();
             let mut res_tx = merge_tx.clone();
             if merge_in_thread_order {
-                mbh.prepare_thread_in_order(i + 1, pending_txs.len(), &mut init_cache, &mut init_changes);
+                mbh.prepare_thread_in_order(i + 1, pending_txs.len(), &mut init_changes);
             }
             self.spawn_handle.spawn_blocking(
                 "mth-authorship-proposer",
@@ -411,7 +410,6 @@ where
                     let mut thread_builder = match thread_client.new_with_other(parent_hash, estimated_header_size, context) {
                         Ok(mut builder) => {
                             builder.extrinsics = extrinsics;
-                            builder.api.set_typed_cache(init_cache);
                             builder.api.set_changes(init_changes);
                             builder.api.set_recorder(init_recorder);
                             builder

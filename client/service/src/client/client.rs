@@ -1768,7 +1768,6 @@ where
 				params.at,
 				params.function,
 				&params.arguments,
-				params.typed_cache,
 				params.overlayed_changes,
 				Some(params.storage_transaction_cache),
 				params.recorder,

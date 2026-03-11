@@ -17,7 +17,10 @@
 
 //! Overlayed changes for offchain indexing.
 
+#[cfg(not(feature = "typed-cache"))]
 use super::changeset::OverlayedMap;
+#[cfg(feature = "typed-cache")]
+use typed_cache::OverlayedMap;
 use sp_core::offchain::OffchainOverlayedChange;
 use sp_std::prelude::Vec;
 
@@ -55,7 +58,11 @@ impl OffchainOverlayedChanges {
 	pub fn remove(&mut self, prefix: &[u8], key: &[u8]) {
 		let _ = self
 			.0
-			.set((prefix.to_vec(), key.to_vec()), OffchainOverlayedChange::Remove, None);
+			.set(
+				(prefix.to_vec(), key.to_vec()),
+				OffchainOverlayedChange::Remove,
+				None
+			);
 	}
 
 	/// Set the value associated with a key under a prefix to the value provided.
@@ -70,6 +77,9 @@ impl OffchainOverlayedChanges {
 	/// Obtain a associated value to the given key in storage with prefix.
 	pub fn get(&self, prefix: &[u8], key: &[u8]) -> Option<OffchainOverlayedChange> {
 		let key = (prefix.to_vec(), key.to_vec());
+		#[cfg(not(feature = "typed-cache"))]
+		{ self.0.get(&key).map(|entry| entry.value_ref()).cloned() }
+		#[cfg(feature = "typed-cache")]
 		self.0.get(&key).map(|entry| entry.value_ref()).cloned()
 	}
 

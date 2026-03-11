@@ -101,7 +101,7 @@ where
 	H: Hasher,
 	I: StorageIterator<H>,
 {
-	type Item = Result<(Vec<u8>, Vec<u8>), <I as StorageIterator<H>>::Error>;
+	type Item = Result<(Vec<u8>, StorageValue), <I as StorageIterator<H>>::Error>;
 	fn next(&mut self) -> Option<Self::Item> {
 		self.raw_iter.next_pair(self.backend.as_ref()?)
 	}
@@ -237,7 +237,7 @@ pub trait Backend<H: Hasher>: sp_std::fmt::Debug {
 	/// Does not include child storage updates.
 	fn storage_root<'a>(
 		&self,
-		delta: impl Iterator<Item = (&'a [u8], Option<&'a [u8]>)>,
+		delta: impl Iterator<Item = (&'a [u8], Option<&'a StorageValue>)>,
 		state_version: StateVersion,
 	) -> (H::Out, Self::Transaction)
 	where
@@ -249,7 +249,7 @@ pub trait Backend<H: Hasher>: sp_std::fmt::Debug {
 	fn child_storage_root<'a>(
 		&self,
 		child_info: &ChildInfo,
-		delta: impl Iterator<Item = (&'a [u8], Option<&'a [u8]>)>,
+		delta: impl Iterator<Item = (&'a [u8], Option<&'a StorageValue>)>,
 		state_version: StateVersion,
 	) -> (H::Out, bool, Self::Transaction)
 	where
@@ -281,9 +281,9 @@ pub trait Backend<H: Hasher>: sp_std::fmt::Debug {
 	/// Does include child storage updates.
 	fn full_storage_root<'a>(
 		&self,
-		delta: impl Iterator<Item = (&'a [u8], Option<&'a [u8]>)>,
+		delta: impl Iterator<Item = (&'a [u8], Option<&'a StorageValue>)>,
 		child_deltas: impl Iterator<
-			Item = (&'a ChildInfo, impl Iterator<Item = (&'a [u8], Option<&'a [u8]>)>),
+			Item = (&'a ChildInfo, impl Iterator<Item = (&'a [u8], Option<&'a StorageValue>)>),
 		>,
 		state_version: StateVersion,
 	) -> (H::Out, Self::Transaction)
@@ -301,13 +301,16 @@ pub trait Backend<H: Hasher>: sp_std::fmt::Debug {
 			if empty {
 				child_roots.push((prefixed_storage_key.into_inner(), None));
 			} else {
+				#[cfg(not(feature = "typed-cache"))]
 				child_roots.push((prefixed_storage_key.into_inner(), Some(child_root.encode())));
+				#[cfg(feature = "typed-cache")]
+				child_roots.push((prefixed_storage_key.into_inner(), Some(StorageValue::new_raw(Some(child_root.encode()), true))));
 			}
 		}
 		let (root, parent_txs) = self.storage_root(
 			delta
-				.map(|(k, v)| (k, v.as_ref().map(|v| &v[..])))
-				.chain(child_roots.iter().map(|(k, v)| (&k[..], v.as_ref().map(|v| &v[..])))),
+				.map(|(k, v)| (k, v))
+				.chain(child_roots.iter().map(|(k, v)| (&k[..], v.as_ref()))),
 			state_version,
 		);
 		txs.consolidate(parent_txs);
@@ -420,11 +423,14 @@ impl<'a, B: Backend<H>, H: Hasher> sp_core::traits::FetchRuntimeCode
 	for BackendRuntimeCode<'a, B, H>
 {
 	fn fetch_runtime_code(&self) -> Option<std::borrow::Cow<[u8]>> {
-		self.backend
+		let value = self.backend
 			.storage(sp_core::storage::well_known_keys::CODE)
 			.ok()
-			.flatten()
-			.map(Into::into)
+			.flatten();
+		#[cfg(not(feature = "typed-cache"))]
+		{ value.map(Into::into) }
+		#[cfg(feature = "typed-cache")]
+		value.map(|v| v.get_raw(false))?.map(Into::into)
 	}
 }
 
@@ -447,12 +453,15 @@ where
 			.flatten()
 			.ok_or("`:code` hash not found")?
 			.encode();
-		let heap_pages = self
+		let value = self
 			.backend
 			.storage(sp_core::storage::well_known_keys::HEAP_PAGES)
 			.ok()
-			.flatten()
-			.and_then(|d| codec::Decode::decode(&mut &d[..]).ok());
+			.flatten();
+		#[cfg(not(feature = "typed-cache"))]
+		let heap_pages = value.and_then(|d| codec::Decode::decode(&mut &d[..]).ok());
+		#[cfg(feature = "typed-cache")]
+		let heap_pages = value.and_then(|v| v.get_t::<u64>());
 
 		Ok(RuntimeCode { code_fetcher: self, hash, heap_pages })
 	}
