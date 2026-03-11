@@ -21,6 +21,8 @@ pub mod pallet {
 	use frame_system::AccountInfo;
 	use frame_system::pallet_prelude::*;
 
+	pub const LOG_TARGET: &'static str = "runtime::quota";
+
 	#[pallet::config]
 	pub trait Config: frame_system::Config {
 		type RuntimeEvent: From<Event<Self>> + IsType<<Self as frame_system::Config>::RuntimeEvent>;
@@ -199,6 +201,7 @@ pub mod pallet {
 		#[pallet::weight(0)]
 		pub fn activate_account(origin: OriginFor<T>, address: T::AccountId) -> DispatchResult {
 			let manager = ensure_signed(origin)?;
+			log::info!(target: LOG_TARGET, "activate account: {address:?} by manager: {manager:?}");
 			if !<Managers<T>>::get(manager) {
                 return Err(Error::<T>::NotManager.into());
             }
