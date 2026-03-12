@@ -199,6 +199,7 @@ impl frame_system::Config for Runtime {
 	type MaxConsumers = frame_support::traits::ConstU32<16>;
 	type CallLimits = (ConstU64<10000>, ConstU64<3600000>, ConstU64<3600000>, ConstU32<100>);
 	type CallGrouper = call_grouper::DefaultRCGroup;
+	type OCTAuthority = ();
 }
 
 impl pallet_hotstuff::Config for Runtime {

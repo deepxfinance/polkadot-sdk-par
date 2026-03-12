@@ -1,6 +1,8 @@
 #![cfg_attr(not(feature = "std"), no_std)]
 
 pub mod limits;
+pub mod oct;
+
 use sp_std::fmt::Debug;
 use limits::CallLimits;
 use codec::{Decode, Encode, MaxEncodedLen};

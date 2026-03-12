@@ -240,6 +240,7 @@ impl frame_system::Config for Runtime {
 	type SS58Prefix = ConstU16<42>;
 	type OnSetCode = ();
 	type MaxConsumers = ConstU32<16>;
+	type OCTAuthority = ();
 }
 
 impl pallet_insecure_randomness_collective_flip::Config for Runtime {}

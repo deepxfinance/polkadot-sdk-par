@@ -21,6 +21,8 @@ use crate::CallLimits;
 use codec::{Decode, Encode};
 use frame_support::dispatch::{CallType, DispatchInfo};
 use scale_info::TypeInfo;
+use extend_account::oct::OCTAuthority;
+use sp_core::H160;
 use sp_runtime::{traits::{DispatchInfoOf, Dispatchable, One, SignedExtension}, transaction_validity::{
 	InvalidTransaction, TransactionLongevity, TransactionValidity, TransactionValidityError,
 	ValidTransaction,
@@ -77,9 +79,10 @@ where
 		info: &DispatchInfoOf<T::RuntimeCall>,
 		_len: usize,
 	) -> Result<(), TransactionValidityError> {
+		let who = T::OCTAuthority::get_authority(who.clone());
 		let timestamp_now = get_timestamp()
 			.ok_or(TransactionValidityError::Invalid(InvalidTransaction::AncientBirthBlock))?;
-		crate::Account::<T>::get_ref(who).mutate_value_query(|account| {
+		crate::Account::<T>::get_ref(&who).mutate_value_query(|account| {
 			match info.call_type {
 				CallType::Nonce => account.apply_extrinsic_nonce::<T::CallLimits>(timestamp_now, self.0),
 				CallType::Timestamp => account.apply_extrinsic_time_nonce::<T::CallLimits>(timestamp_now, self.0),
@@ -104,13 +107,14 @@ where
 		let timestamp_now = get_timestamp()
 			.ok_or(TransactionValidityError::Invalid(InvalidTransaction::AncientBirthBlock))?;
 		let mut requires = Vec::new();
-		crate::Account::<T>::get_ref(who).map_value_query(|account| {
+		let who = T::OCTAuthority::get_authority(who.clone());
+		crate::Account::<T>::get_ref(&who).map_value_query(|account| {
 			match info.call_type {
 				CallType::Nonce => {
 					account.check_extrinsic_nonce::<T::CallLimits>(timestamp_now, self.0)
 						.map_err(|e| TransactionValidityError::Invalid(e))?;
 					if account.nonce < self.0 {
-						requires = vec![Encode::encode(&(who, self.0 - One::one()))]
+						requires = vec![Encode::encode(&(&who, self.0 - One::one()))]
 					}
 				},
 				CallType::Timestamp => {
@@ -123,7 +127,7 @@ where
 						return Err(TransactionValidityError::Invalid(InvalidTransaction::Stale));
 					}
 					if account.nonce < self.0 {
-						requires = vec![Encode::encode(&(who, self.0 - One::one()))]
+						requires = vec![Encode::encode(&(&who, self.0 - One::one()))]
 					}
 				}
 				CallType::TimestampQuotaFree => {

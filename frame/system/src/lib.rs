@@ -119,7 +119,7 @@ pub mod weights;
 
 pub mod migrations;
 
-pub use extend_account::{AccountInfo, TimeNonce, limits::CallLimits};
+pub use extend_account::{AccountInfo, TimeNonce, limits::CallLimits, oct::OCTAuthority};
 pub use extensions::{
 	check_genesis::CheckGenesis, check_mortality::CheckMortality,
 	check_non_zero_sender::CheckNonZeroSender, check_nonce::CheckNonce,
@@ -366,6 +366,9 @@ pub mod pallet {
 
 		/// Runtime call grouper for handle RuntimeCall.
 		type CallGrouper: RCGroup<Self::AccountId, Self::RuntimeCall>;
+
+		/// OCT authority fetch
+		type OCTAuthority: OCTAuthority<Self::AccountId>;
 	}
 
 	#[pallet::pallet]
