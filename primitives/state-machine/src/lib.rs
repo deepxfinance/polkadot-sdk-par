@@ -124,7 +124,7 @@ impl sp_std::fmt::Display for DefaultError {
 }
 
 pub use crate::{
-	backend::{Backend, IterArgs, KeysIter, PairsIter, StorageIterator},
+	backend::{Backend, IterArgs, KeysIter, PairsIter, StorageIterator, MergeOverlay},
 	error::{Error, ExecutionError},
 	ext::Ext,
 	overlayed_changes::{
@@ -136,9 +136,9 @@ pub use crate::{
 	trie_backend::{TrieBackend, TrieBackendBuilder},
 	trie_backend_essence::{Storage, TrieBackendStorage},
 };
-#[cfg(not(feature = "typed-cache"))]
+#[cfg(not(feature = "kvdb"))]
 pub use crate::overlayed_changes::StorageValue;
-#[cfg(feature = "typed-cache")]
+#[cfg(feature = "kvdb")]
 pub use typed_cache::StorageValue;
 
 #[cfg(feature = "std")]

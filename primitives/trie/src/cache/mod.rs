@@ -50,7 +50,7 @@ use std::{
 };
 use trie_db::{node::NodeOwned, CachedValue};
 #[cfg(feature = "kvdb")]
-use kv_db::{DBValue, KVCache};
+use kv_db::{DBValue, KVCache, OverlayCache};
 
 mod shared_cache;
 #[cfg(feature = "kvdb")]
@@ -676,11 +676,6 @@ impl<'a, H: Hasher> trie_db::TrieCache<NodeCodec<H>> for TrieCache<'a, H> {
 #[cfg(feature = "kvdb")]
 impl<'a, H: Hasher> KVCache<H> for TrieCache<'a, H> {
 	fn lookup_value_for_key(&mut self, key: &[u8]) -> Option<DBValue> {
-		#[cfg(not(feature = "typed-cache"))]
-		if let Some(value) = self.local_kv_cache.peek(key) {
-			return Some(value.clone());
-		}
-		#[cfg(feature = "typed-cache")]
 		if let Some(Some(mut value)) = self.local_kv_cache.get(key)
 			.map(|e| e.value_ref().clone()) 
 		{
@@ -688,26 +683,15 @@ impl<'a, H: Hasher> KVCache<H> for TrieCache<'a, H> {
 			return Some(value)
 		}
 		let mut value = self.shared_cache.peek_kv_value(key)?;
-		#[cfg(feature = "typed-cache")]
-		{
-			value.set_muted(false);
-			return Some(value);
-		}
-		#[cfg(not(feature = "typed-cache"))]
-		if value.is_empty() { None } else { Some(value) }
+		value.set_muted(false);
+		Some(value)
 	}
 
 	fn cache_value_for_key(&mut self, key: &[u8], value: DBValue) {
-		#[cfg(not(feature = "typed-cache"))]
-		self.local_kv_cache.insert(key.to_vec(), value);
-		#[cfg(feature = "typed-cache")]
 		self.local_kv_cache.set(key.to_vec(), Some(value), None);
 	}
 
 	fn remove_value_for_key(&mut self, key: &[u8]) {
-		#[cfg(not(feature = "typed-cache"))]
-		self.local_kv_cache.insert(key.to_vec(), vec![]);
-		#[cfg(feature = "typed-cache")]
 		self.local_kv_cache.set(key.to_vec(), Some(DBValue::new_raw(None, false)), None);
 	}
 }

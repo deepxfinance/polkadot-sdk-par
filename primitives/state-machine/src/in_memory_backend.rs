@@ -44,6 +44,7 @@ where
 	H: Hasher,
 	H::Out: Codec + Ord,
 	KF: KeyFunction<H> + Send + Sync,
+	KF::Key: AsRef<[u8]>,
 {
 	let db = GenericMemoryDB::default();
 	// V1 is same as V0 for an empty trie.
@@ -54,6 +55,7 @@ impl<H: Hasher, KF> TrieBackend<GenericMemoryDB<H, KF>, H>
 where
 	H::Out: Codec + Ord,
 	KF: KeyFunction<H> + Send + Sync,
+	KF::Key: AsRef<[u8]>,
 {
 	/// Copy the state, with applied updates
 	pub fn update<T: IntoIterator<Item = (Option<ChildInfo>, StorageCollection)>>(
@@ -108,6 +110,7 @@ impl<H: Hasher, KF> Clone for TrieBackend<GenericMemoryDB<H, KF>, H>
 where
 	H::Out: Codec + Ord,
 	KF: KeyFunction<H> + Send + Sync,
+	KF::Key: AsRef<[u8]>,
 {
 	fn clone(&self) -> Self {
 		TrieBackendBuilder::new(self.backend_storage().clone(), *self.root()).build()
@@ -119,6 +122,7 @@ where
 	H: Hasher,
 	H::Out: Codec + Ord,
 	KF: KeyFunction<H> + Send + Sync,
+	KF::Key: AsRef<[u8]>,
 {
 	fn default() -> Self {
 		new_in_mem()
@@ -131,6 +135,7 @@ impl<H: Hasher, KF>
 where
 	H::Out: Codec + Ord,
 	KF: KeyFunction<H> + Send + Sync,
+	KF::Key: AsRef<[u8]>,
 {
 	fn from(
 		(inner, state_version): (
@@ -153,8 +158,9 @@ impl<H: Hasher, KF> From<(Storage, StateVersion)> for TrieBackend<GenericMemoryD
 where
 	H::Out: Codec + Ord,
 	KF: KeyFunction<H> + Send + Sync,
+	KF::Key: AsRef<[u8]>,
 {
-	#[cfg(not(feature = "typed-cache"))]
+	#[cfg(not(feature = "kvdb"))]
 	fn from((inners, state_version): (Storage, StateVersion)) -> Self {
 		let mut inner: HashMap<Option<ChildInfo>, BTreeMap<StorageKey, Vec<u8>>> = inners
 			.children_default
@@ -165,7 +171,7 @@ where
 		(inner, state_version).into()
 	}
 
-	#[cfg(feature = "typed-cache")]
+	#[cfg(feature = "kvdb")]
 	fn from((inners, state_version): (Storage, StateVersion)) -> Self {
 		let mut inner: HashMap<Option<ChildInfo>, BTreeMap<StorageKey, StorageValue>> = inners
 			.children_default
@@ -182,10 +188,11 @@ impl<H: Hasher, KF> From<(BTreeMap<StorageKey, Vec<u8>>, StateVersion)>
 where
 	H::Out: Codec + Ord,
 	KF: KeyFunction<H> + Send + Sync,
+	KF::Key: AsRef<[u8]>,
 {
 	fn from((inner, state_version): (BTreeMap<StorageKey, Vec<u8>>, StateVersion)) -> Self {
 		let mut expanded = HashMap::new();
-		#[cfg(feature = "typed-cache")]
+		#[cfg(feature = "kvdb")]
 		let inner = inner.into_iter().map(|(k, v)| (k, v.into())).collect();
 		expanded.insert(None, inner);
 		(expanded, state_version).into()
@@ -197,6 +204,7 @@ impl<H: Hasher, KF> From<(Vec<(Option<ChildInfo>, StorageCollection)>, StateVers
 where
 	H::Out: Codec + Ord,
 	KF: KeyFunction<H> + Send + Sync,
+	KF::Key: AsRef<[u8]>,
 {
 	fn from(
 		(inner, state_version): (Vec<(Option<ChildInfo>, StorageCollection)>, StateVersion),

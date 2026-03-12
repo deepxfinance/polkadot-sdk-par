@@ -65,7 +65,7 @@ std = [
 	"ed25519",
 	"typed-cache/std",
 ]
-typed-cache = ["sp-state-machine/typed-cache"]
+kvdb = ["sp-state-machine/kvdb"]
 
 bls-experimental = ["sp-keystore/bls-experimental"]
 

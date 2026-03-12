@@ -4172,11 +4172,9 @@ version = "0.1.0"
 dependencies = [
  "env_logger 0.11.8",
  "hash-db",
- "hashbrown 0.13.2",
  "log",
  "memory-db",
  "rustc-hex",
- "smallvec",
  "sp-core",
  "typed-cache",
 ]

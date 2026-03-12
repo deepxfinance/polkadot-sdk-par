@@ -59,29 +59,21 @@ impl <'db, 'cache, H: Hasher> KVDBMut<'db, 'cache, H> {
         }
     }
 
-    /// Return special storage hash for some well_known_key(e.g. CODE)
-    /// This extended storage_hash should be stored at prefix `(key, Some(STORAGE_HASH))`.
-    pub fn extend_storage_hash(&self, key: &[u8]) -> bool {
-        if key == b":code" {
-            return true
-        }
-        false
-    }
-
     /// Insert a key-value pair.
     fn insert(
         &mut self,
         key: &[u8],
-        value: DBValue,
+        mut value: DBValue,
     ) {
         #[cfg(all(feature = "std", feature = "dev-time"))]
         let start = std::time::Instant::now();
+        if !value.muted() { return; }
         if self.direct {
             self.db_insert(key, None, value);
         } else {
             self.storage.insert((key.to_vec(), None), value);
         }
-        if self.extend_storage_hash(key) {
+        if extend_storage_hash(key) {
             if self.direct {
                 self.db_insert(key, Some(STORAGE_HASH), self.hash.as_ref().into());
             } else {
@@ -100,7 +92,7 @@ impl <'db, 'cache, H: Hasher> KVDBMut<'db, 'cache, H> {
         } else {
             self.storage.insert((key.to_vec(), None), NULL_DATA.as_slice().into())
         };
-        if self.extend_storage_hash(key) {
+        if extend_storage_hash(key) {
             if self.direct {
                 self.db_remove(key, Some(STORAGE_HASH));
             } else {
@@ -118,9 +110,7 @@ impl <'db, 'cache, H: Hasher> KVDBMut<'db, 'cache, H> {
             &memory_db::prefixed_key::<H>(&key_hash, (key, pad)), value.clone())
         );
         self.db.emplace(key_hash, (key, pad), value.clone());
-        #[cfg(all(not(feature = "async-root"), not(feature = "typed-cache")))]
-        self.direct_changes.extend([key, &pad_encode(&pad), &value].concat());
-        #[cfg(all(not(feature = "async-root"), feature = "typed-cache"))]
+        #[cfg(not(feature = "async-root"))]
         self.direct_changes.extend([key, &pad_encode(&pad), &value.get_raw(true).expect("SHOULD BE SOME")].concat());
     }
 
@@ -172,11 +162,7 @@ impl <'db, 'cache, H: Hasher> KVDBMut<'db, 'cache, H> {
                 #[cfg(not(feature = "async-root"))]
                 changes.extend([prefix.0.as_slice(), &pad_encode(&prefix.1), &value.get_raw(false).unwrap_or_default()].concat());
                 let key_hash = H::hash(prefix.0.as_slice());
-                #[cfg(not(feature = "typed-cache"))]
-                let remove = value == &NULL_DATA;
-                #[cfg(feature = "typed-cache")]
-                let remove = !value.exists();
-                if remove {
+                if !value.exists() {
                     self.db.remove(&key_hash, (prefix.0.as_slice(), prefix.1));
                     self.cache.as_mut().map(|c| (*c.borrow_mut()).remove_value_for_key(
                         &memory_db::prefixed_key::<H>(&key_hash, (prefix.0.as_slice(), prefix.1))
@@ -217,22 +203,11 @@ impl<'db, 'cache, H: Hasher> KVMut<'db, H> for KVDBMut<'db, 'cache, H> {
     where
         'a: 'key
     {
-        let v = self.get_data(key, true).map(|v| v.clone())?;
-        #[cfg(feature = "typed-cache")]
-        return Some(v);
-        #[cfg(not(feature = "typed-cache"))]
-        if v == NULL_DATA.to_vec() {
-            None
-        } else {
-            Some(v)
-        }
+        self.get_data(key, true).map(|v| v.clone())
     }
 
     fn contains(&self, key: &[u8]) -> bool {
-        #[cfg(feature = "typed-cache")]
-        { self.get(key).map(|v| v.exists()).unwrap_or(false) }
-        #[cfg(not(feature = "typed-cache"))]
-        self.get(key).is_some()
+        self.get(key).map(|v| v.exists()).unwrap_or(false)
     }
 
     fn insert(&mut self, key: &[u8], value: DBValue) {
@@ -241,6 +216,31 @@ impl<'db, 'cache, H: Hasher> KVMut<'db, H> for KVDBMut<'db, 'cache, H> {
 
     fn remove(&mut self, key: &[u8]) -> Option<DBValue> {
         self.remove(key)
+    }
+}
+
+/// Return special storage hash for some well_known_key(e.g. CODE)
+/// This extended storage_hash should be stored at prefix `(key, Some(STORAGE_HASH))`.
+pub fn extend_storage_hash(key: &[u8]) -> bool {
+    if key == b":code" {
+        return true
+    }
+    false
+}
+
+pub fn key_pad(key: &[u8]) -> Option<u8> {
+    if key == b":code" {
+        Some(STORAGE_HASH)
+    } else {
+        None
+    }
+}
+
+pub fn cache_key<'a>(key: &'a [u8], pad: &'a Option<u8>) -> Vec<u8> {
+    if let Some(pad) = pad.as_ref() {
+        [key.to_vec(), vec![*pad]].concat()
+    } else {
+        key.to_vec()
     }
 }
 

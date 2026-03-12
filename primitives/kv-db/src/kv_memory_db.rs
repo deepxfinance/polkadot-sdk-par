@@ -21,6 +21,7 @@ use core::{borrow::Borrow, cmp::Eq, hash, marker::PhantomData, mem};
 
 #[cfg(not(feature = "std"))]
 use alloc::vec::Vec;
+use crate::DBValue;
 
 pub trait FastBuild<H: KeyHasher, KF: KeyFunction<H>, T> {
     fn set_ordered_data(&mut self, data: Map<KF::Key, (T, i32)>);
@@ -65,19 +66,7 @@ where
 {
     data: Map<KF::Key, (T, i32)>,
     hashed_null_node: H::Out,
-    null_node_data: T,
     _kf: PhantomData<KF>,
-}
-
-impl<H, KF, T> FastBuild<H, KF, T> for MemoryDB<H, KF, T>
-where
-    H: KeyHasher,
-    KF: KeyFunction<H>,
-    T: Clone,
-{
-    fn set_ordered_data(&mut self, data: Map<KF::Key, (T, i32)>) {
-        self.data = data;
-    }
 }
 
 impl<H, KF, T> Clone for MemoryDB<H, KF, T>
@@ -90,7 +79,6 @@ where
         Self {
             data: self.data.clone(),
             hashed_null_node: self.hashed_null_node,
-            null_node_data: self.null_node_data.clone(),
             _kf: Default::default(),
         }
     }
@@ -129,40 +117,24 @@ where
     KF: KeyFunction<H>,
 {
     fn default() -> Self {
-        Self::from_null_node(&[0u8][..], [][..].into())
+        Self::from_null_node(&[0u8][..])
     }
 }
 
-/// Create a new `MemoryDB` from a given null key/data
-impl<H, KF, T> MemoryDB<H, KF, T>
-where
-    H: KeyHasher,
-    T: Default,
-    KF: KeyFunction<H>,
-{
-    /// Remove an element and delete it from storage no matter how big the reference count is.
-    pub fn remove_and_purge(&mut self, key: &<H as KeyHasher>::Out, prefix: Prefix) -> Option<T> {
-        if key == &self.hashed_null_node {
-            return None
-        }
-        let key = KF::key(key, prefix);
-        match self.data.entry(key) {
-            Entry::Occupied(mut entry) => {
-                let (value, rc) = entry.remove();
-                if rc > 0 {
-                    Some(value)
-                } else {
-                    None
-                }
-            },
-            Entry::Vacant(entry) => {
-                let value = T::default();
-                entry.insert((value, -1));
-                None
-            },
-        }
-    }
-}
+// impl<H, KF> MergeOverlay for MemoryDB<H, KF, DBValue>
+// where
+//     H: KeyHasher,
+//     KF: KeyFunction<H>,
+// {
+//     fn extend(&mut self, mut other: OverlayCache) {
+//         if let Some(code) = other.changes.get(b":code".as_ref()) {
+//             if let Some(value) = code.value() {
+//                 let key_hash = H::hash(b":code".as_ref());
+//                 self.emplace(&key_hash, (b":code", Some(STORAGE_HASH)), value);
+//             }
+//         }
+//     }
+// }
 
 impl<H, KF, T> MemoryDB<H, KF, T>
 where
@@ -171,18 +143,17 @@ where
     KF: KeyFunction<H>,
 {
     /// Create a new `MemoryDB` from a given null key/data
-    pub fn from_null_node(null_key: &[u8], null_node_data: T) -> Self {
+    pub fn from_null_node(null_key: &[u8]) -> Self {
         MemoryDB {
             data: Map::default(),
             hashed_null_node: H::hash(null_key),
-            null_node_data,
             _kf: Default::default(),
         }
     }
 
     /// Create a new instance of `Self`.
     pub fn new(data: &[u8]) -> Self {
-        Self::from_null_node(data, data.into())
+        Self::from_null_node(data)
     }
 
     /// Create a new default instance of `Self` and returns `Self` and the root hash.
@@ -199,28 +170,21 @@ where
     }
 
     /// Purge all zero-referenced data from the database.
-    pub fn purge(&mut self) {
-        self.data.retain(|_, (_, rc)| {
-            let keep = *rc != 0;
-            keep
-        });
-    }
+    pub fn purge(&mut self) {}
 
+    pub fn data(&self) -> &Map<KF::Key, (T, i32)> {
+        &self.data
+    }
+}
+
+impl<H, KF> MemoryDB<H, KF, DBValue>
+where
+    H: KeyHasher,
+    KF: KeyFunction<H>,
+{
     /// Return the internal key-value Map, clearing the current state.
-    pub fn drain(&mut self) -> Map<KF::Key, (T, i32)> {
+    pub fn drain(&mut self) -> Map<KF::Key, (DBValue, i32)> {
         mem::take(&mut self.data)
-    }
-
-    /// Grab the raw information associated with a key. Returns None if the key
-    /// doesn't exist.
-    ///
-    /// Even when Some is returned, the data is only guaranteed to be useful
-    /// when the refs > 0.
-    pub fn raw(&self, key: &<H as KeyHasher>::Out, prefix: Prefix) -> Option<(&T, i32)> {
-        if key == &self.hashed_null_node {
-            return Some((&self.null_node_data, 1))
-        }
-        self.data.get(&KF::key(key, prefix)).map(|(value, count)| (value, *count))
     }
 
     /// Consolidate all the entries of `other` into `self`.
@@ -237,28 +201,27 @@ where
     }
 }
 
-impl<H, KF, T> PlainDB<H::Out, T> for MemoryDB<H, KF, T>
+impl<H, KF> PlainDB<H::Out, DBValue> for MemoryDB<H, KF, DBValue>
 where
     H: KeyHasher,
-    T: Default + PartialEq<T> + for<'a> From<&'a [u8]> + Clone + Send + Sync,
     KF: Send + Sync + KeyFunction<H>,
     KF::Key: Borrow<[u8]> + for<'a> From<&'a [u8]>,
 {
-    fn get(&self, key: &H::Out) -> Option<T> {
+    fn get(&self, key: &H::Out) -> Option<DBValue> {
         match self.data.get(key.as_ref()) {
             Some(&(ref d, rc)) if rc > 0 => Some(d.clone()),
             _ => None,
         }
     }
 
-    fn contains(&self, key: &H::Out) -> bool {
+    fn contains(&self, key: &H::Out) -> bool { 
         match self.data.get(key.as_ref()) {
             Some(&(_, x)) if x > 0 => true,
             _ => false,
         }
     }
 
-    fn emplace(&mut self, key: H::Out, value: T) {
+    fn emplace(&mut self, key: H::Out, value: DBValue) {
         match self.data.entry(key.as_ref().into()) {
             Entry::Occupied(mut entry) => {
                 let &mut (ref mut old_value, ref mut rc) = entry.get_mut();
@@ -278,21 +241,20 @@ where
                 *rc = -1;
             },
             Entry::Vacant(entry) => {
-                let value = T::default();
+                let value = DBValue::default();
                 entry.insert((value, -1));
             },
         }
     }
 }
 
-impl<H, KF, T> PlainDBRef<H::Out, T> for MemoryDB<H, KF, T>
+impl<H, KF> PlainDBRef<H::Out, DBValue> for MemoryDB<H, KF, DBValue>
 where
     H: KeyHasher,
-    T: Default + PartialEq<T> + for<'a> From<&'a [u8]> + Clone + Send + Sync,
     KF: Send + Sync + KeyFunction<H>,
     KF::Key: Borrow<[u8]> + for<'a> From<&'a [u8]>,
 {
-    fn get(&self, key: &H::Out) -> Option<T> {
+    fn get(&self, key: &H::Out) -> Option<DBValue> {
         PlainDB::get(self, key)
     }
     fn contains(&self, key: &H::Out) -> bool {
@@ -300,15 +262,14 @@ where
     }
 }
 
-impl<H, KF, T> HashDB<H, T> for MemoryDB<H, KF, T>
+impl<H, KF> HashDB<H, DBValue> for MemoryDB<H, KF, DBValue>
 where
     H: KeyHasher,
-    T: Default + PartialEq<T> + AsRef<[u8]> + for<'a> From<&'a [u8]> + Clone + Send + Sync,
     KF: KeyFunction<H> + Send + Sync,
 {
-    fn get(&self, key: &H::Out, prefix: Prefix) -> Option<T> {
+    fn get(&self, key: &H::Out, prefix: Prefix) -> Option<DBValue> {
         if key == &self.hashed_null_node {
-            return Some(self.null_node_data.clone())
+            return None
         }
 
         let key = KF::key(key, prefix);
@@ -330,11 +291,7 @@ where
         }
     }
 
-    fn emplace(&mut self, key: H::Out, prefix: Prefix, value: T) {
-        if value == self.null_node_data {
-            return
-        }
-
+    fn emplace(&mut self, key: H::Out, prefix: Prefix, value: DBValue) {
         let key = KF::key(&key, prefix);
         match self.data.entry(key) {
             Entry::Occupied(mut entry) => {
@@ -349,12 +306,10 @@ where
     }
 
     fn insert(&mut self, prefix: Prefix, value: &[u8]) -> H::Out {
-        if T::from(value) == self.null_node_data {
-            return self.hashed_null_node
-        }
-
         let key = H::hash(value);
-        HashDB::emplace(self, key, prefix, value.into());
+        let mut value: DBValue = value.into();
+        value.set_muted(true);
+        HashDB::emplace(self, key, prefix, value);
         key
     }
 
@@ -370,20 +325,19 @@ where
                 *rc = -1;
             },
             Entry::Vacant(entry) => {
-                let value = T::default();
+                let value = DBValue::default();
                 entry.insert((value, -1));
             },
         }
     }
 }
 
-impl<H, KF, T> HashDBRef<H, T> for MemoryDB<H, KF, T>
+impl<H, KF> HashDBRef<H, DBValue> for MemoryDB<H, KF, DBValue>
 where
     H: KeyHasher,
-    T: Default + PartialEq<T> + AsRef<[u8]> + for<'a> From<&'a [u8]> + Clone + Send + Sync,
     KF: KeyFunction<H> + Send + Sync,
 {
-    fn get(&self, key: &H::Out, prefix: Prefix) -> Option<T> {
+    fn get(&self, key: &H::Out, prefix: Prefix) -> Option<DBValue> {
         HashDB::get(self, key, prefix)
     }
     fn contains(&self, key: &H::Out, prefix: Prefix) -> bool {
@@ -391,31 +345,29 @@ where
     }
 }
 
-impl<H, KF, T> AsPlainDB<H::Out, T> for MemoryDB<H, KF, T>
+impl<H, KF> AsPlainDB<H::Out, DBValue> for MemoryDB<H, KF, DBValue>
 where
     H: KeyHasher,
-    T: Default + PartialEq<T> + for<'a> From<&'a [u8]> + Clone + Send + Sync,
     KF: KeyFunction<H> + Send + Sync,
     KF::Key: Borrow<[u8]> + for<'a> From<&'a [u8]>,
 {
-    fn as_plain_db(&self) -> &dyn PlainDB<H::Out, T> {
+    fn as_plain_db(&self) -> &dyn PlainDB<H::Out, DBValue> {
         self
     }
-    fn as_plain_db_mut(&mut self) -> &mut dyn PlainDB<H::Out, T> {
+    fn as_plain_db_mut(&mut self) -> &mut dyn PlainDB<H::Out, DBValue> {
         self
     }
 }
 
-impl<H, KF, T> AsHashDB<H, T> for MemoryDB<H, KF, T>
+impl<H, KF> AsHashDB<H, DBValue> for MemoryDB<H, KF, DBValue>
 where
     H: KeyHasher,
-    T: Default + PartialEq<T> + AsRef<[u8]> + for<'a> From<&'a [u8]> + Clone + Send + Sync,
     KF: KeyFunction<H> + Send + Sync,
 {
-    fn as_hash_db(&self) -> &dyn HashDB<H, T> {
+    fn as_hash_db(&self) -> &dyn HashDB<H, DBValue> {
         self
     }
-    fn as_hash_db_mut(&mut self) -> &mut dyn HashDB<H, T> {
+    fn as_hash_db_mut(&mut self) -> &mut dyn HashDB<H, DBValue> {
         self
     }
 }

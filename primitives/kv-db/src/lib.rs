@@ -30,11 +30,7 @@ pub mod kvdbmut;
 pub mod kv_memory_db;
 
 /// Database value
-#[cfg(not(feature = "typed-cache"))]
-pub type DBValue = Vec<u8>;
-#[cfg(feature = "typed-cache")]
 pub use typed_cache::StorageValue as DBValue;
-#[cfg(feature = "typed-cache")]
 pub use typed_cache::*;
 
 /// storage Prefix following pad for special key storage_hash(e.g. CODE).
@@ -74,7 +70,6 @@ pub trait KVMut<'db, H: Hasher> {
 
 pub trait KVCache<H: Hasher> {
     /// Lookup value for the given `key`.
-    // TODO return reference for less copy.
     fn lookup_value_for_key(&mut self, key: &[u8]) -> Option<DBValue>;
 
     /// Cache the given `value` for the given `key`.

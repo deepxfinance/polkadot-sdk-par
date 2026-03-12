@@ -61,17 +61,11 @@ impl <'db, 'cache, H: Hasher> KVDB<'db, 'cache, H> {
     pub fn get_hash(&self, key: &[u8]) -> Result<Option<H::Out>, String> {
         if self.extend_storage_hash(key) {
             return match self.fetch_value(H::hash(key), (key, Some(STORAGE_HASH))) {
-                Ok(base) => {
-                    #[cfg(not(feature = "typed-cache"))]
-                    { Ok(Some(H::hash([base.as_slice(), key].concat().as_slice()))) }
-                    #[cfg(feature = "typed-cache")]
-                    match base.get_raw(true) {
-                        Some(base) => {
-                            Ok(Some(H::hash(base.as_slice())))
-                        },
-                        None => return Ok(None)
-                    }
-
+                Ok(base) => match base.get_raw(true) {
+                    Some(base) => {
+                        Ok(Some(H::hash(base.as_slice())))
+                    },
+                    None => return Ok(None)
                 },
                 Err(_) => Ok(None),
             }
@@ -85,21 +79,10 @@ impl <'db, 'cache, H: Hasher> KVDB<'db, 'cache, H> {
 
 impl<'db, 'cache, H: Hasher> KV<H> for KVDB<'db, 'cache, H> {
     fn get(&self, key: &[u8]) -> Option<DBValue> {
-        let v = self.fetch_value(H::hash(key), (key, None)).ok()?;
-        #[cfg(feature = "typed-cache")]
-        return Some(v);
-        #[cfg(not(feature = "typed-cache"))]
-        if v.is_empty() {
-            None
-        } else {
-            Some(v)
-        }
+        self.fetch_value(H::hash(key), (key, None)).ok()
     }
 
     fn contains(&self, key: &[u8]) -> bool {
-        #[cfg(not(feature = "typed-cache"))]
-        { self.get(key).is_some() }
-        #[cfg(feature = "typed-cache")]
         self.get(key).map(|v| v.exists()).unwrap_or(false)
     }
 }

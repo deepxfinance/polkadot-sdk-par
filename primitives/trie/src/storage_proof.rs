@@ -104,9 +104,9 @@ impl StorageProof {
 		self,
 		_root: H::Out,
 	) -> Result<CompactProof, crate::CompactProofError<H::Out, crate::Error<H::Out>>> {
-		#[cfg(feature = "typed-cache")]
+		#[cfg(feature = "kvdb")]
 		return Err(crate::CompactProofError::IncompleteProof);
-		#[cfg(not(feature = "typed-cache"))]
+		#[cfg(not(feature = "kvdb"))]
 		{
 			let db = self.into_memory_db();
 			crate::encode_compact::<Layout<H>, crate::MemoryDB<H>>(&db, &_root)
@@ -118,9 +118,9 @@ impl StorageProof {
 		&self,
 		_root: H::Out,
 	) -> Result<CompactProof, crate::CompactProofError<H::Out, crate::Error<H::Out>>> {
-		#[cfg(feature = "typed-cache")]
+		#[cfg(feature = "kvdb")]
 		return Err(crate::CompactProofError::IncompleteProof);
-		#[cfg(not(feature = "typed-cache"))]
+		#[cfg(not(feature = "kvdb"))]
 		{
 			let db = self.to_memory_db();
 			crate::encode_compact::<Layout<H>, crate::MemoryDB<H>>(&db, &_root)
@@ -172,9 +172,9 @@ impl CompactProof {
 		&self,
 		_expected_root: Option<&H::Out>,
 	) -> Result<(StorageProof, H::Out), crate::CompactProofError<H::Out, crate::Error<H::Out>>> {
-		#[cfg(feature = "typed-cache")]
+		#[cfg(feature = "kvdb")]
 		return Err(crate::CompactProofError::IncompleteProof);
-		#[cfg(not(feature = "typed-cache"))]
+		#[cfg(not(feature = "kvdb"))]
 		{
 			let mut db = crate::MemoryDB::<H>::new(&[]);
 			let root = crate::decode_compact::<Layout<H>, _, _>(
@@ -205,9 +205,9 @@ impl CompactProof {
 		_expected_root: Option<&H::Out>,
 	) -> Result<(crate::MemoryDB<H>, H::Out), crate::CompactProofError<H::Out, crate::Error<H::Out>>>
 	{
-		#[cfg(feature = "typed-cache")]
+		#[cfg(feature = "kvdb")]
 		return Err(crate::CompactProofError::IncompleteProof);
-		#[cfg(not(feature = "typed-cache"))]
+		#[cfg(not(feature = "kvdb"))]
 		{
 			let mut db = crate::MemoryDB::<H>::new(&[]);
 			let root = crate::decode_compact::<Layout<H>, _, _>(

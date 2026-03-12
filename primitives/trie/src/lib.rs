@@ -56,11 +56,9 @@ pub use trie_db::{
 /// The Substrate format implementation of `TrieStream`.
 pub use trie_stream::TrieStream;
 #[cfg(feature = "kvdb")]
-pub use kv_db::KVCache;
+pub use kv_db::{KVCache, StorageValue as DBValue};
 
-#[cfg(feature = "typed-cache")]
-pub use kv_db::StorageValue as DBValue;
-#[cfg(not(feature = "typed-cache"))]
+#[cfg(not(feature = "kvdb"))]
 pub use trie_db::DBValue;
 
 /// substrate trie layout
@@ -434,9 +432,9 @@ where
 	let res = TrieDBBuilder::<L>::new(&db, &root)
 		.build()
 		.get_with(key, query);
-	#[cfg(not(feature = "typed-cache"))]
+	#[cfg(not(feature = "kvdb"))]
 	{ res.map(|x| x.map(|val| val.to_vec())) }
-	#[cfg(feature = "typed-cache")]
+	#[cfg(feature = "kvdb")]
 	{ res.map(|x| x.and_then(|val| val.get_raw(false))) }
 }
 

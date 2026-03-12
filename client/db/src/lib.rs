@@ -86,12 +86,7 @@ use sp_runtime::{
 	},
 	Justification, Justifications, StateVersion, Storage,
 };
-use sp_state_machine::{
-	backend::{AsTrieBackend, Backend as StateBackend},
-	ChildStorageCollection, DBValue, IndexOperation, IterArgs, OffchainChangesCollection,
-	StateMachineStats, StorageCollection, StorageIterator, StorageKey, StorageValue,
-	UsageInfo as StateUsageInfo,
-};
+use sp_state_machine::{backend::{AsTrieBackend, Backend as StateBackend}, ChildStorageCollection, DBValue, IndexOperation, IterArgs, OffchainChangesCollection, OverlayCache, StateMachineStats, StorageCollection, StorageIterator, StorageKey, StorageValue, UsageInfo as StateUsageInfo};
 use sp_trie::{cache::SharedTrieCache, prefixed_key, MemoryDB, PrefixedMemoryDB};
 #[cfg(feature = "kvdb")]
 use sp_trie::KVCache;
@@ -200,7 +195,7 @@ impl<B: BlockT> StateBackend<HashFor<B>> for RefTrackingState<B> {
 	type TrieBackendStorage = <DbState<B> as StateBackend<HashFor<B>>>::TrieBackendStorage;
 	type RawIter = RawIter<B>;
 
-	fn storage(&self, key: &[u8]) -> Result<Option<Vec<u8>>, Self::Error> {
+	fn storage(&self, key: &[u8]) -> Result<Option<StorageValue>, Self::Error> {
 		self.state.storage(key)
 	}
 
@@ -212,7 +207,7 @@ impl<B: BlockT> StateBackend<HashFor<B>> for RefTrackingState<B> {
 		&self,
 		child_info: &ChildInfo,
 		key: &[u8],
-	) -> Result<Option<Vec<u8>>, Self::Error> {
+	) -> Result<Option<StorageValue>, Self::Error> {
 		self.state.child_storage(child_info, key)
 	}
 
@@ -250,7 +245,7 @@ impl<B: BlockT> StateBackend<HashFor<B>> for RefTrackingState<B> {
 
 	fn storage_root<'a>(
 		&self,
-		delta: impl Iterator<Item = (&'a [u8], Option<&'a [u8]>)>,
+		delta: impl Iterator<Item = (&'a [u8], Option<&'a StorageValue>)>,
 		state_version: StateVersion,
 	) -> (B::Hash, Self::Transaction)
 	where
@@ -262,7 +257,7 @@ impl<B: BlockT> StateBackend<HashFor<B>> for RefTrackingState<B> {
 	fn child_storage_root<'a>(
 		&self,
 		child_info: &ChildInfo,
-		delta: impl Iterator<Item = (&'a [u8], Option<&'a [u8]>)>,
+		delta: impl Iterator<Item = (&'a [u8], Option<&'a StorageValue>)>,
 		state_version: StateVersion,
 	) -> (B::Hash, bool, Self::Transaction)
 	where
@@ -1018,9 +1013,9 @@ impl<Block: BlockT> sp_state_machine::Storage<HashFor<Block>> for StorageDb<Bloc
 	fn get(&self, key: &Block::Hash, prefix: Prefix) -> Result<Option<DBValue>, String> {
 		if self.prefix_keys {
 			let key = prefixed_key::<HashFor<Block>>(key, prefix);
-			self.state_db.get(&key, self)
+			self.state_db.get(&key, self).map(|r| r.map(|v| v.into()))
 		} else {
-			self.state_db.get(key.as_ref(), self)
+			self.state_db.get(key.as_ref(), self).map(|r| r.map(|v| v.into()))
 		}
 		.map_err(|e| format!("Database backend error: {:?}", e))
 	}
@@ -1559,11 +1554,19 @@ impl<Block: BlockT> Backend<Block> {
 
 				debug!(target:"commit-time", "⌛️ The time taken to collect basic data {:?}", start.elapsed());
 
+				#[cfg(feature = "kvdb")]
+				drop(kv_cache_lock);
 				for (mut key, (val, rc)) in operation.db_updates.drain() {
+					#[cfg(feature = "kvdb")]
+					if !val.muted() { continue; }
+					#[cfg(feature = "kvdb")]
+					let rc = if val.exists() { 1 } else { -1 };
 					self.storage.db.sanitize_key(&mut key);
 					if rc > 0 {
 						#[cfg(feature = "kvdb")]
 						cache.cache_value_for_key(&key, val.clone());
+						#[cfg(feature = "kvdb")]
+						let val = val.get_option_encoded(false);
 						ops += 1;
 						bytes += key.len() as u64 + val.len() as u64;
 						if rc == 1 {
@@ -1576,7 +1579,7 @@ impl<Block: BlockT> Backend<Block> {
 						}
 					} else if rc < 0 {
 						#[cfg(feature = "kvdb")]
-						cache.cache_value_for_key(&key, Vec::new());
+						cache.cache_value_for_key(&key, Default::default());
 						removal += 1;
 						bytes_removal += key.len() as u64;
 						if rc == -1 {
@@ -1591,25 +1594,26 @@ impl<Block: BlockT> Backend<Block> {
 
 				debug!(target:"commit-time", "⌛️ The time taken to collect state data {:?}", start.elapsed());
 
-				#[cfg(feature = "kvdb")]
-				drop(kv_cache_lock);
 				self.state_usage.tally_writes_nodes(ops, bytes);
 				self.state_usage.tally_removed_nodes(removal, bytes_removal);
 
-				let mut ops: u64 = 0;
-				let mut bytes: u64 = 0;
-				for (key, value) in operation
-					.storage_updates
-					.iter()
-					.chain(operation.child_storage_updates.iter().flat_map(|(_, s)| s.iter()))
+				#[cfg(not(feature = "kvdb"))]
 				{
-					ops += 1;
-					bytes += key.len() as u64;
-					if let Some(v) = value.as_ref() {
-						bytes += v.len() as u64;
+					let mut ops: u64 = 0;
+					let mut bytes: u64 = 0;
+					for (key, value) in operation
+						.storage_updates
+						.iter()
+						.chain(operation.child_storage_updates.iter().flat_map(|(_, s)| s.iter()))
+					{
+						ops += 1;
+						bytes += key.len() as u64;
+						if let Some(v) = value.as_ref() {
+							bytes += v.len() as u64;
+						}
 					}
+					self.state_usage.tally_writes(ops, bytes);
 				}
-				self.state_usage.tally_writes(ops, bytes);
 				let number_u64 = number.saturated_into::<u64>();
 				let commit = self
 					.storage

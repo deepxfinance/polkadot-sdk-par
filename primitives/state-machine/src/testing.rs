@@ -183,11 +183,13 @@ where
 			.backend_storage_mut()
 			.drain()
 			.into_iter();
-		#[cfg(not(feature = "typed-cache"))]
-		let raw_key_values = raw_iter.map(|(k, v)| (k, v.0))
-			.collect::<Vec<(H::Out, Vec<u8>)>>();;
-		#[cfg(feature = "typed-cache")]
-		let raw_key_values = raw_iter.map(|(k, v)| (k, v.0.get_raw(false).unwrap()))
+		#[cfg(not(feature = "kvdb"))]
+		let raw_key_values = raw_iter
+			.map(|(k, v)| (k, v.0))
+			.collect::<Vec<(H::Out, Vec<u8>)>>();
+		#[cfg(feature = "kvdb")]
+		let raw_key_values = raw_iter
+			.map(|(k, v)| (k, v.0.get_raw(false).unwrap()))
 			.collect::<Vec<(H::Out, Vec<u8>)>>();
 
 		(raw_key_values, *self.backend.root())

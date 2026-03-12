@@ -20,6 +20,7 @@ ref-cast = "1.0.0"
 serde = { version = "1.0.136", default-features = false, features = ["derive", "alloc"], optional = true }
 sp-debug-derive = { version = "5.0.0", default-features = false, path = "../debug-derive" }
 sp-std = { version = "5.0.0", default-features = false, path = "../std" }
+typed-cache = { default-features = false, path = "../typed-cache" }
 
 [features]
 default = [ "std" ]
@@ -29,7 +30,9 @@ std = [
 	"serde/std",
 	"sp-debug-derive/std",
 	"sp-std/std",
+	"typed-cache/std",
 ]
+typed-cache = []
 
 # Serde support without relying on std features.
 serde = [

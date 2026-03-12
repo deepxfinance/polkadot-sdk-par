@@ -37,9 +37,9 @@ use sp_trie::{
 	trie_types::{TrieDBBuilder, TrieError},
 	KeySpacedDB, NodeCodec, Trie, TrieCache, TrieDBRawIterator, TrieRecorder,
 };
-#[cfg(not(feature = "typed-cache"))]
+#[cfg(not(feature = "kvdb"))]
 use sp_trie::DBValue;
-#[cfg(feature = "typed-cache")]
+#[cfg(feature = "kvdb")]
 use typed_cache::StorageValue as DBValue;
 #[cfg(feature = "std")]
 use std::{collections::HashMap, sync::Arc};
@@ -431,7 +431,7 @@ where
 	/// Calls the given closure with a [`TrieDb`] constructed for the given
 	/// storage root and (optionally) child trie.
 	#[inline]
-	#[cfg(not(feature = "typed-cache"))]
+	#[cfg(not(feature = "kvdb"))]
 	fn with_trie_db<R>(
 		&self,
 		root: H::Out,
@@ -475,7 +475,7 @@ where
 			}
 		}
 
-		#[cfg(not(feature = "typed-cache"))]
+		#[cfg(not(feature = "kvdb"))]
 		let result = self.storage(child_info.prefixed_storage_key().as_slice())?.map(|r| {
 			let mut hash = H::Out::default();
 
@@ -484,7 +484,7 @@ where
 
 			hash
 		});
-		#[cfg(feature = "typed-cache")]
+		#[cfg(feature = "kvdb")]
 		let result = self.storage(child_info.prefixed_storage_key().as_slice())?.map(|r| r
 			.get_raw(false)
 			.map(|r| {
@@ -509,9 +509,9 @@ where
 		child_info: &ChildInfo,
 		key: &[u8],
 	) -> Result<Option<StorageKey>> {
-		#[cfg(feature = "typed-cache")]
+		#[cfg(feature = "kvdb")]
 		return Err("`next_child_storage_key` Unsupported".to_string());
-		#[cfg(not(feature = "typed-cache"))]
+		#[cfg(not(feature = "kvdb"))]
 		{
 			let child_root = match self.child_root(child_info)? {
 				Some(child_root) => child_root,
@@ -523,7 +523,7 @@ where
 	}
 
 	/// Return next key from main trie or child trie by providing corresponding root.
-	#[cfg(not(feature = "typed-cache"))]
+	#[cfg(not(feature = "kvdb"))]
 	fn next_storage_key_from_root(
 		&self,
 		root: &H::Out,
@@ -902,9 +902,6 @@ impl<'a, S: 'a + TrieBackendStorage<H>, H: Hasher> HashDBRef<H, DBValue> for Eph
 /// Key-value pairs storage that is used by trie backend essence.
 pub trait TrieBackendStorage<H: Hasher>: Send + Sync {
 	/// Type of in-memory overlay.
-	#[cfg(not(feature = "async-root"))]
-	type Overlay: HashDB<H, DBValue> + Default + Consolidate;
-	#[cfg(feature = "async-root")]
 	type Overlay: HashDB<H, DBValue> + Default + Consolidate + Clone;
 
 	/// Get the value stored at key.
@@ -956,7 +953,7 @@ impl<S: TrieBackendStorage<H>, H: Hasher, C: AsLocalTrieCache<H> + Send + Sync> 
 	for TrieBackendEssence<S, H, C>
 {
 	fn get(&self, key: &H::Out, prefix: Prefix) -> Option<DBValue> {
-		#[cfg(not(feature = "typed-cache"))]
+		#[cfg(not(feature = "kvdb"))]
 		if *key == self.empty {
 			return Some([0u8].to_vec())
 		}

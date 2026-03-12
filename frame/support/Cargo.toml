@@ -68,7 +68,6 @@ std = [
 	"sp-inherents/std",
 	"sp-staking/std",
 	"sp-state-machine/std",
-	"sp-state-machine/typed-cache",
 	"sp-weights/std",
 	"frame-support-procedural/std",
 	"log/std",

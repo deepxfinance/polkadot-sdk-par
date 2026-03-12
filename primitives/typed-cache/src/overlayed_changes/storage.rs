@@ -14,6 +14,20 @@ pub type OverlayCache = OverlayedChangeSet;
 /// History of value, with removal support.
 pub type OverlayedValue = OverlayedEntry<Option<StorageValue>>;
 
+pub trait MergeOverlay {
+    fn extend(&mut self, other: OverlayCache);
+}
+
+impl MergeOverlay for OverlayCache {
+    fn extend(&mut self, mut other: OverlayCache) {
+        if self.is_empty() {
+            core::mem::swap(self, &mut other)
+        } else {
+            self.extend(other);
+        }
+    }
+}
+
 impl OverlayedChangeSet {
     pub fn get_raw_changes(&self, key: &[u8]) -> Option<Option<Vec<u8>>> {
         match self.changes.get(key) {

@@ -172,7 +172,7 @@ where
 		unimplemented!("clear_child_prefix is not supported in ReadOnlyExternalities")
 	}
 
-	#[cfg(feature = "typed-cache")]
+	#[cfg(feature = "kvdb")]
 	fn exists_storage(&mut self, key: &[u8]) -> bool {
 		self.storage(key).map(|v| v.exists()).unwrap_or(false)
 	}

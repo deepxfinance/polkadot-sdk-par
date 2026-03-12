@@ -24,11 +24,9 @@ use sp_runtime::{
 	traits::{Block as BlockT, HashFor},
 	StateVersion,
 };
-use sp_state_machine::{
-	backend::{AsTrieBackend, Backend as StateBackend},
-	IterArgs, StorageIterator, StorageKey, StorageValue, TrieBackend,
-};
+use sp_state_machine::{backend::{AsTrieBackend, Backend as StateBackend}, IterArgs, OverlayCache, StorageIterator, StorageKey, StorageValue, TrieBackend};
 use std::sync::Arc;
+use codec::Encode;
 
 /// State abstraction for recording stats about state access.
 pub struct RecordStatsState<S, B: BlockT> {
@@ -111,8 +109,9 @@ impl<S: StateBackend<HashFor<B>>, B: BlockT> StateBackend<HashFor<B>> for Record
 	type TrieBackendStorage = S::TrieBackendStorage;
 	type RawIter = RawIter<S, B>;
 
-	fn storage(&self, key: &[u8]) -> Result<Option<Vec<u8>>, Self::Error> {
+	fn storage(&self, key: &[u8]) -> Result<Option<StorageValue>, Self::Error> {
 		let value = self.state.storage(key)?;
+		#[cfg(not(feature = "kvdb"))]
 		self.usage.tally_key_read(key, value.as_ref(), false);
 		Ok(value)
 	}
@@ -125,11 +124,12 @@ impl<S: StateBackend<HashFor<B>>, B: BlockT> StateBackend<HashFor<B>> for Record
 		&self,
 		child_info: &ChildInfo,
 		key: &[u8],
-	) -> Result<Option<Vec<u8>>, Self::Error> {
+	) -> Result<Option<StorageValue>, Self::Error> {
 		let key = (child_info.storage_key().to_vec(), key.to_vec());
 		let value = self.state.child_storage(child_info, &key.1)?;
 
 		// just pass it through the usage counter
+		#[cfg(not(feature = "kvdb"))]
 		let value = self.usage.tally_child_key_read(&key, value, false);
 
 		Ok(value)
@@ -169,7 +169,7 @@ impl<S: StateBackend<HashFor<B>>, B: BlockT> StateBackend<HashFor<B>> for Record
 
 	fn storage_root<'a>(
 		&self,
-		delta: impl Iterator<Item = (&'a [u8], Option<&'a [u8]>)>,
+		delta: impl Iterator<Item = (&'a [u8], Option<&'a StorageValue>)>,
 		state_version: StateVersion,
 	) -> (B::Hash, Self::Transaction)
 	where
@@ -181,7 +181,7 @@ impl<S: StateBackend<HashFor<B>>, B: BlockT> StateBackend<HashFor<B>> for Record
 	fn child_storage_root<'a>(
 		&self,
 		child_info: &ChildInfo,
-		delta: impl Iterator<Item = (&'a [u8], Option<&'a [u8]>)>,
+		delta: impl Iterator<Item = (&'a [u8], Option<&'a StorageValue>)>,
 		state_version: StateVersion,
 	) -> (B::Hash, bool, Self::Transaction)
 	where
