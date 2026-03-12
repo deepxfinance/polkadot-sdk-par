@@ -172,11 +172,6 @@ where
 		unimplemented!("clear_child_prefix is not supported in ReadOnlyExternalities")
 	}
 
-	#[cfg(feature = "kvdb")]
-	fn exists_storage(&mut self, key: &[u8]) -> bool {
-		self.storage(key).map(|v| v.exists()).unwrap_or(false)
-	}
-
 	fn storage_append(&mut self, _key: Vec<u8>, _value: Vec<u8>) {
 		unimplemented!("storage_append is not supported in ReadOnlyExternalities")
 	}

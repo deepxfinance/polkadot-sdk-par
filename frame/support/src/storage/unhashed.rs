@@ -309,7 +309,7 @@ mod unhashed_no_std {
 
 #[cfg(feature = "std")]
 mod unhashed_std {
-	use codec::{Decode, Encode};
+	use codec::Encode;
 	use typed_cache::{QueryTransfer, RcT, StorageValue, TStorage, TStorageOverlay};
 	use crate::storage::TypedAppend;
 

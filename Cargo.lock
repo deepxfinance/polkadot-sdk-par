@@ -11591,7 +11591,6 @@ dependencies = [
  "serde",
  "sp-debug-derive",
  "sp-std",
- "typed-cache",
 ]
 
 [[package]]

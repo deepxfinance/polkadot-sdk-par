@@ -121,21 +121,6 @@ where
     }
 }
 
-// impl<H, KF> MergeOverlay for MemoryDB<H, KF, DBValue>
-// where
-//     H: KeyHasher,
-//     KF: KeyFunction<H>,
-// {
-//     fn extend(&mut self, mut other: OverlayCache) {
-//         if let Some(code) = other.changes.get(b":code".as_ref()) {
-//             if let Some(value) = code.value() {
-//                 let key_hash = H::hash(b":code".as_ref());
-//                 self.emplace(&key_hash, (b":code", Some(STORAGE_HASH)), value);
-//             }
-//         }
-//     }
-// }
-
 impl<H, KF, T> MemoryDB<H, KF, T>
 where
     H: KeyHasher,

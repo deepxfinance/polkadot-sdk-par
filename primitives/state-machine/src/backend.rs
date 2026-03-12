@@ -30,7 +30,6 @@ use sp_core::storage::{ChildInfo, StateVersion, TrackedStorageKey};
 #[cfg(feature = "std")]
 use sp_core::traits::RuntimeCode;
 use sp_std::vec::Vec;
-pub use typed_cache::MergeOverlay;
 
 /// A struct containing arguments for iterating over the storage.
 #[derive(Default)]
@@ -299,9 +298,6 @@ pub trait Backend<H: Hasher>: sp_std::fmt::Debug {
 			if empty {
 				child_roots.push((prefixed_storage_key.into_inner(), None));
 			} else {
-				#[cfg(not(feature = "kvdb"))]
-				child_roots.push((prefixed_storage_key.into_inner(), Some(child_root.encode())));
-				#[cfg(feature = "kvdb")]
 				child_roots.push((prefixed_storage_key.into_inner(), Some(StorageValue::new_raw(Some(child_root.encode()), true))));
 			}
 		}
@@ -431,9 +427,6 @@ impl<'a, B: Backend<H>, H: Hasher> sp_core::traits::FetchRuntimeCode
 			.storage(sp_core::storage::well_known_keys::CODE)
 			.ok()
 			.flatten();
-		#[cfg(not(feature = "kvdb"))]
-		{ value.map(Into::into) }
-		#[cfg(feature = "kvdb")]
 		value.map(|v| v.get_raw(false))?.map(Into::into)
 	}
 }
@@ -462,9 +455,6 @@ where
 			.storage(sp_core::storage::well_known_keys::HEAP_PAGES)
 			.ok()
 			.flatten();
-		#[cfg(not(feature = "kvdb"))]
-		let heap_pages = value.and_then(|d| codec::Decode::decode(&mut &d[..]).ok());
-		#[cfg(feature = "kvdb")]
 		let heap_pages = value.and_then(|v| v.get_t::<u64>());
 
 		Ok(RuntimeCode { code_fetcher: self, hash, heap_pages })

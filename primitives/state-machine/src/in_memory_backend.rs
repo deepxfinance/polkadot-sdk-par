@@ -160,18 +160,6 @@ where
 	KF: KeyFunction<H> + Send + Sync,
 	KF::Key: AsRef<[u8]>,
 {
-	#[cfg(not(feature = "kvdb"))]
-	fn from((inners, state_version): (Storage, StateVersion)) -> Self {
-		let mut inner: HashMap<Option<ChildInfo>, BTreeMap<StorageKey, Vec<u8>>> = inners
-			.children_default
-			.into_values()
-			.map(|c| (Some(c.child_info), c.data.into()))
-			.collect();
-		inner.insert(None, inners.top);
-		(inner, state_version).into()
-	}
-
-	#[cfg(feature = "kvdb")]
 	fn from((inners, state_version): (Storage, StateVersion)) -> Self {
 		let mut inner: HashMap<Option<ChildInfo>, BTreeMap<StorageKey, StorageValue>> = inners
 			.children_default
@@ -192,7 +180,6 @@ where
 {
 	fn from((inner, state_version): (BTreeMap<StorageKey, Vec<u8>>, StateVersion)) -> Self {
 		let mut expanded = HashMap::new();
-		#[cfg(feature = "kvdb")]
 		let inner = inner.into_iter().map(|(k, v)| (k, v.into())).collect();
 		expanded.insert(None, inner);
 		(expanded, state_version).into()

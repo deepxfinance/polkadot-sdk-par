@@ -67,9 +67,6 @@ impl BasicExternalities {
 				.overlay
 				.changes()
 				.filter_map(|(k, v)| {
-					#[cfg(not(feature = "kvdb"))]
-					{ v.value().map(|v| (k.to_vec(), v.to_vec())) } 
-					#[cfg(feature = "kvdb")]
 					v.value().and_then(|v| v.get_raw(false).map(|v| (k.to_vec(), v)))
 				})
 				.collect(),
@@ -82,9 +79,6 @@ impl BasicExternalities {
 						sp_core::storage::StorageChild {
 							data: iter
 								.filter_map(|(k, v)| {
-									#[cfg(not(feature = "kvdb"))]
-									{ v.value().map(|v| (k.to_vec(), v.to_vec())) }
-									#[cfg(feature = "kvdb")]
 									v.value().and_then(|v| v.get_raw(false).map(|v| (k.to_vec(), v)))
 								})
 								.collect(),
@@ -180,10 +174,8 @@ impl Externalities for BasicExternalities {
 	}
 
 	fn storage_hash(&mut self, key: &[u8]) -> Option<Vec<u8>> {
-		#[cfg(feature = "kvdb")]
-		{ self.storage(key).map(|v| v.get_raw(true).map(|v| Blake2Hasher::hash(&v).encode()))? }
-		#[cfg(not(feature = "kvdb"))]
-		self.storage(key).map(|v| Blake2Hasher::hash(&v).encode())
+		self.storage(key).map(|v| v.get_raw(false)
+			.map(|v| Blake2Hasher::hash(&v).encode()))?
 	}
 
 	fn child_storage(&self, child_info: &ChildInfo, key: &[u8]) -> Option<StorageValue> {
@@ -191,10 +183,8 @@ impl Externalities for BasicExternalities {
 	}
 
 	fn child_storage_hash(&self, child_info: &ChildInfo, key: &[u8]) -> Option<Vec<u8>> {
-		#[cfg(feature = "kvdb")]
-		{ self.child_storage(child_info, key).map(|v| v.get_raw(true).map(|v| Blake2Hasher::hash(&v).encode()))? }
-		#[cfg(not(feature = "kvdb"))]
-		self.child_storage(child_info, key).map(|v| Blake2Hasher::hash(&v).encode())
+		self.child_storage(child_info, key).map(|v| v.get_raw(true)
+			.map(|v| Blake2Hasher::hash(&v).encode()))?
 	}
 
 	fn next_storage_key(&self, key: &[u8]) -> Option<StorageKey> {
@@ -265,19 +255,18 @@ impl Externalities for BasicExternalities {
 		MultiRemovalResults { maybe_cursor: None, backend: count, unique: count, loops: count }
 	}
 
-	#[cfg(feature = "kvdb")]
-	fn exists_storage(&mut self, key: &[u8]) -> bool {
-		self.storage(key).map(|v| v.exists()).unwrap_or(false)	
-	}
-
 	fn storage_append(&mut self, key: Vec<u8>, value: Vec<u8>) {
-		#[cfg(not(feature = "kvdb"))]
-		{
-			let current_value = self.overlay.value_mut_or_insert_with(&key, || Default::default());
-			crate::ext::StorageAppend::new(current_value).append(value);
+		let current_value = self.overlay
+			.value_mut_or_insert_with(&key, || Default::default());
+		match current_value {
+			StorageValue::Raw(rct) => rct
+				.mutate_value_query(|v| crate::ext::StorageAppend::new(v).append(value)),
+			StorageValue::Any(rct) => {
+				let mut v = rct.get_raw(false).unwrap_or_default();
+				crate::ext::StorageAppend::new(&mut v).append(value);
+				rct.put_raw(v, true).expect("Invalid append value type");
+			}
 		}
-		#[cfg(feature = "kvdb")]
-		panic!("`BasicExternalities::storage_append` not supported for `kv-db`");
 	}
 
 	fn storage_root(&mut self, state_version: StateVersion) -> Vec<u8> {

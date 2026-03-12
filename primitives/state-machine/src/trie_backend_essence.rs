@@ -475,16 +475,16 @@ where
 			}
 		}
 
-		#[cfg(not(feature = "kvdb"))]
-		let result = self.storage(child_info.prefixed_storage_key().as_slice())?.map(|r| {
-			let mut hash = H::Out::default();
-
-			// root is fetched from DB, not writable by runtime, so it's always valid.
-			hash.as_mut().copy_from_slice(&r[..]);
-
-			hash
-		});
-		#[cfg(feature = "kvdb")]
+		// #[cfg(not(feature = "kvdb"))]
+		// let result = self.storage(child_info.prefixed_storage_key().as_slice())?.map(|r| {
+		// 	let mut hash = H::Out::default();
+		// 
+		// 	// root is fetched from DB, not writable by runtime, so it's always valid.
+		// 	hash.as_mut().copy_from_slice(&r[..]);
+		// 
+		// 	hash
+		// });
+		// #[cfg(feature = "kvdb")]
 		let result = self.storage(child_info.prefixed_storage_key().as_slice())?.map(|r| r
 			.get_raw(false)
 			.map(|r| {

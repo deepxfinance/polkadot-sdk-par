@@ -44,12 +44,12 @@ use std::{
 #[cfg(feature = "std")]
 use sp_core::bytes::to_hex;
 use crate::backend::Consolidate;
-#[cfg(not(feature = "kvdb"))]
-pub use changeset::{
-	OverlayedChangeSet, AlreadyInRuntime, NoOpenTransaction, NotInRuntime, OverlayedValue,
-	OverlayedEntry, MergeChange, DefaultMerge, Changes, StorageValue
-};
-#[cfg(feature = "kvdb")]
+// #[cfg(not(feature = "kvdb"))]
+// pub use changeset::{
+// 	OverlayedChangeSet, AlreadyInRuntime, NoOpenTransaction, NotInRuntime, OverlayedValue,
+// 	OverlayedEntry, MergeChange, DefaultMerge, Changes, StorageValue
+// };
+// #[cfg(feature = "kvdb")]
 pub use typed_cache::{
 	OverlayedChangeSet, AlreadyInRuntime, NoOpenTransaction, NotInRuntime, OverlayedValue,
 	OverlayedEntry, MergeChange, DefaultMerge, Changes, StorageValue
@@ -237,26 +237,26 @@ impl OverlayedChanges {
 
 	/// get top change for some key
 	pub fn top_change(&self, key: &StorageKey) -> Option<StorageValue> {
-		#[cfg(not(feature = "kvdb"))]
-		{ self.top.get(key).map(|e| e.value_ref().clone())? }
-		#[cfg(feature = "kvdb")]
+		// #[cfg(not(feature = "kvdb"))]
+		// { self.top.get(key).map(|e| e.value_ref().clone())? }
+		// #[cfg(feature = "kvdb")]
 		self.top.get(key).map(|e| e.value_ref().clone())?
 	}
 	
 	pub fn get_change_encode(&self, key: &StorageKey) -> Option<Vec<u8>> {
-		#[cfg(not(feature = "kvdb"))]
-		{ self.top.get(key).map(|e| e.value_ref().clone())? }
-		#[cfg(feature = "kvdb")]
+		// #[cfg(not(feature = "kvdb"))]
+		// { self.top.get(key).map(|e| e.value_ref().clone())? }
+		// #[cfg(feature = "kvdb")]
 		self.top.get_raw_changes(key)?
 	}
 	
 	pub fn get_change_t<T: TStorageOverlay>(&self, key: &StorageKey) -> Option<T> {
-		#[cfg(not(feature = "kvdb"))]
-		{ 
-			self.top.get(key)
-			.map(|e| e.value().and_then(|v| Decode::decode(&mut v.as_slice()).ok()))?
-		}
-		#[cfg(feature = "kvdb")]
+		// #[cfg(not(feature = "kvdb"))]
+		// { 
+		// 	self.top.get(key)
+		// 	.map(|e| e.value().and_then(|v| Decode::decode(&mut v.as_slice()).ok()))?
+		// }
+		// #[cfg(feature = "kvdb")]
 		self.top.get_muted_t(key)?
 	}
 	
@@ -486,16 +486,16 @@ impl OverlayedChanges {
 	/// to the backend); Some(None) if the key has been deleted. Some(Some(...)) for a key whose
 	/// value has been set.
 	pub fn storage(&self, key: &[u8]) -> Option<Option<&StorageValue>> {
-		#[cfg(not(feature = "kvdb"))]
-		{
-			self.top.get(key).map(|x| {
-				let value = x.value();
-				let size_read = value.map(|x| x.len() as u64).unwrap_or(0);
-				self.stats.tally_read_modified(size_read);
-				value.map(AsRef::as_ref)
-			})
-		}
-		#[cfg(feature = "kvdb")]
+		// #[cfg(not(feature = "kvdb"))]
+		// {
+		// 	self.top.get(key).map(|x| {
+		// 		let value = x.value();
+		// 		let size_read = value.map(|x| x.len() as u64).unwrap_or(0);
+		// 		self.stats.tally_read_modified(size_read);
+		// 		value.map(AsRef::as_ref)
+		// 	})
+		// }
+		// #[cfg(feature = "kvdb")]
 		self.top.get(&key.to_vec()).map(|v| v.value_ref().as_ref())
 	}
 
@@ -510,13 +510,13 @@ impl OverlayedChanges {
 		key: &[u8],
 		init: impl Fn() -> StorageValue,
 	) -> &mut StorageValue {
-		#[cfg(not(feature = "kvdb"))]
-		{
-			// if the value was deleted initialise it back with an empty vec
-			self.top.modify(key.to_vec(), init, self.extrinsic_index())
-				.get_or_insert_with(StorageValue::default)
-		}
-		#[cfg(feature = "kvdb")]
+		// #[cfg(not(feature = "kvdb"))]
+		// {
+		// 	// if the value was deleted initialise it back with an empty vec
+		// 	self.top.modify(key.to_vec(), init, self.extrinsic_index())
+		// 		.get_or_insert_with(StorageValue::default)
+		// }
+		// #[cfg(feature = "kvdb")]
 		self.top.modify(key.to_vec(), || { Some(init()) } , self.extrinsic_index()).as_mut().expect("Must Some")
 	}
 
@@ -525,28 +525,28 @@ impl OverlayedChanges {
 	/// value has been set.
 	pub fn child_storage(&self, child_info: &ChildInfo, key: &[u8]) -> Option<Option<&StorageValue>> {
 		let map = self.children.get(child_info.storage_key())?;
-		#[cfg(not(feature = "kvdb"))]
-		{
-			let value = map.0.get(key)?.value();
-			let size_read = value.map(|x| x.len() as u64).unwrap_or(0);
-			self.stats.tally_read_modified(size_read);
-			Some(value.map(AsRef::as_ref))
-		}
-		#[cfg(feature = "kvdb")]
+		// #[cfg(not(feature = "kvdb"))]
+		// {
+		// 	let value = map.0.get(key)?.value();
+		// 	let size_read = value.map(|x| x.len() as u64).unwrap_or(0);
+		// 	self.stats.tally_read_modified(size_read);
+		// 	Some(value.map(AsRef::as_ref))
+		// }
+		// #[cfg(feature = "kvdb")]
 		map.0.get(key).map(|e| e.value())
 	}
 
 	/// Set a new value for the specified key.
 	///
 	/// Can be rolled back or committed when called inside a transaction.
-	#[cfg(not(feature = "kvdb"))]
-	pub fn set_storage(&mut self, key: StorageKey, val: Option<StorageValue>) {
-		let size_write = val.as_ref().map(|x| x.len() as u64).unwrap_or(0);
-		self.stats.tally_write_overlay(size_write);
-		self.top.set(key, val, self.extrinsic_index());
-	}
-
-	#[cfg(feature = "kvdb")]
+	// #[cfg(not(feature = "kvdb"))]
+	// pub fn set_storage(&mut self, key: StorageKey, val: Option<StorageValue>) {
+	// 	let size_write = val.as_ref().map(|x| x.len() as u64).unwrap_or(0);
+	// 	self.stats.tally_write_overlay(size_write);
+	// 	self.top.set(key, val, self.extrinsic_index());
+	// }
+	// 
+	// #[cfg(feature = "kvdb")]
 	pub fn set_storage(&mut self, key: StorageKey, val: Option<StorageValue>) {
 		self.top.set(key, val, self.extrinsic_index());
 	}
@@ -556,27 +556,28 @@ impl OverlayedChanges {
 	/// `None` can be used to delete a value specified by the given key.
 	///
 	/// Can be rolled back or committed when called inside a transaction.
-	#[cfg(not(feature = "kvdb"))]
-	pub(crate) fn set_child_storage(
-		&mut self,
-		child_info: &ChildInfo,
-		key: StorageKey,
-		val: Option<StorageValue>,
-	) {
-		let extrinsic_index = self.extrinsic_index();
-		let size_write = val.as_ref().map(|x| x.len() as u64).unwrap_or(0);
-		self.stats.tally_write_overlay(size_write);
-		let storage_key = child_info.storage_key().to_vec();
-		let top = &self.top;
-		let (changeset, info) = self
-			.children
-			.entry(storage_key)
-			.or_insert_with(|| (top.spawn_child(), child_info.clone()));
-		let updatable = info.try_update(child_info);
-		debug_assert!(updatable);
-		changeset.set(key, val, extrinsic_index);
-	}
-	#[cfg(feature = "kvdb")]
+	// #[cfg(not(feature = "kvdb"))]
+	// pub(crate) fn set_child_storage(
+	// 	&mut self,
+	// 	child_info: &ChildInfo,
+	// 	key: StorageKey,
+	// 	val: Option<StorageValue>,
+	// ) {
+	// 	let extrinsic_index = self.extrinsic_index();
+	// 	let size_write = val.as_ref().map(|x| x.len() as u64).unwrap_or(0);
+	// 	self.stats.tally_write_overlay(size_write);
+	// 	let storage_key = child_info.storage_key().to_vec();
+	// 	let top = &self.top;
+	// 	let (changeset, info) = self
+	// 		.children
+	// 		.entry(storage_key)
+	// 		.or_insert_with(|| (top.spawn_child(), child_info.clone()));
+	// 	let updatable = info.try_update(child_info);
+	// 	debug_assert!(updatable);
+	// 	changeset.set(key, val, extrinsic_index);
+	// }
+	// 
+	// #[cfg(feature = "kvdb")]
 	pub(crate) fn set_child_storage(
 		&mut self,
 		child_info: &ChildInfo,
@@ -877,15 +878,15 @@ impl OverlayedChanges {
 	fn extrinsic_index(&self) -> Option<u32> {
 		match self.collect_extrinsics {
 			true => {
-				#[cfg(not(feature = "kvdb"))]
-				{
-					Some(
-						self.storage(EXTRINSIC_INDEX)
-							.and_then(|idx| idx.and_then(|idx| Decode::decode(&mut idx.as_slice()).ok()))
-							.unwrap_or(NO_EXTRINSIC_INDEX)
-					)
-				}
-				#[cfg(feature = "kvdb")]
+				// #[cfg(not(feature = "kvdb"))]
+				// {
+				// 	Some(
+				// 		self.storage(EXTRINSIC_INDEX)
+				// 			.and_then(|idx| idx.and_then(|idx| Decode::decode(&mut idx.as_slice()).ok()))
+				// 			.unwrap_or(NO_EXTRINSIC_INDEX)
+				// 	)
+				// }
+				// #[cfg(feature = "kvdb")]
 				Some(self.top.get_t::<u32>(EXTRINSIC_INDEX)?.unwrap_or(NO_EXTRINSIC_INDEX))
 			},
 			false => None,

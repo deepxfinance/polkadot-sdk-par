@@ -4,7 +4,7 @@ pub mod overlay_cache {
 	use std::marker::PhantomData;
 	use hash_db::Hasher;
 	use parking_lot::MutexGuard;
-	use kv_db::{DBValue, KVCache, MergeOverlay, OverlayCache, OverlayedChangeSet};
+	use kv_db::{DBValue, KVCache, OverlayedChangeSet};
 
 	#[cfg(feature = "std")]
 	pub type KValueCacheMap = OverlayedChangeSet;

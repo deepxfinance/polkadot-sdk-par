@@ -273,6 +273,7 @@ impl StorageValue {
         }
     }
 }
+
 impl From<&Vec<u8>> for StorageValue {
     fn from(value: &Vec<u8>) -> Self {
         Self::new_raw(Some(value.clone()), false)

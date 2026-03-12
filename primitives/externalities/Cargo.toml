@@ -29,4 +29,3 @@ std = [
 	"sp-storage/std",
 	"typed-cache/std",
 ]
-typed-cache = ["sp-storage/typed-cache"]

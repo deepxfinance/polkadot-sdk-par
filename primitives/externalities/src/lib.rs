@@ -36,11 +36,7 @@ use sp_storage::{ChildInfo, StateVersion, TrackedStorageKey};
 pub use extensions::{Extension, ExtensionStore, Extensions};
 pub use scope_limited::{set_and_run_with_externalities, with_externalities};
 use typed_cache::OverlayCache;
-#[cfg(feature = "typed-cache")]
 pub use typed_cache::StorageValue;
-
-#[cfg(not(feature = "typed-cache"))]
-pub type StorageValue = Vec<u8>;
 
 mod extensions;
 mod scope_limited;
@@ -139,7 +135,7 @@ pub trait Externalities: ExtensionStore {
 
 	/// Whether a storage entry exists.
 	fn exists_storage(&mut self, key: &[u8]) -> bool {
-		self.storage(key).is_some()
+		self.storage(key).map(|v| v.exists()).unwrap_or(false)
 	}
 
 	/// Whether a child storage entry exists.

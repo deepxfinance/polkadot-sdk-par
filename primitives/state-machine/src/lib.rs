@@ -124,7 +124,7 @@ impl sp_std::fmt::Display for DefaultError {
 }
 
 pub use crate::{
-	backend::{Backend, IterArgs, KeysIter, PairsIter, StorageIterator, MergeOverlay},
+	backend::{Backend, IterArgs, KeysIter, PairsIter, StorageIterator},
 	error::{Error, ExecutionError},
 	ext::Ext,
 	overlayed_changes::{
@@ -136,10 +136,7 @@ pub use crate::{
 	trie_backend::{TrieBackend, TrieBackendBuilder},
 	trie_backend_essence::{Storage, TrieBackendStorage},
 };
-#[cfg(not(feature = "kvdb"))]
 pub use crate::overlayed_changes::StorageValue;
-#[cfg(feature = "kvdb")]
-pub use typed_cache::StorageValue;
 
 #[cfg(feature = "std")]
 mod std_reexport {
@@ -1135,7 +1132,12 @@ mod execution {
 		H::Out: Ord + Codec,
 	{
 		#[cfg(not(feature = "kvdb"))]
-		{ proving_backend.storage(key).map_err(|e| Box::new(e) as Box<dyn Error>) }
+		{ 
+			proving_backend
+				.storage(key)
+				.and_then(|v| v.get_raw(true))
+				.map_err(|e| Box::new(e) as Box<dyn Error>) 
+		}
 		#[cfg(feature = "kvdb")]
 		Err(Box::new("`read_proof_check_on_proving_backend` not supported in `kvdb` mode".to_string()))
 	}
@@ -1154,6 +1156,7 @@ mod execution {
 		{
 			proving_backend
 				.child_storage(child_info, key)
+				.and_then(|v| v.get_raw(true))
 				.map_err(|e| Box::new(e) as Box<dyn Error>)
 		}
 		#[cfg(feature = "kvdb")]
@@ -1381,7 +1384,8 @@ mod tests {
 			match (using_native, self.native_succeeds, self.fallback_succeeds) {
 				(true, true, _) | (false, _, true) => (
 					Ok(vec![
-						ext.storage(b"value1").unwrap()[0] + ext.storage(b"value2").unwrap()[0],
+						ext.storage(b"value1").and_then(|v| v.get_raw(true)).unwrap()[0] 
+							+ ext.storage(b"value2").and_then(|v| v.get_raw(true)).unwrap()[0],
 					]),
 					using_native,
 				),
@@ -1545,11 +1549,11 @@ mod tests {
 		let backend = state.as_trie_backend();
 
 		let mut overlay = OverlayedChanges::default();
-		overlay.set_storage(b"aba".to_vec(), Some(b"1312".to_vec()));
-		overlay.set_storage(b"bab".to_vec(), Some(b"228".to_vec()));
+		overlay.set_storage(b"aba".to_vec(), Some(b"1312".to_vec().into()));
+		overlay.set_storage(b"bab".to_vec(), Some(b"228".to_vec().into()));
 		overlay.start_transaction();
-		overlay.set_storage(b"abd".to_vec(), Some(b"69".to_vec()));
-		overlay.set_storage(b"bbd".to_vec(), Some(b"42".to_vec()));
+		overlay.set_storage(b"abd".to_vec(), Some(b"69".to_vec().into()));
+		overlay.set_storage(b"bbd".to_vec(), Some(b"42".to_vec().into()));
 
 		let overlay_limit = overlay.clone();
 		{
@@ -1570,8 +1574,8 @@ mod tests {
 				b"aba".to_vec() => None,
 				b"abd".to_vec() => None,
 
-				b"bab".to_vec() => Some(b"228".to_vec()),
-				b"bbd".to_vec() => Some(b"42".to_vec())
+				b"bab".to_vec() => Some(b"228".to_vec().into()),
+				b"bbd".to_vec() => Some(b"42".to_vec().into())
 			],
 		);
 
@@ -1596,8 +1600,8 @@ mod tests {
 				b"aba".to_vec() => None,
 				b"abd".to_vec() => None,
 
-				b"bab".to_vec() => Some(b"228".to_vec()),
-				b"bbd".to_vec() => Some(b"42".to_vec())
+				b"bab".to_vec() => Some(b"228".to_vec().into()),
+				b"bbd".to_vec() => Some(b"42".to_vec().into())
 			],
 		);
 	}
@@ -1616,10 +1620,10 @@ mod tests {
 		let backend = InMemoryBackend::<BlakeTwo256>::from((initial, StateVersion::default()));
 
 		let mut overlay = OverlayedChanges::default();
-		overlay.set_child_storage(&child_info, b"1".to_vec(), Some(b"1312".to_vec()));
-		overlay.set_child_storage(&child_info, b"2".to_vec(), Some(b"1312".to_vec()));
-		overlay.set_child_storage(&child_info, b"3".to_vec(), Some(b"1312".to_vec()));
-		overlay.set_child_storage(&child_info, b"4".to_vec(), Some(b"1312".to_vec()));
+		overlay.set_child_storage(&child_info, b"1".to_vec(), Some(b"1312".to_vec().into()));
+		overlay.set_child_storage(&child_info, b"2".to_vec(), Some(b"1312".to_vec().into()));
+		overlay.set_child_storage(&child_info, b"3".to_vec(), Some(b"1312".to_vec().into()));
+		overlay.set_child_storage(&child_info, b"4".to_vec(), Some(b"1312".to_vec().into()));
 
 		{
 			let mut cache = StorageTransactionCache::default();
@@ -1703,8 +1707,8 @@ mod tests {
 		let mut cache = StorageTransactionCache::default();
 		let mut ext = Ext::new(&mut overlay, &mut cache, backend, None);
 
-		ext.set_child_storage(child_info, b"abc".to_vec(), b"def".to_vec());
-		assert_eq!(ext.child_storage(child_info, b"abc"), Some(b"def".to_vec()));
+		ext.set_child_storage(child_info, b"abc".to_vec(), b"def".to_vec().into());
+		assert_eq!(ext.child_storage(child_info, b"abc"), Some(b"def".to_vec().into()));
 		let _ = ext.kill_child_storage(child_info, None, None);
 		assert_eq!(ext.child_storage(child_info, b"abc"), None);
 	}
@@ -1721,7 +1725,7 @@ mod tests {
 			let mut ext = Ext::new(&mut overlay, &mut cache, backend, None);
 
 			ext.storage_append(key.clone(), reference_data[0].encode());
-			assert_eq!(ext.storage(key.as_slice()), Some(vec![reference_data[0].clone()].encode()));
+			assert_eq!(ext.storage(key.as_slice()), Some(vec![reference_data[0].clone()].encode().into()));
 		}
 		overlay.start_transaction();
 		{
@@ -1730,12 +1734,12 @@ mod tests {
 			for i in reference_data.iter().skip(1) {
 				ext.storage_append(key.clone(), i.encode());
 			}
-			assert_eq!(ext.storage(key.as_slice()), Some(reference_data.encode()));
+			assert_eq!(ext.storage(key.as_slice()), Some(reference_data.encode().into()));
 		}
 		overlay.rollback_transaction().unwrap();
 		{
 			let ext = Ext::new(&mut overlay, &mut cache, backend, None);
-			assert_eq!(ext.storage(key.as_slice()), Some(vec![reference_data[0].clone()].encode()));
+			assert_eq!(ext.storage(key.as_slice()), Some(vec![reference_data[0].clone()].encode().into()));
 		}
 	}
 
@@ -1766,13 +1770,13 @@ mod tests {
 		{
 			let mut ext = Ext::new(&mut overlay, &mut cache, backend, None);
 
-			assert_eq!(ext.storage(key.as_slice()), Some(vec![Item::InitializationItem].encode()));
+			assert_eq!(ext.storage(key.as_slice()), Some(vec![Item::InitializationItem].encode().into()));
 
 			ext.storage_append(key.clone(), Item::DiscardedItem.encode());
 
 			assert_eq!(
 				ext.storage(key.as_slice()),
-				Some(vec![Item::InitializationItem, Item::DiscardedItem].encode()),
+				Some(vec![Item::InitializationItem, Item::DiscardedItem].encode().into()),
 			);
 		}
 		overlay.rollback_transaction().unwrap();
@@ -1781,23 +1785,23 @@ mod tests {
 		{
 			let mut ext = Ext::new(&mut overlay, &mut cache, backend, None);
 
-			assert_eq!(ext.storage(key.as_slice()), Some(vec![Item::InitializationItem].encode()));
+			assert_eq!(ext.storage(key.as_slice()), Some(vec![Item::InitializationItem].encode().into()));
 
 			ext.storage_append(key.clone(), Item::CommitedItem.encode());
 
 			assert_eq!(
 				ext.storage(key.as_slice()),
-				Some(vec![Item::InitializationItem, Item::CommitedItem].encode()),
+				Some(vec![Item::InitializationItem, Item::CommitedItem].encode().into()),
 			);
 		}
 		overlay.start_transaction();
 
 		// Then only initlaization item and second (committed) item should persist.
 		{
-			let ext = Ext::new(&mut overlay, &mut cache, backend, None);
+			let mut ext = Ext::new(&mut overlay, &mut cache, backend, None);
 			assert_eq!(
 				ext.storage(key.as_slice()),
-				Some(vec![Item::InitializationItem, Item::CommitedItem].encode()),
+				Some(vec![Item::InitializationItem, Item::CommitedItem].encode().into()),
 			);
 		}
 	}
@@ -1898,7 +1902,7 @@ mod tests {
 					let mut key = vec![0; key_len as usize];
 					rand.fill_bytes(&mut key[..]);
 					let value = vec![item as u8; item as usize + 28];
-					items.insert(key, value);
+					items.insert(key, value.into());
 				}
 				child_infos.push(child_info.clone());
 				storage.insert(Some(child_info), items);
@@ -2213,8 +2217,8 @@ mod tests {
 			let backend = test_trie(state_version, None, None);
 			let mut cache = StorageTransactionCache::default();
 			let mut ext = Ext::new(&mut overlay, &mut cache, &backend, None);
-			ext.set_child_storage(&child_info_1, b"abc".to_vec(), b"def".to_vec());
-			ext.set_child_storage(&child_info_2, b"abc".to_vec(), b"def".to_vec());
+			ext.set_child_storage(&child_info_1, b"abc".to_vec(), b"def".to_vec().into());
+			ext.set_child_storage(&child_info_2, b"abc".to_vec(), b"def".to_vec().into());
 			ext.storage_root(state_version);
 			cache.transaction.unwrap()
 		};
@@ -2240,18 +2244,18 @@ mod tests {
 
 		let mut overlay = OverlayedChanges::default();
 		overlay.start_transaction();
-		overlay.set_storage(b"ccc".to_vec(), Some(b"".to_vec()));
-		assert_eq!(overlay.storage(b"ccc"), Some(Some(&[][..])));
+		overlay.set_storage(b"ccc".to_vec(), Some(b"".to_vec().into()));
+		assert_eq!(overlay.storage(b"ccc"), Some(Some(&[][..].into())));
 		overlay.commit_transaction().unwrap();
 		overlay.start_transaction();
-		assert_eq!(overlay.storage(b"ccc"), Some(Some(&[][..])));
+		assert_eq!(overlay.storage(b"ccc"), Some(Some(&[][..].into())));
 		assert_eq!(overlay.storage(b"bbb"), None);
 
 		{
 			let mut cache = StorageTransactionCache::default();
 			let mut ext = Ext::new(&mut overlay, &mut cache, backend, None);
-			assert_eq!(ext.storage(b"bbb"), Some(vec![]));
-			assert_eq!(ext.storage(b"ccc"), Some(vec![]));
+			assert_eq!(ext.storage(b"bbb"), Some(vec![].into()));
+			assert_eq!(ext.storage(b"ccc"), Some(vec![].into()));
 			ext.clear_storage(b"ccc");
 			assert_eq!(ext.storage(b"ccc"), None);
 		}

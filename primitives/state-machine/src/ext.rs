@@ -222,31 +222,22 @@ where
 	}
 
 	fn overlay_cache(&mut self) -> Option<&mut OverlayCache> {
-		#[cfg(feature = "kvdb")]
-		{ Some(&mut self.overlay.top) }
-		#[cfg(not(feature = "kvdb"))]
-		None
+		Some(&mut self.overlay.top)
 	}
 
-	fn storage(&mut self, key: &[u8]) -> Option<StorageValue> {
+	fn storage(&mut self, key: &[u8]) -> Option<typed_cache::StorageValue> {
 		#[cfg(all(feature = "std", feature = "dev-time"))]
 		let start = std::time::Instant::now();
 		#[cfg(all(feature = "std", feature = "dev-time"))]
 		let mut backend = false;
 		let _guard = guard();
 		let result = if let Some(storage) = self.overlay.storage(key) {
-			#[cfg(not(feature = "kvdb"))]
-			{ storage.cloned() }
-			#[cfg(feature = "kvdb")]
 			storage.map(|s| s.clone_ref())
 		} else {
 			#[cfg(all(feature = "std", feature = "dev-time"))]
 			{ backend = true; }
 			let backend_value = self.backend.storage(key).expect(EXT_NOT_ALLOWED_TO_FAIL);
 			self.overlay.top.set(key.to_vec(), backend_value, None);
-			#[cfg(not(feature = "kvdb"))]
-			{ self.overlay.storage(key).map(|v| v.cloned()).expect(EXT_NOT_ALLOWED_TO_FAIL) }
-			#[cfg(feature = "kvdb")]
 			self.overlay.storage(key).map(|s| s.map(|s| s.clone_ref()))
 				.expect(EXT_NOT_ALLOWED_TO_FAIL)
 		};
@@ -263,34 +254,27 @@ where
 			}
 		}
 		// NOTE: be careful about touching the key names – used outside substrate!
-		#[cfg(not(feature = "kvdb"))]
-		trace!(
-			target: "state",
-			method = "Get",
-			ext_id = %HexDisplay::from(&self.id.to_le_bytes()),
-			key = %HexDisplay::from(&key),
-			result = ?result.as_ref().map(HexDisplay::from),
-			result_encoded = %HexDisplay::from(
-				&result
-					.as_ref()
-					.map(|v| EncodeOpaqueValue(v.clone()))
-					.encode()
-			),
-		);
+		// trace!(
+		// 	target: "state",
+		// 	method = "Get",
+		// 	ext_id = %HexDisplay::from(&self.id.to_le_bytes()),
+		// 	key = %HexDisplay::from(&key),
+		// 	result = ?result.as_ref().map(HexDisplay::from),
+		// 	result_encoded = %HexDisplay::from(
+		// 		&result
+		// 			.as_ref()
+		// 			.map(|v| EncodeOpaqueValue(v.clone()))
+		// 			.encode()
+		// 	),
+		// );
 
 		result
 	}
 
 	fn storage_hash(&mut self, key: &[u8]) -> Option<Vec<u8>> {
 		let _guard = guard();
-		#[cfg(feature = "kvdb")]
 		let result = self.storage(key)
 			.map(|v| v.get_raw(true).map(|v| H::hash(&v)))
-			.unwrap_or_else(|| self.backend.storage_hash(key).expect(EXT_NOT_ALLOWED_TO_FAIL));
-		#[cfg(not(feature = "kvdb"))]
-		let result = self.overlay
-			.storage(key)
-			.map(|x| x.map(|x| H::hash(x)))
 			.unwrap_or_else(|| self.backend.storage_hash(key).expect(EXT_NOT_ALLOWED_TO_FAIL));
 
 		trace!(
@@ -303,25 +287,24 @@ where
 		result.map(|r| r.encode())
 	}
 
-	fn child_storage(&self, child_info: &ChildInfo, key: &[u8]) -> Option<StorageValue> {
+	fn child_storage(&self, child_info: &ChildInfo, key: &[u8]) -> Option<typed_cache::StorageValue> {
 		let _guard = guard();
 		let result = self
 			.overlay
 			.child_storage(child_info, key)
-			.map(|x| x.map(|x| x.clone()))
+			.map(|x| x.map(|x| x.clone().into()))
 			.unwrap_or_else(|| {
 				self.backend.child_storage(child_info, key).expect(EXT_NOT_ALLOWED_TO_FAIL)
 			});
 
-		#[cfg(not(feature = "kvdb"))]
-		trace!(
-			target: "state",
-			method = "ChildGet",
-			ext_id = %HexDisplay::from(&self.id.to_le_bytes()),
-			child_info = %HexDisplay::from(&child_info.storage_key()),
-			key = %HexDisplay::from(&key),
-			result = ?result.as_ref().map(HexDisplay::from)
-		);
+		// trace!(
+		// 	target: "state",
+		// 	method = "ChildGet",
+		// 	ext_id = %HexDisplay::from(&self.id.to_le_bytes()),
+		// 	child_info = %HexDisplay::from(&child_info.storage_key()),
+		// 	key = %HexDisplay::from(&key),
+		// 	result = ?result.as_ref().map(HexDisplay::from)
+		// );
 
 		result
 	}
@@ -331,16 +314,9 @@ where
 		let child_storage = self
 			.overlay
 			.child_storage(child_info, key);
-		#[cfg(feature = "kvdb")]
 		let result = child_storage
 			.map(|v| v.map(|v| v.get_raw(true).map(|v| H::hash(&v))))?
 			.unwrap_or_else(|| self.backend.child_storage_hash(child_info, key).expect(EXT_NOT_ALLOWED_TO_FAIL));
-		#[cfg(not(feature = "kvdb"))]
-		let result = child_storage
-			.map(|x| x.map(|x| H::hash(x)))
-			.unwrap_or_else(|| {
-				self.backend.child_storage_hash(child_info, key).expect(EXT_NOT_ALLOWED_TO_FAIL)
-			});
 
 		trace!(
 			target: "state",
@@ -357,10 +333,7 @@ where
 	fn exists_storage(&mut self, key: &[u8]) -> bool {
 		let _guard = guard();
 		let result = match self.overlay.storage(key) {
-			Some(x) => { 
-				#[cfg(not(feature = "kvdb"))]
-				{ x.is_some() }
-				#[cfg(feature = "kvdb")]
+			Some(x) => {
 				x.expect(EXT_NOT_ALLOWED_TO_FAIL).exists()
 			},
 			_ => self.backend.exists_storage(key).expect(EXT_NOT_ALLOWED_TO_FAIL),
@@ -478,7 +451,7 @@ where
 		}
 	}
 
-	fn place_storage(&mut self, key: StorageKey, value: Option<StorageValue>) {
+	fn place_storage(&mut self, key: StorageKey, value: Option<typed_cache::StorageValue>) {
 		#[cfg(all(feature = "std", feature = "dev-time"))]
 		let start = std::time::Instant::now();
 		let _guard = guard();
@@ -488,20 +461,19 @@ where
 		}
 
 		// NOTE: be careful about touching the key names – used outside substrate!
-		#[cfg(not(feature = "kvdb"))]
-		trace!(
-			target: "state",
-			method = "Put",
-			ext_id = %HexDisplay::from(&self.id.to_le_bytes()),
-			key = %HexDisplay::from(&key),
-			value = ?value.as_ref().map(HexDisplay::from),
-			value_encoded = %HexDisplay::from(
-				&value
-					.as_ref()
-					.map(|v| EncodeOpaqueValue(v.clone()))
-					.encode()
-			),
-		);
+		// trace!(
+		// 	target: "state",
+		// 	method = "Put",
+		// 	ext_id = %HexDisplay::from(&self.id.to_le_bytes()),
+		// 	key = %HexDisplay::from(&key),
+		// 	value = ?value.as_ref().map(HexDisplay::from),
+		// 	value_encoded = %HexDisplay::from(
+		// 		&value
+		// 			.as_ref()
+		// 			.map(|v| EncodeOpaqueValue(v.clone()))
+		// 			.encode()
+		// 	),
+		// );
 
 		self.mark_dirty();
 		self.overlay.set_storage(key.clone(), value);
@@ -519,17 +491,16 @@ where
 		&mut self,
 		child_info: &ChildInfo,
 		key: StorageKey,
-		value: Option<StorageValue>,
+		value: Option<typed_cache::StorageValue>,
 	) {
-		#[cfg(not(feature = "kvdb"))]
-		trace!(
-			target: "state",
-			method = "ChildPut",
-			ext_id = %HexDisplay::from(&self.id.to_le_bytes()),
-			child_info = %HexDisplay::from(&child_info.storage_key()),
-			key = %HexDisplay::from(&key),
-			value = ?value.as_ref().map(HexDisplay::from),
-		);
+		// trace!(
+		// 	target: "state",
+		// 	method = "ChildPut",
+		// 	ext_id = %HexDisplay::from(&self.id.to_le_bytes()),
+		// 	child_info = %HexDisplay::from(&child_info.storage_key()),
+		// 	key = %HexDisplay::from(&key),
+		// 	value = ?value.as_ref().map(HexDisplay::from),
+		// );
 		let _guard = guard();
 
 		self.mark_dirty();
@@ -613,8 +584,6 @@ where
 	}
 
 	fn storage_append(&mut self, key: Vec<u8>, value: Vec<u8>) {
-		#[cfg(feature = "kvdb")]
-		panic!("`BasicExternalities::storage_append` not supported for `kvdb`");
 		#[cfg(all(feature = "std", feature = "dev-time"))]
 		let start = std::time::Instant::now();
 		#[cfg(not(feature = "kvdb"))]
@@ -633,8 +602,15 @@ where
 		let current_value = self.overlay.value_mut_or_insert_with(&key, || {
 			backend.storage(&key).expect(EXT_NOT_ALLOWED_TO_FAIL).unwrap_or_default()
 		});
-		#[cfg(not(feature = "kvdb"))]
-		StorageAppend::new(current_value).append(value);
+		match current_value {
+			StorageValue::Raw(rct) => rct
+				.mutate_value_query(|v| crate::ext::StorageAppend::new(v).append(value)),
+			StorageValue::Any(rct) => {
+				let mut v = rct.get_raw(false).unwrap_or_default();
+				crate::ext::StorageAppend::new(&mut v).append(value);
+				rct.put_raw(v, true).expect("Invalid append value type");
+			}
+		}
 		#[cfg(all(feature = "std", feature = "dev-time"))]
 		{
 			let time = start.elapsed().as_nanos();
@@ -679,16 +655,9 @@ where
 		let storage_key = child_info.storage_key();
 		let prefixed_storage_key = child_info.prefixed_storage_key();
 		if self.storage_transaction_cache.transaction_storage_root.is_some() {
-			#[cfg(feature = "kvdb")]
 			let root = self
 				.storage(prefixed_storage_key.as_slice())
 				.and_then(|k| k.get_raw(true).and_then(|k| Decode::decode(&mut &k[..]).ok()))
-				// V1 is equivalent to V0 on empty root.
-				.unwrap_or_else(empty_child_trie_root::<LayoutV1<H>>);
-			#[cfg(not(feature = "kvdb"))]
-			let root = self
-				.storage(prefixed_storage_key.as_slice())
-				.and_then(|k| Decode::decode(&mut &k[..]).ok())
 				// V1 is equivalent to V0 on empty root.
 				.unwrap_or_else(empty_child_trie_root::<LayoutV1<H>>);
 			trace!(
@@ -702,9 +671,6 @@ where
 			root.encode()
 		} else {
 			let root = if let Some((changes, info)) = self.overlay.child_changes(storage_key) {
-				#[cfg(not(feature = "kvdb"))]
-				let delta = changes.map(|(k, v)| (k.as_ref(), v.value().map(AsRef::as_ref)));
-				#[cfg(feature = "kvdb")]
 				let delta = changes.map(|(k, v)| (k.as_ref(), v.value()));
 				Some(self.backend.child_storage_root(info, delta, state_version))
 			} else {
@@ -736,16 +702,9 @@ where
 				root
 			} else {
 				// empty overlay
-				#[cfg(feature = "kvdb")]
 				let root = self
 					.storage(prefixed_storage_key.as_slice())
 					.and_then(|k| k.get_raw(true).and_then(|k| Decode::decode(&mut &k[..]).ok()))
-					// V1 is equivalent to V0 on empty root.
-					.unwrap_or_else(empty_child_trie_root::<LayoutV1<H>>);
-				#[cfg(not(feature = "kvdb"))]
-				let root = self
-					.storage(prefixed_storage_key.as_slice())
-					.and_then(|k| Decode::decode(&mut &k[..]).ok())
 					// V1 is equivalent to V0 on empty root.
 					.unwrap_or_else(empty_child_trie_root::<LayoutV1<H>>);
 

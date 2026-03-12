@@ -17,9 +17,9 @@
 
 //! Overlayed changes for offchain indexing.
 
-#[cfg(not(feature = "kvdb"))]
-use super::changeset::OverlayedMap;
-#[cfg(feature = "kvdb")]
+// #[cfg(not(feature = "kvdb"))]
+// use super::changeset::OverlayedMap;
+// #[cfg(feature = "kvdb")]
 use typed_cache::OverlayedMap;
 use sp_core::offchain::OffchainOverlayedChange;
 use sp_std::prelude::Vec;
@@ -77,9 +77,6 @@ impl OffchainOverlayedChanges {
 	/// Obtain a associated value to the given key in storage with prefix.
 	pub fn get(&self, prefix: &[u8], key: &[u8]) -> Option<OffchainOverlayedChange> {
 		let key = (prefix.to_vec(), key.to_vec());
-		#[cfg(not(feature = "kvdb"))]
-		{ self.0.get(&key).map(|entry| entry.value_ref()).cloned() }
-		#[cfg(feature = "kvdb")]
 		self.0.get(&key).map(|entry| entry.value_ref()).cloned()
 	}
 

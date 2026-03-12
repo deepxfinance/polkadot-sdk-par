@@ -33,8 +33,6 @@ use sp_core::storage::{ChildInfo, StateVersion};
 use sp_trie::{cache::LocalTrieCache, recorder::Recorder};
 #[cfg(feature = "std")]
 use sp_trie::{MemoryDB, StorageProof};
-#[cfg(feature = "kvdb")]
-use crate::backend::MergeOverlay;
 
 /// Dummy type to be used in `no_std`.
 ///
@@ -392,7 +390,7 @@ where
 		H::Out: Ord,
 	{
 		#[cfg(not(feature = "kvdb"))]
-		{ self.essence.storage_root(delta.into_iter().map(|(k, v)| (k, v.map(|v| v.as_slice()))), state_version) }
+		{ self.essence.storage_root(delta.into_iter().map(|(k, v)| (k, v.and_then(|v| v.get_raw(true).map(|v| v.as_slice())))), state_version) }
 		#[cfg(feature = "kvdb")]
 		self.essence.storage_root(delta, state_version)
 	}
@@ -407,7 +405,7 @@ where
 		H::Out: Ord,
 	{
 		#[cfg(not(feature = "kvdb"))]
-		{ self.essence.child_storage_root(child_info, delta.into_iter().map(|(k, v)| (k, v.map(|v| v.as_slice()))), state_version) }
+		{ self.essence.child_storage_root(child_info, delta.into_iter().map(|(k, v)| (k, v.and_then(|v| v.get_raw(true).map(|v| v.as_slice())))), state_version) }
 		#[cfg(feature = "kvdb")]
 		self.essence.child_storage_root(child_info, delta, state_version)
 	}
