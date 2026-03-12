@@ -430,9 +430,9 @@ where
                         limit_execution_time,
                         true,
                     );
-                    let (_, mut overlay, stc, recorder) = thread_builder.api.take_all_changes();
+                    let (mut overlay, stc, recorder) = thread_builder.api.take_all_changes();
                     #[cfg(feature = "kvdb")]
-                    overlay.set_storage(b":thread_root".to_vec(), Some(thread_root.encode()));
+                    overlay.set_storage(b":thread_root".to_vec(), Some(thread_root.encode().into()));
                     let changes = (vec![i + 1], overlay, stc, recorder, thread_builder.extrinsics.clone(), unqueue_invalid, end_reason);
                     if res_tx.start_send((changes, Some(thread_info))).is_err() {
                         trace!("Could not send block production result to proposer!");
@@ -1273,16 +1273,14 @@ pub fn extrinsics_data_root<H: Hash>(xts: Vec<Vec<u8>>) -> H::Output {
 }
 
 pub fn set_threads_to_storage<Block: BlockT>(block: NumberFor<Block>, threads: u8, changes: &mut Changes) {
-    use sp_core::blake2_128;
-
     const SYSTEM_THREADS_PREFIX: [u8; 32] = [38, 170, 57, 78, 234, 86, 48, 224, 124, 72, 174, 12, 149, 88, 206, 247, 156, 181, 201, 244, 0, 171, 65, 57, 156, 107, 139, 81, 248, 209, 136, 25];
 
-    let threads_key = [SYSTEM_THREADS_PREFIX.to_vec(), blake2_128(&block.encode()).to_vec()].concat();
+    let threads_key = [SYSTEM_THREADS_PREFIX.to_vec(), block.encode()].concat();
     if let Some(entry) = changes.get_mut(&threads_key) {
-        entry.set(Some(threads.encode()), false, None);
+        entry.set(Some(threads.encode().into()), false, None);
     } else {
         let mut new_entry = OverlayedEntry::default();
-        new_entry.set(Some(threads.encode()), true, None);
+        new_entry.set(Some(threads.encode().into()), true, None);
         changes.insert(threads_key, new_entry);
     }
 }

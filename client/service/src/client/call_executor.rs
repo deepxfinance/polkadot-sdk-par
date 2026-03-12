@@ -27,7 +27,7 @@ use sp_core::{
 	ExecutionContext,
 };
 use sp_runtime::{generic::BlockId, traits::Block as BlockT};
-use sp_state_machine::{backend::AsTrieBackend, ExecutionStrategy, Ext, OverlayCache, OverlayedChanges, StateMachine, StorageProof};
+use sp_state_machine::{backend::AsTrieBackend, ExecutionStrategy, Ext, OverlayedChanges, StateMachine, StorageProof};
 use std::{cell::RefCell, sync::Arc};
 
 /// Call executor that executes methods locally, querying all required

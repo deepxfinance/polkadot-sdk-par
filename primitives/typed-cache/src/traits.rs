@@ -1,18 +1,20 @@
+use codec::{Decode, Encode};
+
+#[cfg(not(feature = "std"))]
+pub trait TStorage: 'static {}
+
+#[cfg(not(feature = "std"))]
+impl<S: 'static> TStorage for S {}
+
+#[cfg(feature = "std")]
 pub trait TStorage: Clone + 'static {}
 
+#[cfg(feature = "std")]
 impl<S: Clone + 'static> TStorage for S {}
 
-#[cfg(not(feature = "sync"))]
-pub trait TStorageOverlay: TStorage + codec::FullCodec {}
+pub trait TStorageOverlay: TStorage + Encode + Decode {}
 
-#[cfg(not(feature = "sync"))]
-impl<S: TStorage + codec::FullCodec> TStorageOverlay for S {}
-
-#[cfg(feature = "sync")]
-pub trait TStorageOverlay: TStorage + codec::FullCodec + Sync + Send {}
-
-#[cfg(feature = "sync")]
-impl<S: TStorage + codec::FullCodec + Sync + Send> TStorageOverlay for S {}
+impl<S: TStorage + Encode + Decode> TStorageOverlay for S {}
 
 /// Trait for value transfer.
 pub trait QueryTransfer<V> {

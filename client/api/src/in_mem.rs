@@ -37,7 +37,7 @@ use std::{
 	ptr,
 	sync::Arc,
 };
-
+use futures::StreamExt;
 use crate::{
 	backend::{self, NewBlockState},
 	blockchain::{self, BlockStatus, HeaderBackend},
@@ -499,15 +499,25 @@ where
 	) -> sp_blockchain::Result<Block::Hash> {
 		check_genesis_storage(&storage)?;
 
-		let child_delta = storage.children_default.values().map(|child_content| {
+		let typed_child_delta: Vec<_> = storage.children_default.values().map(|child_content| {
 			(
 				&child_content.child_info,
-				child_content.data.iter().map(|(k, v)| (k.as_ref(), Some(v.as_ref()))),
+				child_content.data.iter()
+					.map(|(k, v)| (k, Some(v.into()))).collect::<Vec<_>>()
+			)
+		})
+			.collect();
+
+		let child_delta = typed_child_delta.iter().map(|(child_info, child_data)| {
+			(
+				*child_info,
+				child_data.iter().map(|(k, v)| (k.as_ref(), v.as_ref())),
 			)
 		});
 
+		let top_delta: Vec<_> = storage.top.iter().map(|(k, v)| (k, Some(v.into()))).collect();
 		let (root, transaction) = self.old_state.full_storage_root(
-			storage.top.iter().map(|(k, v)| (k.as_ref(), Some(v.as_ref()))),
+			top_delta.iter().map(|(k, v)| (k.as_ref(), v.as_ref())),
 			child_delta,
 			state_version,
 		);

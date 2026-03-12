@@ -1,7 +1,6 @@
 use std::collections::BTreeMap;
 use std::marker::PhantomData;
 use std::sync::Arc;
-use codec::Decode;
 use sc_basic_authorship::{MultiThreadBlockBuilder};
 use sc_client_api::Backend;
 use sp_api::{ApiExt, MergeChange, StateBackend, OverlayedEntry, StorageKey, StorageValue, Changes};
@@ -50,7 +49,8 @@ impl<B: Backend<Block>, Block: BlockT> MergeChange<StorageKey, Option<StorageVal
         let _backend_init_total_issuance: u128 = self.backend.as_ref().map(|b| {
             self.parent.map(|h|
                 b.state_at(h).unwrap().storage(&BALANCE_TOTAL_ISSUANCE.to_vec())
-                    .map(|v| v.map(|data| Decode::decode(&mut data.as_slice()).unwrap()))
+                    .map(|v| v.map(|data| data.get_t()))
+                    .unwrap_or_default()
                     .unwrap_or_default()
                     .unwrap_or_default()
             )

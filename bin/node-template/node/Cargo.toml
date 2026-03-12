@@ -78,7 +78,7 @@ substrate-build-script-utils = { version = "3.0.0", path = "../../../utils/build
 [features]
 default = ["kvdb", "async-root"]
 dev-time = ["sc-basic-authorship/dev-time", "frame-support/dev-time"]
-kvdb = ["sc-basic-authorship/kvdb", "sp-io/kvdb", "sc-service/kvdb"]
+kvdb = ["sc-basic-authorship/kvdb", "sc-service/kvdb"]
 async-root = ["sc-basic-authorship/async-root", "hotstuff-consensus/async-root"]
 # Dependencies that are only required if runtime benchmarking should be build.
 runtime-benchmarks = [

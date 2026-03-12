@@ -6,13 +6,13 @@ use sp_std::ops::{Deref, DerefMut};
 use sp_std::cell::RefCell;
 use sp_std::rc::Rc;
 use sp_std::boxed::Box;
-#[cfg(not(feature = "std"))]
-use sp_std::vec::{self, Vec};
+use sp_std::vec::Vec;
 use crate::TStorageOverlay;
 
 pub trait RawValue: Downcast {
     fn clone_ref(&self) -> Box<dyn RawValue>;
     fn clone_box(&self) -> Box<dyn RawValue>;
+    fn len(&self) -> usize;
     fn muted(&self) -> bool;
     fn set_muted(&mut self, muted: bool);
     fn exists(&self) -> bool;
@@ -37,6 +37,10 @@ impl RawValue for Vec<u8> {
 
     fn clone_box(&self) -> Box<dyn RawValue> {
         Box::new(self.clone())
+    }
+
+    fn len(&self) -> usize {
+        self.len()
     }
 
     fn muted(&self) -> bool {
@@ -123,6 +127,15 @@ impl StorageValue {
         Self::Any(Box::new(RcT::new(value, muted)))
     }
 
+    pub fn len(&self) -> usize {
+        match self {
+            Self::Any(rct) => rct.len(),
+            Self::Raw(raw) => raw
+                .map(|v| v.as_ref().map(|v| v.len())
+                .unwrap_or_default()),
+        }
+    }
+
     pub fn is_raw(&self) -> bool {
         match self {
             Self::Any(_) => false,
@@ -183,6 +196,11 @@ impl StorageValue {
             Self::Any(rct) => rct.get_raw(cache),
         }
     }
+
+    pub fn take_muted_raw(&mut self) -> Option<Vec<u8>> {
+        if !self.muted() { return None; }
+        self.take_raw()
+    }
     
     pub fn take_raw(&mut self) -> Option<Vec<u8>> {
         match self {
@@ -196,8 +214,53 @@ impl StorageValue {
             Self::Raw(rct) => rct.clone_inner(),
             Self::Any(rct) => rct.get_raw(cache),
         }
-            .map(|v| [vec![1], v].concat())
-            .unwrap_or(vec![0])
+            .map(|v| [sp_std::vec![1], v].concat())
+            .unwrap_or(sp_std::vec![0])
+    }
+
+    pub fn map_raw<O>(&self, f: impl FnOnce(&Option<Vec<u8>>) -> O) -> Option<O> {
+        match self {
+            Self::Raw(raw) => Some(raw.map(f)),
+            Self::Any(_) => None,
+        }
+    }
+
+    pub fn map<T: TStorageOverlay, O>(&self, f: impl FnOnce(&Option<T>) -> O) -> Option<O> {
+        match self {
+            Self::Raw(_) => None,
+            Self::Any(rct) => {
+                let rct = rct.downcast_ref::<RcT<T>>().ok_or("invalid T").unwrap();
+                Some(rct.map(f))
+            }
+        }
+    }
+
+    fn as_raw(&mut self) -> &mut Self {
+        match self {
+            Self::Raw(_) => (),
+            Self::Any(any) => {
+                let rct = RcT::<Vec<u8>>::new(any.take_raw(), any.muted());
+                *self = Self::Raw(rct);
+            }
+        }
+        self
+    }
+
+    pub fn mutate_raw<O>(&mut self, f: impl FnOnce(&mut Option<Vec<u8>>) -> O) -> O {
+        match self {
+            Self::Raw(raw) => {
+                raw.mutate(|v| f(v))
+            },
+            Self::Any(_) => self.as_raw().mutate_raw(f)
+        }
+    }
+
+    pub fn mutate<T: TStorageOverlay, O>(&mut self, f: impl FnOnce(&mut Option<T>) -> O) -> O {
+        self.downcast_mut().mutate(|v| f(v))
+    }
+
+    pub fn try_mutate<T: TStorageOverlay, R, E>(&mut self, f: impl FnOnce(&mut Option<T>) -> Result<R, E>) -> Result<R, E> {
+        self.downcast_mut().try_mutate(|v| f(v))
     }
     
     pub fn downcast<T: TStorageOverlay>(self) -> RcT<T> {
@@ -241,6 +304,11 @@ impl StorageValue {
         Some(self.get_ref())
     }
 
+    pub fn put_t<T: TStorageOverlay>(&mut self, value: Option<T>) -> bool {
+        self.downcast_mut().mutate(|v| *v = value);
+        self.muted()
+    }
+
     pub fn get_muted_t<T: TStorageOverlay>(&self) -> Option<T> {
         if !self.muted() { return None; }
         self.get_t()
@@ -257,6 +325,11 @@ impl StorageValue {
                 any.downcast_ref::<RcT<T>>().ok_or("invalid T").unwrap().clone_inner()
             }
         }
+    }
+
+    pub fn take_muted_t<T: TStorageOverlay>(&mut self) -> Option<T> {
+        if !self.muted() { return None; }
+        self.take_t()
     }
     
     pub fn take_t<T: TStorageOverlay>(&mut self) -> Option<T> {
@@ -300,11 +373,35 @@ impl PartialEq<Self> for StorageValue {
 
 impl Eq for StorageValue {}
 
-#[derive(Clone, Default)]
+#[derive(Default)]
 pub struct MutT<T> {
     inner: Option<T>,
     raw: Option<Vec<u8>>,
     muted: bool,
+}
+
+#[cfg(feature = "std")]
+impl<T: Clone> Clone for MutT<T> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+            raw: self.raw.clone(),
+            muted: self.muted.clone()
+        }
+    }
+}
+
+#[cfg(not(feature = "std"))]
+impl<T: Encode + Decode> Clone for MutT<T> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner
+                .as_ref()
+                .map(|v| Decode::decode(&mut v.encode().as_slice()).unwrap()),
+            raw: self.raw.clone(),
+            muted: self.muted.clone()
+        }
+    }
 }
 
 impl<T: Debug> Debug for MutT<T> {
@@ -337,9 +434,13 @@ impl<T: TStorageOverlay> RawValue for RcT<T> {
     fn clone_ref(&self) -> Box<dyn RawValue> {
         Box::new(self.clone_ref())
     }
-    
+
     fn clone_box(&self) -> Box<dyn RawValue> {
         Box::new(self.clone())
+    }
+
+    fn len(&self) -> usize {
+        self.len()
     }
 
     fn muted(&self) -> bool {
@@ -385,7 +486,15 @@ impl<T> Deref for RcT<T> {
 }
 
 /// Default clone all inner data.
+#[cfg(feature = "std")]
 impl<T: Clone> Clone for RcT<T> {
+    fn clone(&self) -> Self {
+        RcT(Rc::new(RefCell::new(RefCell::borrow(&self.0).clone())))
+    }
+}
+
+#[cfg(not(feature = "std"))]
+impl<T: Encode + Decode> Clone for RcT<T> {
     fn clone(&self) -> Self {
         RcT(Rc::new(RefCell::new(RefCell::borrow(&self.0).clone())))
     }
@@ -506,9 +615,21 @@ impl<T: Default> RcT<T> {
     }
 }
 
+#[cfg(feature = "std")]
 impl<T: Clone> RcT<T> {
     pub fn clone_inner(&self) -> Option<T> {
         RefCell::borrow(&self.0).inner.clone()
+    }
+}
+
+#[cfg(not(feature = "std"))]
+impl<T: Encode + Decode> RcT<T> {
+    pub fn clone_inner(&self) -> Option<T> {
+        let inner = self.0.borrow();
+        inner.raw
+            .as_ref()
+            .map(|r| Decode::decode(&mut r.as_slice()).unwrap())
+            .or(inner.inner.as_ref().map(|r| Decode::decode(&mut r.encode().as_slice()).unwrap()))
     }
 }
 
@@ -536,5 +657,36 @@ impl<T: Encode> RcT<T> {
         } else {
             None
         }
+    }
+
+    pub fn len(&self) -> usize {
+        let mut mut_inner = self.0.borrow_mut();
+        if let Some(raw) = mut_inner.raw.as_ref() {
+            raw.len()
+        } else {
+            mut_inner.inner.as_ref().map(|t| t.encode().len()).unwrap_or_default()
+        }
+    }
+}
+
+impl<T: Encode + Decode> RcT<T> {
+    pub fn mutate_raw<O>(&mut self, f: impl FnOnce(&mut Option<Vec<u8>>) -> O) -> O {
+        self.try_mutate_raw(|inner| Result::<O, Never>::Ok(f(inner)))
+            .expect("Typed RcT mutate is not expected to return Error")
+    }
+
+    pub fn try_mutate_raw<R, E>(&self, f: impl FnOnce(&mut Option<Vec<u8>>) -> Result<R, E>) -> Result<R, E> {
+        let mut mut_inner = self.0.borrow_mut();
+        if mut_inner.raw.is_none() && mut_inner.inner.is_some() {
+            mut_inner.raw = mut_inner.inner.as_ref().map(|v| v.encode());
+        }
+        let res = f(&mut mut_inner.deref_mut().raw);
+        if res.is_ok() {
+            if let Some(raw) = mut_inner.raw.as_ref() {
+                mut_inner.inner = Some(T::decode(&mut raw.as_slice()).expect("try_mutate_raw results an invalid encoded raw data"));
+            }
+            mut_inner.muted = true;
+        }
+        res
     }
 }

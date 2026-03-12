@@ -87,7 +87,7 @@ use sp_runtime::{
 	Justification, Justifications, StateVersion, Storage,
 };
 use sp_state_machine::{backend::{AsTrieBackend, Backend as StateBackend}, ChildStorageCollection, DBValue, IndexOperation, IterArgs, OffchainChangesCollection, OverlayCache, StateMachineStats, StorageCollection, StorageIterator, StorageKey, StorageValue, UsageInfo as StateUsageInfo};
-use sp_trie::{cache::SharedTrieCache, prefixed_key, MemoryDB, PrefixedMemoryDB};
+use sp_trie::{cache::SharedTrieCache, prefixed_key, RawMemoryDB, PrefixedMemoryDB};
 #[cfg(feature = "kvdb")]
 use sp_trie::KVCache;
 
@@ -889,15 +889,24 @@ impl<Block: BlockT> BlockImportOperation<Block> {
 			return Err(sp_blockchain::Error::InvalidState)
 		}
 
-		let child_delta = storage.children_default.values().map(|child_content| {
+		let typed_child_delta: Vec<_> = storage.children_default.values().map(|child_content| {
 			(
 				&child_content.child_info,
-				child_content.data.iter().map(|(k, v)| (&k[..], Some(&v[..]))),
+				child_content.data.iter()
+					.map(|(k, v)| (k, Some(v.into()))).collect::<Vec<_>>()
+			)
+		})
+			.collect();
+		let child_delta = typed_child_delta.iter().map(|(child_info, child_data)| {
+			(
+				*child_info,
+				child_data.iter().map(|(k, v)| (k.as_ref(), v.as_ref())),
 			)
 		});
 
+		let top_delta: Vec<_> = storage.top.iter().map(|(k, v)| (k, Some(v.into()))).collect();
 		let (root, transaction) = self.old_state.full_storage_root(
-			storage.top.iter().map(|(k, v)| (&k[..], Some(&v[..]))),
+			top_delta.iter().map(|(k, v)| (k.as_ref(), v.as_ref())),
 			child_delta,
 			state_version,
 		);
@@ -1053,7 +1062,7 @@ struct EmptyStorage<Block: BlockT>(pub Block::Hash);
 impl<Block: BlockT> EmptyStorage<Block> {
 	pub fn new() -> Self {
 		let mut root = Block::Hash::default();
-		let mut mdb = MemoryDB::<HashFor<Block>>::default();
+		let mut mdb = RawMemoryDB::<HashFor<Block>>::default();
 		// both triedbmut are the same on empty storage.
 		sp_trie::trie_types::TrieDBMutBuilderV1::<HashFor<Block>>::new(&mut mdb, &mut root).build();
 		EmptyStorage(root)
@@ -1553,9 +1562,6 @@ impl<Block: BlockT> Backend<Block> {
 				let cache = kv_cache_lock.as_mut().unwrap();
 
 				debug!(target:"commit-time", "⌛️ The time taken to collect basic data {:?}", start.elapsed());
-
-				#[cfg(feature = "kvdb")]
-				drop(kv_cache_lock);
 				for (mut key, (val, rc)) in operation.db_updates.drain() {
 					#[cfg(feature = "kvdb")]
 					if !val.muted() { continue; }
@@ -1593,6 +1599,8 @@ impl<Block: BlockT> Backend<Block> {
 				}
 
 				debug!(target:"commit-time", "⌛️ The time taken to collect state data {:?}", start.elapsed());
+				#[cfg(feature = "kvdb")]
+				drop(kv_cache_lock);
 
 				self.state_usage.tally_writes_nodes(ops, bytes);
 				self.state_usage.tally_removed_nodes(removal, bytes_removal);

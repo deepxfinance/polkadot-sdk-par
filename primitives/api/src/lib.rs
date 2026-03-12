@@ -103,7 +103,7 @@ pub use sp_runtime::{
 pub use sp_state_machine::{
 	backend::AsTrieBackend, Backend as StateBackend, InMemoryBackend, OverlayedChanges,
 	StorageProof, TrieBackend, TrieBackendBuilder, OverlayedEntry, MergeErr, MergeChange,
-	Changes,
+	Changes, OverlayCache,
 };
 #[doc(hidden)]
 pub use sp_std::{mem, slice, vec};
@@ -112,6 +112,7 @@ pub use sp_version::{create_apis_vec, ApiId, ApisVec, RuntimeVersion};
 #[cfg(feature = "std")]
 use std::cell::RefCell;
 pub use sp_std::collections::btree_map::BTreeMap;
+pub use typed_cache::TStorageOverlay;
 
 /// Maximum nesting level for extrinsics.
 pub const MAX_EXTRINSIC_DEPTH: u32 = 256;
@@ -607,7 +608,7 @@ pub trait ApiExt<Block: BlockT> {
 	where
 		Self: Sized;
 
-	fn get_typed_change<T: Clone + codec::FullCodec + 'static>(&self, key: &StorageKey) -> Option<Option<T>>
+	fn get_typed_change<T: TStorageOverlay>(&self, key: &StorageKey) -> Option<Option<T>>
 	where
 		Self: Sized;
 

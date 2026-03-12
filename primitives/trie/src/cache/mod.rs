@@ -50,7 +50,7 @@ use std::{
 };
 use trie_db::{node::NodeOwned, CachedValue};
 #[cfg(feature = "kvdb")]
-use kv_db::{DBValue, KVCache, OverlayCache};
+use kv_db::{DBValue, KVCache};
 
 mod shared_cache;
 #[cfg(feature = "kvdb")]

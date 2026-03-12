@@ -20,14 +20,14 @@
 use smallvec::SmallVec;
 use sp_std::{
 	collections::btree_map::BTreeMap,
-	hash::Hash,
+	hash::Hash, vec::Vec,
 };
 #[cfg(not(feature = "std"))]
 pub use sp_std::collections::{btree_set::BTreeSet as Set, btree_map::BTreeMap as Map};
 #[cfg(feature = "std")]
 pub use std::collections::{HashSet as Set, HashMap as Map};
-use std::collections::BTreeSet;
-use crate::{Changes, StorageKey, StorageValue};
+use sp_std::collections::btree_set::BTreeSet;
+use crate::{Changes, StorageValue};
 
 const PROOF_OVERLAY_NON_EMPTY: &str = "\
 	An OverlayValue is always created with at least one transaction and dropped as soon
@@ -418,7 +418,7 @@ impl<K: Ord + Hash + Clone, V> OverlayedMap<K, V> {
 }
 
 #[cfg(feature = "std")]
-impl From<BTreeMap<Vec<u8>, Vec<u8>>> for OverlayedMap<StorageKey, Option<StorageValue>> {
+impl From<BTreeMap<Vec<u8>, Vec<u8>>> for OverlayedMap<crate::StorageKey, Option<StorageValue>> {
 	fn from(storage: BTreeMap<Vec<u8>, Vec<u8>>) -> Self {
 		Self {
 			changes: storage

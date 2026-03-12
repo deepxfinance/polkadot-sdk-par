@@ -243,21 +243,21 @@ impl OverlayedChanges {
 		self.top.get(key).map(|e| e.value_ref().clone())?
 	}
 	
-	pub fn get_change_encode(&self, key: &StorageKey) -> Option<Vec<u8>> {
+	pub fn get_change_encode(&self, key: &StorageKey) -> Option<Option<Vec<u8>>> {
 		// #[cfg(not(feature = "kvdb"))]
 		// { self.top.get(key).map(|e| e.value_ref().clone())? }
 		// #[cfg(feature = "kvdb")]
-		self.top.get_raw_changes(key)?
+		self.top.get_raw_changes(key)
 	}
 	
-	pub fn get_change_t<T: TStorageOverlay>(&self, key: &StorageKey) -> Option<T> {
+	pub fn get_change_t<T: TStorageOverlay>(&self, key: &StorageKey) -> Option<Option<T>> {
 		// #[cfg(not(feature = "kvdb"))]
 		// { 
 		// 	self.top.get(key)
 		// 	.map(|e| e.value().and_then(|v| Decode::decode(&mut v.as_slice()).ok()))?
 		// }
 		// #[cfg(feature = "kvdb")]
-		self.top.get_muted_t(key)?
+		self.top.get_muted_t(key)
 	}
 	
 	/// return merge weight of `merge self to others`. 

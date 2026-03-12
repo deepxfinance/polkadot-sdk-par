@@ -39,7 +39,11 @@ pub use self::{
 pub use sp_runtime::TransactionOutcome;
 pub use types::Key;
 
-pub use typed_cache::{RcT, OverlayCache, TStorage, TStorageOverlay};
+pub use typed_cache::{OverlayCache, TStorage, TStorageOverlay};
+#[cfg(feature = "std")]
+pub use typed_cache::RcT;
+#[cfg(not(feature = "std"))]
+pub use no_std_rct::RcT;
 
 pub mod bounded_btree_map;
 pub mod bounded_btree_set;
@@ -55,12 +59,8 @@ pub mod transactional;
 pub mod types;
 pub mod unhashed;
 pub mod weak_bounded_vec;
-
 #[cfg(not(feature = "std"))]
-pub trait TStorage {}
-
-#[cfg(not(feature = "std"))]
-impl<S> TStorage for S {}
+pub mod no_std_rct;
 
 /// Utility type for converting a storage map into a `Get<u32>` impl which returns the maximum
 /// key size.

@@ -23,6 +23,7 @@ use sp_blockchain::HeaderBackend;
 use sp_database::{ColumnId, Transaction};
 use sp_runtime::traits::{Block as BlockT, HashFor, Header as HeaderT};
 use sp_trie::PrefixedMemoryDB;
+use typed_cache::StorageValue;
 
 use log::{info, trace};
 use rand::prelude::*;
@@ -92,7 +93,7 @@ impl StorageCmd {
 							db.clone(),
 							&trie,
 							&k.to_vec(),
-							&new_v,
+							&new_v.clone().into(),
 							self.state_version(),
 							state_col,
 							None,
@@ -106,7 +107,7 @@ impl StorageCmd {
 						db.clone(),
 						&trie,
 						k.to_vec(),
-						new_v.to_vec(),
+						new_v.into(),
 						self.state_version(),
 						state_col,
 						None,
@@ -132,7 +133,7 @@ impl StorageCmd {
 							db.clone(),
 							&trie,
 							&key.0,
-							&new_v,
+							&new_v.clone().into(),
 							self.state_version(),
 							state_col,
 							Some(&info),
@@ -145,7 +146,7 @@ impl StorageCmd {
 						db.clone(),
 						&trie,
 						key.0,
-						new_v.to_vec(),
+						new_v.into(),
 						self.state_version(),
 						state_col,
 						Some(&info),
@@ -175,8 +176,10 @@ fn convert_tx<B: BlockT>(
 			db.sanitize_key(&mut k);
 			if invert_inserts {
 				ret.remove(col, &k);
-			} else {
-				ret.set(col, &k, &v);
+			} else if v.muted() {
+				if let Some(v) = v.get_raw(false) {
+					ret.set(col, &k, &v);
+				}
 			}
 		}
 		// < 0 means removal - ignored.
@@ -191,7 +194,7 @@ fn measure_write<Block: BlockT>(
 	db: Arc<dyn sp_database::Database<DbHash>>,
 	trie: &DbState<Block>,
 	key: Vec<u8>,
-	new_v: Vec<u8>,
+	new_v: StorageValue,
 	version: StateVersion,
 	col: ColumnId,
 	child_info: Option<&ChildInfo>,
@@ -199,7 +202,7 @@ fn measure_write<Block: BlockT>(
 	let start = Instant::now();
 	// Create a TX that will modify the Trie in the DB and
 	// calculate the root hash of the Trie after the modification.
-	let replace = vec![(key.as_ref(), Some(new_v.as_ref()))];
+	let replace = vec![(key.as_ref(), Some(&new_v))];
 	let stx = match child_info {
 		Some(info) => trie.child_storage_root(info, replace.iter().cloned(), version).2,
 		None => trie.storage_root(replace.iter().cloned(), version).1,
@@ -222,12 +225,12 @@ fn check_new_value<Block: BlockT>(
 	db: Arc<dyn sp_database::Database<DbHash>>,
 	trie: &DbState<Block>,
 	key: &Vec<u8>,
-	new_v: &Vec<u8>,
+	new_v: &StorageValue,
 	version: StateVersion,
 	col: ColumnId,
 	child_info: Option<&ChildInfo>,
 ) -> bool {
-	let new_kv = vec![(key.as_ref(), Some(new_v.as_ref()))];
+	let new_kv = vec![(key.as_ref(), Some(new_v))];
 	let mut stx = match child_info {
 		Some(info) => trie.child_storage_root(info, new_kv.iter().cloned(), version).2,
 		None => trie.storage_root(new_kv.iter().cloned(), version).1,

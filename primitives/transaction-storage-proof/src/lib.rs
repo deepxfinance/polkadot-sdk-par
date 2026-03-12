@@ -179,7 +179,7 @@ pub mod registration {
 		random_hash: &[u8],
 		transactions: Vec<Vec<u8>>,
 	) -> Result<TransactionStorageProof, Error> {
-		let mut db = sp_trie::MemoryDB::<Hasher>::default();
+		let mut db = sp_trie::RawMemoryDB::<Hasher>::default();
 
 		let mut target_chunk = None;
 		let mut target_root = Default::default();

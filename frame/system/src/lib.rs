@@ -1342,9 +1342,6 @@ impl<T: Config> Pallet<T> {
 
 	/// Gets the index of extrinsic that is currently executing.
 	pub fn extrinsic_index() -> Option<u32> {
-		#[cfg(feature = "std")]
-		{ storage::unhashed::get_cache(well_known_keys::EXTRINSIC_INDEX, unhashed::non_f::<u32>) }
-		#[cfg(not(feature = "std"))]
 		storage::unhashed::get(well_known_keys::EXTRINSIC_INDEX)
 	}
 
@@ -1469,9 +1466,6 @@ impl<T: Config> Pallet<T> {
 		);
 		ExecutionPhase::<T>::kill();
 		AllExtrinsicsLen::<T>::kill();
-		#[cfg(feature = "std")]
-		storage::unhashed::kill::<[u8; 32]>(well_known_keys::INTRABLOCK_ENTROPY);
-		#[cfg(not(feature = "std"))]
 		storage::unhashed::kill(well_known_keys::INTRABLOCK_ENTROPY);
 
 		// The following fields
@@ -1708,10 +1702,7 @@ impl<T: Config> Pallet<T> {
 	pub fn note_next_extrinsic() {
 		#[cfg(feature = "std")]
 		let next_extrinsic_index = {
-			let mut extrinsic_index_ref = unhashed::get_cache_ref(
-				well_known_keys::EXTRINSIC_INDEX,
-				unhashed::non_t::<u32>
-			);
+			let mut extrinsic_index_ref = unhashed::get_cache_ref(well_known_keys::EXTRINSIC_INDEX);
 			extrinsic_index_ref.mutate(|index|
 				if let Some(index) = index {
 					*index += 1;

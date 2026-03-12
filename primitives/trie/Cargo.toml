@@ -62,5 +62,6 @@ std = [
 	"tracing",
 	"trie-db/std",
 	"trie-root/std",
+	"kv-db/std",
 ]
 kvdb = ["kv-db"]

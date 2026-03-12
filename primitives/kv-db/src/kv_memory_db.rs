@@ -21,6 +21,7 @@ use core::{borrow::Borrow, cmp::Eq, hash, marker::PhantomData, mem};
 
 #[cfg(not(feature = "std"))]
 use alloc::vec::Vec;
+use typed_cache::StorageValue;
 use crate::DBValue;
 
 pub trait FastBuild<H: KeyHasher, KF: KeyFunction<H>, T> {
@@ -162,13 +163,13 @@ where
     }
 }
 
-impl<H, KF> MemoryDB<H, KF, DBValue>
+impl<H, KF, T> MemoryDB<H, KF, T>
 where
     H: KeyHasher,
     KF: KeyFunction<H>,
 {
     /// Return the internal key-value Map, clearing the current state.
-    pub fn drain(&mut self) -> Map<KF::Key, (DBValue, i32)> {
+    pub fn drain(&mut self) -> Map<KF::Key, (T, i32)> {
         mem::take(&mut self.data)
     }
 
@@ -294,7 +295,7 @@ where
         let key = H::hash(value);
         let mut value: DBValue = value.into();
         value.set_muted(true);
-        HashDB::emplace(self, key, prefix, value);
+        <Self as HashDB<H, DBValue>>::emplace(self, key, prefix, value);
         key
     }
 
@@ -323,10 +324,23 @@ where
     KF: KeyFunction<H> + Send + Sync,
 {
     fn get(&self, key: &H::Out, prefix: Prefix) -> Option<DBValue> {
-        HashDB::get(self, key, prefix)
+        <Self as HashDB<H, DBValue>>::get(self, key, prefix)
     }
     fn contains(&self, key: &H::Out, prefix: Prefix) -> bool {
-        HashDB::contains(self, key, prefix)
+        <Self as HashDB<H, DBValue>>::contains(self, key, prefix)
+    }
+}
+
+impl<H, KF> HashDBRef<H, Vec<u8>> for MemoryDB<H, KF, DBValue>
+where
+    H: KeyHasher,
+    KF: KeyFunction<H> + Send + Sync,
+{
+    fn get(&self, key: &H::Out, prefix: Prefix) -> Option<Vec<u8>> {
+        <Self as HashDB<H, Vec<u8>>>::get(self, key, prefix)
+    }
+    fn contains(&self, key: &H::Out, prefix: Prefix) -> bool {
+        <Self as HashDB<H, Vec<u8>>>::contains(self, key, prefix)
     }
 }
 
@@ -356,3 +370,254 @@ where
         self
     }
 }
+
+impl<H, KF> PlainDB<H::Out, Vec<u8>> for MemoryDB<H, KF, Vec<u8>>
+where
+    H: KeyHasher,
+    KF: Send + Sync + KeyFunction<H>,
+    KF::Key: Borrow<[u8]> + for<'a> From<&'a [u8]>,
+{
+    fn get(&self, key: &H::Out) -> Option<Vec<u8>> {
+        match self.data.get(key.as_ref()) {
+            Some(&(ref d, rc)) if rc > 0 => Some(d.clone()),
+            _ => None,
+        }
+    }
+
+    fn contains(&self, key: &H::Out) -> bool {
+        match self.data.get(key.as_ref()) {
+            Some(&(_, x)) if x > 0 => true,
+            _ => false,
+        }
+    }
+
+    fn emplace(&mut self, key: H::Out, value: Vec<u8>) {
+        match self.data.entry(key.as_ref().into()) {
+            Entry::Occupied(mut entry) => {
+                let &mut (ref mut old_value, ref mut rc) = entry.get_mut();
+                *old_value = value;
+                *rc = 1;
+            },
+            Entry::Vacant(entry) => {
+                entry.insert((value, 1));
+            },
+        }
+    }
+
+    fn remove(&mut self, key: &H::Out) {
+        match self.data.entry(key.as_ref().into()) {
+            Entry::Occupied(mut entry) => {
+                let &mut (_, ref mut rc) = entry.get_mut();
+                *rc = -1;
+            },
+            Entry::Vacant(entry) => {
+                let value = Default::default();
+                entry.insert((value, -1));
+            },
+        }
+    }
+}
+
+impl<H, KF> PlainDBRef<H::Out, Vec<u8>> for MemoryDB<H, KF, Vec<u8>>
+where
+    H: KeyHasher,
+    KF: Send + Sync + KeyFunction<H>,
+    KF::Key: Borrow<[u8]> + for<'a> From<&'a [u8]>,
+{
+    fn get(&self, key: &H::Out) -> Option<Vec<u8>> {
+        PlainDB::get(self, key)
+    }
+    fn contains(&self, key: &H::Out) -> bool {
+        PlainDB::contains(self, key)
+    }
+}
+
+impl<H, KF> HashDB<H, Vec<u8>> for MemoryDB<H, KF, Vec<u8>>
+where
+    H: KeyHasher,
+    KF: KeyFunction<H> + Send + Sync,
+{
+    fn get(&self, key: &H::Out, prefix: Prefix) -> Option<Vec<u8>> {
+        if key == &self.hashed_null_node {
+            return None
+        }
+
+        let key = KF::key(key, prefix);
+        match self.data.get(&key) {
+            Some(&(ref d, rc)) if rc > 0 => Some(d.clone()),
+            _ => None,
+        }
+    }
+
+    fn contains(&self, key: &H::Out, prefix: Prefix) -> bool {
+        if key == &self.hashed_null_node {
+            return true
+        }
+
+        let key = KF::key(key, prefix);
+        match self.data.get(&key) {
+            Some(&(_, x)) if x > 0 => true,
+            _ => false,
+        }
+    }
+
+    fn emplace(&mut self, key: H::Out, prefix: Prefix, value: Vec<u8>) {
+        let key = KF::key(&key, prefix);
+        match self.data.entry(key) {
+            Entry::Occupied(mut entry) => {
+                let &mut (ref mut old_value, ref mut rc) = entry.get_mut();
+                *old_value = value;
+                *rc = 1;
+            },
+            Entry::Vacant(entry) => {
+                entry.insert((value, 1));
+            },
+        }
+    }
+
+    fn insert(&mut self, prefix: Prefix, value: &[u8]) -> H::Out {
+        let key = H::hash(value);
+        <Self as HashDB<H, Vec<u8>>>::emplace(self, key, prefix, value.into());
+        key
+    }
+
+    fn remove(&mut self, key: &H::Out, prefix: Prefix) {
+        if key == &self.hashed_null_node {
+            return
+        }
+
+        let key = KF::key(key, prefix);
+        match self.data.entry(key) {
+            Entry::Occupied(mut entry) => {
+                let &mut (_, ref mut rc) = entry.get_mut();
+                *rc = -1;
+            },
+            Entry::Vacant(entry) => {
+                let value = Default::default();
+                entry.insert((value, -1));
+            },
+        }
+    }
+}
+
+impl<H, KF> HashDBRef<H, Vec<u8>> for MemoryDB<H, KF, Vec<u8>>
+where
+    H: KeyHasher,
+    KF: KeyFunction<H> + Send + Sync,
+{
+    fn get(&self, key: &H::Out, prefix: Prefix) -> Option<Vec<u8>> {
+        <Self as HashDB<H, Vec<u8>>>::get(self, key, prefix)
+    }
+    fn contains(&self, key: &H::Out, prefix: Prefix) -> bool {
+        <Self as HashDB<H, Vec<u8>>>::contains(self, key, prefix)
+    }
+}
+
+impl<H, KF> AsPlainDB<H::Out, Vec<u8>> for MemoryDB<H, KF, Vec<u8>>
+where
+    H: KeyHasher,
+    KF: KeyFunction<H> + Send + Sync,
+    KF::Key: Borrow<[u8]> + for<'a> From<&'a [u8]>,
+{
+    fn as_plain_db(&self) -> &dyn PlainDB<H::Out, Vec<u8>> {
+        self
+    }
+    fn as_plain_db_mut(&mut self) -> &mut dyn PlainDB<H::Out, Vec<u8>> {
+        self
+    }
+}
+
+impl<H, KF> AsHashDB<H, Vec<u8>> for MemoryDB<H, KF, Vec<u8>>
+where
+    H: KeyHasher,
+    KF: KeyFunction<H> + Send + Sync,
+{
+    fn as_hash_db(&self) -> &dyn HashDB<H, Vec<u8>> {
+        self
+    }
+    fn as_hash_db_mut(&mut self) -> &mut dyn HashDB<H, Vec<u8>> {
+        self
+    }
+}
+
+impl<H, KF> HashDB<H, Vec<u8>> for MemoryDB<H, KF, DBValue>
+where
+    H: KeyHasher,
+    KF: KeyFunction<H> + Send + Sync,
+{
+    fn get(&self, key: &H::Out, prefix: Prefix) -> Option<Vec<u8>> {
+        if key == &self.hashed_null_node {
+            return None
+        }
+
+        let key = KF::key(key, prefix);
+        match self.data.get(&key) {
+            Some(&(ref d, rc)) if rc > 0 => Some(d.get_raw(true).expect("ShouldNotErr")),
+            _ => None,
+        }
+    }
+
+    fn contains(&self, key: &H::Out, prefix: Prefix) -> bool {
+        if key == &self.hashed_null_node {
+            return true
+        }
+
+        let key = KF::key(key, prefix);
+        match self.data.get(&key) {
+            Some(&(_, x)) if x > 0 => true,
+            _ => false,
+        }
+    }
+
+    fn emplace(&mut self, key: H::Out, prefix: Prefix, value: Vec<u8>) {
+        let key = KF::key(&key, prefix);
+        match self.data.entry(key) {
+            Entry::Occupied(mut entry) => {
+                let &mut (ref mut old_value, ref mut rc) = entry.get_mut();
+                old_value.put_raw(value, true).expect("ShouldNotFail");
+                *rc = 1;
+            },
+            Entry::Vacant(entry) => {
+                entry.insert((StorageValue::new_raw(Some(value), true), 1));
+            },
+        }
+    }
+
+    fn insert(&mut self, prefix: Prefix, value: &[u8]) -> H::Out {
+        let key = H::hash(value);
+        <Self as HashDB<H, Vec<u8>>>::emplace(self, key, prefix, value.into());
+        key
+    }
+
+    fn remove(&mut self, key: &H::Out, prefix: Prefix) {
+        if key == &self.hashed_null_node {
+            return
+        }
+
+        let key = KF::key(key, prefix);
+        match self.data.entry(key) {
+            Entry::Occupied(mut entry) => {
+                let &mut (_, ref mut rc) = entry.get_mut();
+                *rc = -1;
+            },
+            Entry::Vacant(entry) => {
+                let value = Default::default();
+                entry.insert((value, -1));
+            },
+        }
+    }
+}
+
+impl<H, KF> AsHashDB<H, Vec<u8>> for MemoryDB<H, KF, DBValue>
+where
+    H: KeyHasher,
+    KF: KeyFunction<H> + Send + Sync,
+{
+    fn as_hash_db(&self) -> &dyn HashDB<H, Vec<u8>> {
+        self
+    }
+    fn as_hash_db_mut(&mut self) -> &mut dyn HashDB<H, Vec<u8>> {
+        self
+    }
+}
+

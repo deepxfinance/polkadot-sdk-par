@@ -37,7 +37,7 @@ use sp_state_machine::{
 };
 use sp_trie::{
 	cache::{CacheSize, SharedTrieCache},
-	prefixed_key, MemoryDB,
+	prefixed_key, RawMemoryDB,
 };
 use std::{
 	cell::{Cell, RefCell},
@@ -57,6 +57,7 @@ impl<Block: BlockT> sp_state_machine::Storage<HashFor<Block>> for StorageDb<Bloc
 		let prefixed_key = prefixed_key::<HashFor<Block>>(key, prefix);
 		self.db
 			.get(0, &prefixed_key)
+			.map(|v| v.map(|v| v.into()))
 			.map_err(|e| format!("Database backend error: {:?}", e))
 	}
 }
@@ -138,7 +139,7 @@ impl<B: BlockT> BenchmarkingState<B> {
 	) -> Result<Self, String> {
 		let state_version = sp_runtime::StateVersion::default();
 		let mut root = B::Hash::default();
-		let mut mdb = MemoryDB::<HashFor<B>>::default();
+		let mut mdb = RawMemoryDB::<HashFor<B>>::default();
 		sp_trie::trie_types::TrieDBMutBuilderV1::<HashFor<B>>::new(&mut mdb, &mut root).build();
 
 		let mut state = BenchmarkingState {
@@ -163,19 +164,29 @@ impl<B: BlockT> BenchmarkingState<B> {
 		state.add_whitelist_to_tracker();
 
 		state.reopen()?;
-		let child_delta = genesis.children_default.values().map(|child_content| {
+		let typed_child_delta: Vec<_> = genesis.children_default.values().map(|child_content| {
 			(
 				&child_content.child_info,
-				child_content.data.iter().map(|(k, v)| (k.as_ref(), Some(v.as_ref()))),
+				child_content.data.iter()
+					.map(|(k, v)| (k, Some(v.into()))).collect::<Vec<_>>()
+			)
+		})
+			.collect();
+		let child_delta = typed_child_delta.iter().map(|(child_info, child_data)| {
+			(
+				*child_info,
+				child_data.iter().map(|(k, v)| (k.as_ref(), v.as_ref())),
 			)
 		});
+		let top_delta: Vec<_> = genesis.top.iter().map(|(k, v)| (k, Some(v.into()))).collect();
 		let (root, transaction): (B::Hash, _) =
 			state.state.borrow().as_ref().unwrap().full_storage_root(
-				genesis.top.iter().map(|(k, v)| (k.as_ref(), Some(v.as_ref()))),
+				top_delta.iter().map(|(k, v)| (k.as_ref(), v.as_ref())),
 				child_delta,
 				state_version,
 			);
-		state.genesis = transaction.clone().drain().into_iter().collect();
+		state.genesis = transaction.clone().drain().into_iter()
+			.filter_map(|(k, v)| v.0.get_raw(false).map(|raw| (k, (raw, v.1)))).collect();
 		state.genesis_root = root;
 		state.commit(root, transaction, Vec::new(), Vec::new())?;
 		state.record.take();
@@ -347,7 +358,7 @@ impl<B: BlockT> StateBackend<HashFor<B>> for BenchmarkingState<B> {
 	type TrieBackendStorage = <DbState<B> as StateBackend<HashFor<B>>>::TrieBackendStorage;
 	type RawIter = RawIter<B>;
 
-	fn storage(&self, key: &[u8]) -> Result<Option<Vec<u8>>, Self::Error> {
+	fn storage(&self, key: &[u8]) -> Result<Option<StorageValue>, Self::Error> {
 		self.add_read_key(None, key);
 		self.state.borrow().as_ref().ok_or_else(state_err)?.storage(key)
 	}
@@ -361,7 +372,7 @@ impl<B: BlockT> StateBackend<HashFor<B>> for BenchmarkingState<B> {
 		&self,
 		child_info: &ChildInfo,
 		key: &[u8],
-	) -> Result<Option<Vec<u8>>, Self::Error> {
+	) -> Result<Option<StorageValue>, Self::Error> {
 		self.add_read_key(Some(child_info.storage_key()), key);
 		self.state
 			.borrow()
@@ -421,7 +432,7 @@ impl<B: BlockT> StateBackend<HashFor<B>> for BenchmarkingState<B> {
 
 	fn storage_root<'a>(
 		&self,
-		delta: impl Iterator<Item = (&'a [u8], Option<&'a [u8]>)>,
+		delta: impl Iterator<Item = (&'a [u8], Option<&'a StorageValue>)>,
 		state_version: StateVersion,
 	) -> (B::Hash, Self::Transaction)
 	where
@@ -436,7 +447,7 @@ impl<B: BlockT> StateBackend<HashFor<B>> for BenchmarkingState<B> {
 	fn child_storage_root<'a>(
 		&self,
 		child_info: &ChildInfo,
-		delta: impl Iterator<Item = (&'a [u8], Option<&'a [u8]>)>,
+		delta: impl Iterator<Item = (&'a [u8], Option<&'a StorageValue>)>,
 		state_version: StateVersion,
 	) -> (B::Hash, bool, Self::Transaction)
 	where
@@ -475,6 +486,10 @@ impl<B: BlockT> StateBackend<HashFor<B>> for BenchmarkingState<B> {
 			let changes = transaction.drain();
 			let mut keys = Vec::with_capacity(changes.len());
 			for (key, (val, rc)) in changes {
+				let val = match val.get_raw(false) {
+					Some(val) => val,
+					None => continue,
+				};
 				if rc > 0 {
 					db_transaction.put(0, &key, &val);
 				} else if rc < 0 {

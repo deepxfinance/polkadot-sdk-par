@@ -2612,6 +2612,7 @@ dependencies = [
  "sp-trie",
  "thiserror",
  "thousands",
+ "typed-cache",
 ]
 
 [[package]]
@@ -9005,6 +9006,7 @@ dependencies = [
  "async-trait",
  "env_logger 0.11.8",
  "frame-support",
+ "frame-system",
  "futures",
  "futures-timer",
  "hex 0.3.2",
@@ -12936,7 +12938,6 @@ dependencies = [
  "lazy_static",
  "log",
  "parity-scale-codec",
- "parking_lot 0.12.5",
  "smallvec",
  "sp-std",
 ]

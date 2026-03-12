@@ -421,7 +421,7 @@ pub fn read_db<Block>(
 	col_index: u32,
 	col: u32,
 	id: BlockId<Block>,
-) -> sp_blockchain::Result<Option<DBValue>>
+) -> sp_blockchain::Result<Option<Vec<u8>>>
 where
 	Block: BlockT,
 {

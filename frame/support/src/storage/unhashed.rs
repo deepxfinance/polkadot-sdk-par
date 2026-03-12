@@ -17,8 +17,6 @@
 
 //! Operation on unhashed runtime storage.
 
-use codec::Encode;
-use crate::storage::{TStorageOverlay, TypedAppend};
 #[cfg(not(feature = "std"))]
 pub use unhashed_no_std::*;
 #[cfg(feature = "std")]
@@ -33,7 +31,8 @@ lazy_static::lazy_static! {
 #[cfg(not(feature = "std"))]
 mod unhashed_no_std {
 	use codec::{Decode, Encode};
-	use crate::storage::unhashed::kill;
+	use sp_std::vec::Vec;
+	use crate::storage::RcT;
 
 	fn key_prefix(key: &[u8]) -> &[u8] {
 		&key[..key.len().min(32)]
@@ -310,8 +309,8 @@ mod unhashed_no_std {
 #[cfg(feature = "std")]
 mod unhashed_std {
 	use codec::Encode;
-	use typed_cache::{QueryTransfer, RcT, StorageValue, TStorage, TStorageOverlay};
-	use crate::storage::TypedAppend;
+	use typed_cache::{QueryTransfer, StorageValue, TStorage, TStorageOverlay};
+	use crate::storage::{TypedAppend, RcT};
 
 	/// Return the value of the item in storage under `key`, or `None` if there is no explicit entry.
 	pub fn get<T: TStorageOverlay>(key: &[u8]) -> Option<T> {

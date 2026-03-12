@@ -24,9 +24,8 @@ use sp_runtime::{
 	traits::{Block as BlockT, HashFor},
 	StateVersion,
 };
-use sp_state_machine::{backend::{AsTrieBackend, Backend as StateBackend}, IterArgs, OverlayCache, StorageIterator, StorageKey, StorageValue, TrieBackend};
+use sp_state_machine::{backend::{AsTrieBackend, Backend as StateBackend}, IterArgs, StorageIterator, StorageKey, StorageValue, TrieBackend};
 use std::sync::Arc;
-use codec::Encode;
 
 /// State abstraction for recording stats about state access.
 pub struct RecordStatsState<S, B: BlockT> {

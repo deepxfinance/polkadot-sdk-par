@@ -150,7 +150,7 @@ mod std_reexport {
 	};
 	pub use sp_trie::{
 		trie_types::{TrieDBMutV0, TrieDBMutV1},
-		CompactProof, DBValue, LayoutV0, LayoutV1, MemoryDB, StorageProof, TrieMut,
+		CompactProof, DBValue, LayoutV0, LayoutV1, MemoryDB, StorageProof, TrieMut, RawMemoryDB,
 	};
 }
 

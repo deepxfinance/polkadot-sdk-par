@@ -163,20 +163,32 @@ pub type HashDB<'a, H> = dyn hash_db::HashDB<H, DBValue> + 'a;
 /// key conflict for non random keys).
 #[cfg(not(feature = "kvdb"))]
 pub type PrefixedMemoryDB<H> = memory_db::MemoryDB<H, memory_db::PrefixedKey<H>, DBValue>;
+#[cfg(not(feature = "kvdb"))]
+pub type PrefixedRawMemoryDB<H> = memory_db::MemoryDB<H, memory_db::PrefixedKey<H>, DBValue>;
 #[cfg(feature = "kvdb")]
 pub type PrefixedMemoryDB<H> = kv_db::MemoryDB<H, memory_db::PrefixedKey<H>, DBValue>;
+#[cfg(feature = "kvdb")]
+pub type PrefixedRawMemoryDB<H> = kv_db::MemoryDB<H, memory_db::PrefixedKey<H>, Vec<u8>>;
 /// Reexport from `hash_db`, with genericity set for `Hasher` trait.
 /// This uses a noops `KeyFunction` (key addressing must be hashed or using
 /// an encoding scheme that avoid key conflict).
 #[cfg(not(feature = "kvdb"))]
 pub type MemoryDB<H> = memory_db::MemoryDB<H, memory_db::HashKey<H>, DBValue>;
+#[cfg(not(feature = "kvdb"))]
+pub type RawMemoryDB<H> = memory_db::MemoryDB<H, memory_db::HashKey<H>, DBValue>;
 #[cfg(feature = "kvdb")]
 pub type MemoryDB<H> = kv_db::MemoryDB<H, memory_db::HashKey<H>, DBValue>;
+#[cfg(feature = "kvdb")]
+pub type RawMemoryDB<H> = kv_db::MemoryDB<H, memory_db::HashKey<H>, Vec<u8>>;
 /// Reexport from `hash_db`, with genericity set for `Hasher` trait.
 #[cfg(not(feature = "kvdb"))]
 pub type GenericMemoryDB<H, KF> = memory_db::MemoryDB<H, KF, DBValue>;
+#[cfg(not(feature = "kvdb"))]
+pub type GenericRawMemoryDB<H, KF> = memory_db::MemoryDB<H, KF, DBValue>;
 #[cfg(feature = "kvdb")]
 pub type GenericMemoryDB<H, KF> = kv_db::MemoryDB<H, KF, DBValue>;
+#[cfg(feature = "kvdb")]
+pub type GenericRawMemoryDB<H, KF> = kv_db::MemoryDB<H, KF, Vec<u8>>;
 
 /// Persistent trie database read-access interface for the a given hasher.
 pub type TrieDB<'a, 'cache, L> = trie_db::TrieDB<'a, 'cache, L>;

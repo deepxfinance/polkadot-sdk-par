@@ -444,7 +444,7 @@ where
 {
 	let db = proof.into_memory_db();
 
-	if db.contains(&root, hash_db::EMPTY_PREFIX) {
+	if HashDB::<H, Vec<u8>>::contains(&db, &root, hash_db::EMPTY_PREFIX) {
 		Ok(TrieBackendBuilder::new(db, root).build())
 	} else {
 		Err(Box::new(crate::ExecutionError::InvalidProof))

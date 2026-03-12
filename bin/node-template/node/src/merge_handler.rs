@@ -4,7 +4,7 @@ use std::sync::Arc;
 use node_template_runtime::RuntimeEvent;
 use sc_basic_authorship::{MergeSystem, MultiThreadBlockBuilder};
 use sc_client_api::Backend;
-use sp_api::{ApiExt, Changes, MergeChange, OverlayCache, OverlayedChanges, OverlayedEntry, StorageKey, StorageValue};
+use sp_api::{ApiExt, Changes, MergeChange, OverlayedChanges, OverlayedEntry, StorageKey, StorageValue};
 use sp_runtime::traits::Block as BlockT;
 use crate::merge_backend::MergeBackend;
 use crate::merge_balances::MergeBalances;
@@ -38,10 +38,10 @@ where
         <MergeBackend<B, Block> as MultiThreadBlockBuilder<B, Block, Api>>::prepare(&mut self.backend, backend, parent, api);
     }
 
-    fn prepare_thread_in_order(&mut self, thread: usize, txs: usize, cache: &mut OverlayCache, changes: &mut OverlayedChanges) {
-        <MergeBalances as MultiThreadBlockBuilder<B, Block, Api>>::prepare_thread_in_order(&mut self.balances, thread, txs, cache, changes);
-        <MergeSystem<RuntimeEvent> as MultiThreadBlockBuilder<B, Block, Api>>::prepare_thread_in_order(&mut self.system, thread, txs, cache, changes);
-        <MergeBackend<B, Block> as MultiThreadBlockBuilder<B, Block, Api>>::prepare_thread_in_order(&mut self.backend, thread, txs, cache, changes);
+    fn prepare_thread_in_order(&mut self, thread: usize, txs: usize, changes: &mut OverlayedChanges) {
+        <MergeBalances as MultiThreadBlockBuilder<B, Block, Api>>::prepare_thread_in_order(&mut self.balances, thread, txs, changes);
+        <MergeSystem<RuntimeEvent> as MultiThreadBlockBuilder<B, Block, Api>>::prepare_thread_in_order(&mut self.system, thread, txs, changes);
+        <MergeBackend<B, Block> as MultiThreadBlockBuilder<B, Block, Api>>::prepare_thread_in_order(&mut self.backend, thread, txs, changes);
     }
 
     fn copy_state(&self) -> Self {

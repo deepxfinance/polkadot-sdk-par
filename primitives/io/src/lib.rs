@@ -78,7 +78,6 @@ use secp256k1::{
 use sp_externalities::{Externalities, ExternalitiesExt};
 
 pub use sp_externalities::MultiRemovalResults;
-use typed_cache::{OverlayCache, RawValue};
 
 #[cfg(feature = "std")]
 const LOG_TARGET: &str = "runtime::io";
@@ -118,10 +117,11 @@ impl From<MultiRemovalResults> for KillStorageResult {
 	}
 }
 
+#[cfg(feature = "std")]
 /// Returns the typed cache for only `std` feature.
 pub fn mut_typed_cache<F, O>(f: F) -> Option<O>
 where
-	F: FnOnce(&mut OverlayCache) -> O,
+	F: FnOnce(&mut typed_cache::OverlayCache) -> O,
 {
 	sp_runtime_interface::with_externalities(|mut __externalities__| {
 		__externalities__.overlay_cache().map(|overlay| f(overlay)).or(None)
@@ -131,6 +131,7 @@ where
 	)
 }
 
+#[cfg(feature = "std")]
 /// Returns the typed cache for only `std` feature.
 pub fn mut_externalities<F, O>(f: F) -> O
 where

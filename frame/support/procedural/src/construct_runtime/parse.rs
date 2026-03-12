@@ -26,7 +26,6 @@ use syn::{
 	spanned::Spanned,
 	token, Attribute, Error, Ident, Path, Result, Token,
 };
-use crate::counter_prefix;
 
 mod keyword {
 	syn::custom_keyword!(Block);

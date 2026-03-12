@@ -21,6 +21,7 @@ default-features = false
 
 [dependencies.typed-cache]
 path = "../typed-cache"
+default-features = false
 
 [dev-dependencies]
 env_logger = "0.11.8"
@@ -33,6 +34,7 @@ std = [
     "hash-db/std",
     "rustc-hex",
     "memory-db/std",
+    "typed-cache/std",
 ]
 async-root = []
 dev-time = []

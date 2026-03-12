@@ -167,7 +167,7 @@ where
 	/// does not need to be computed.
 	pub fn from_raw_snapshot(&mut self, raw_storage: Vec<(H::Out, Vec<u8>)>, storage_root: H::Out) {
 		for (k, v) in raw_storage {
-			self.backend.backend_storage_mut().emplace(k, hash_db::EMPTY_PREFIX, v.into());
+			HashDB::<H, Vec<u8>>::emplace(self.backend.backend_storage_mut(), k, hash_db::EMPTY_PREFIX, v.into());
 		}
 		self.backend.set_root(storage_root);
 	}

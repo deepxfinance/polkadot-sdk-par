@@ -1072,8 +1072,13 @@ where
 				// TODO [ToDr] How to handle re-orgs? Should we re-emit all storage changes?
 				self.storage_notifications.trigger(
 					&notification.hash,
-					storage_changes.0.into_iter(),
-					storage_changes.1.into_iter().map(|(sk, v)| (sk, v.into_iter())),
+					storage_changes.0.into_iter()
+						.map(|(k, v)| (k, v.map(|v| v.get_raw(false).unwrap()))),
+					storage_changes.1.into_iter()
+						.map(|(sk, v)| (
+							sk,
+							v.into_iter().map(|(k, v)| (k, v.map(|v| v.get_raw(false).unwrap())))
+						)),
 				);
 			}
 		};
@@ -1335,6 +1340,8 @@ where
 			if let Some(child_root) = state
 				.storage(start_key)
 				.map_err(|e| sp_blockchain::Error::from_state(Box::new(e)))?
+				.map(|mut v| v.take_raw())
+				.unwrap_or_default()
 			{
 				Some((child_info(start_key)?, child_root))
 			} else {
@@ -1372,11 +1379,15 @@ where
 					state
 						.child_storage(&child.0, next_key.as_ref())
 						.map_err(|e| sp_blockchain::Error::from_state(Box::new(e)))?
+						.map(|mut v| v.take_raw())
+						.unwrap_or_default()
 						.unwrap_or_default()
 				} else {
 					state
 						.storage(next_key.as_ref())
 						.map_err(|e| sp_blockchain::Error::from_state(Box::new(e)))?
+						.map(|mut v| v.take_raw())
+						.unwrap_or_default()
 						.unwrap_or_default()
 				};
 				let size = value.len() + next_key.len();
@@ -1573,6 +1584,8 @@ where
 			.state_at(hash)?
 			.storage(&key.0)
 			.map_err(|e| sp_blockchain::Error::from_state(Box::new(e)))?
+			.map(|mut v| v.take_raw())
+			.unwrap_or_default()
 			.map(StorageData))
 	}
 
@@ -1596,6 +1609,8 @@ where
 			.state_at(hash)?
 			.child_storage(child_info, &key.0)
 			.map_err(|e| sp_blockchain::Error::from_state(Box::new(e)))?
+			.map(|mut v| v.take_raw())
+			.unwrap_or_default()
 			.map(StorageData))
 	}
 

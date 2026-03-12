@@ -25,7 +25,7 @@ use sp_std::{
 };
 // Note that `LayoutV1` usage here (proof compaction) is compatible
 // with `LayoutV0`.
-use crate::LayoutV1 as Layout;
+use crate::{DBValue, LayoutV1 as Layout};
 
 /// A proof that some set of key-value pairs are included in the storage trie. The proof contains
 /// the storage values so that the partial storage backend can be reconstructed by a verifier that
@@ -149,7 +149,7 @@ impl<H: Hasher> From<&StorageProof> for crate::MemoryDB<H> {
 	fn from(proof: &StorageProof) -> Self {
 		let mut db = crate::MemoryDB::default();
 		proof.iter_nodes().for_each(|n| {
-			db.insert(crate::EMPTY_PREFIX, &n);
+			HashDB::<H, DBValue>::insert(&mut db, crate::EMPTY_PREFIX, &n);
 		});
 		db
 	}

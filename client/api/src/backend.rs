@@ -397,7 +397,10 @@ where
 		self.inner
 			.next_pair(&self.state)?
 			.ok()
-			.map(|(key, value)| (StorageKey(key), StorageData(value)))
+			.and_then(|(key, value)|
+				value.get_raw(false)
+					.map(|value| (StorageKey(key), StorageData(value)))
+			)
 	}
 }
 

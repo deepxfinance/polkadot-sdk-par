@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
-use codec::{Encode, Decode};
+use codec::Encode;
 use frame_benchmarking::log;
 use sc_basic_authorship::{get_map_value, parse_entry_value, MultiThreadBlockBuilder};
 use sc_client_api::Backend;
@@ -24,7 +24,8 @@ where
         let parent_state = backend.state_at(*parent).unwrap();
         self.init_total_issuance =  parent_state
             .storage(&BALANCE_TOTAL_ISSUANCE.to_vec())
-            .map(|v| v.map(|data| Decode::decode(&mut data.as_slice()).unwrap()))
+            .map(|v| v.map(|data| data.get_t()))
+            .unwrap_or_default()
             .unwrap_or_default()
             .unwrap_or_default();
     }
@@ -54,15 +55,15 @@ impl MergeChange<StorageKey, Option<StorageValue>> for MergeBalances {
                     init_total_issuance + (last_sum - double_init)
                 };
                 log::trace!(target: "merge_balances", "merge Balances TotalIssuance init: {init_total_issuance} local: {local_total_issuance}, other: {other_total_issuance}, final: {final_total_issuance}, extrinsic: {final_extrinsic:?}");
-                entry_local.set(Some(final_total_issuance.encode()), false, final_extrinsic);
+                entry_local.set(Some(final_total_issuance.encode().into()), false, final_extrinsic);
                 // update conflict changes
                 let mut new_entry = OverlayedEntry::default();
-                new_entry.set(Some(final_total_issuance.encode()), true, final_extrinsic);
+                new_entry.set(Some(final_total_issuance.encode().into()), true, final_extrinsic);
                 changes.insert(BALANCE_TOTAL_ISSUANCE.to_vec(), new_entry);
             } else {
                 log::trace!(target: "merge_balances", "merge Balances TotalIssuance init: {init_total_issuance} local: None, other: {other_total_issuance}, final: {other_total_issuance}, extrinsic: {final_extrinsic:?}");
                 let mut new_entry = OverlayedEntry::default();
-                new_entry.set(Some(other_total_issuance.encode()), true, final_extrinsic);
+                new_entry.set(Some(other_total_issuance.encode().into()), true, final_extrinsic);
                 local.insert(BALANCE_TOTAL_ISSUANCE.to_vec(), new_entry);
             }
         }

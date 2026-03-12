@@ -9,8 +9,10 @@ use sp_api::{ApiExt, OverlayCache};
 use sp_core::H256;
 use sp_io::hashing::{blake2_128, twox_64};
 use sp_runtime::Digest;
-use sp_runtime::traits::{Block as BlockT, NumberFor};
+use sp_runtime::traits::{Block as BlockT, NumberFor, Member};
 use sp_state_machine::{Changes, MergeChange, OverlayedChanges, OverlayedEntry, StorageKey, StorageValue};
+use frame_system::{EventRecord, Phase};
+use frame_support::Parameter;
 use super::{get_map_value, get_top_value, parse_entry_value};
 
 pub const EXTRINSIC_INDEX: [u8; 16] = [58, 101, 120, 116, 114, 105, 110, 115, 105, 99, 95, 105, 110, 100, 101, 120];
@@ -39,21 +41,7 @@ pub struct MergeSystem<RE> {
     phantom: PhantomData<RE>,
 }
 
-#[derive(Encode, Decode, Clone, Debug)]
-pub struct EventRecord<RuntimeEvent> {
-    pub phase: Phase,
-    pub event: RuntimeEvent,
-    pub topics: Vec<H256>,
-}
-
-#[derive(Encode, Decode, Debug, Clone)]
-pub enum Phase {
-    ApplyExtrinsic(u32),
-    Finalization,
-    Initialization,
-}
-
-impl<RE: Encode + Decode + Debug + Clone> MergeSystem<RE> {
+impl<RE: Parameter + Member> MergeSystem<RE> {
     fn merge_extrinsic_index(
         &self,
         local: &mut BTreeMap<StorageKey, OverlayedEntry<Option<StorageValue>>>,
@@ -88,7 +76,6 @@ impl<RE: Encode + Decode + Debug + Clone> MergeSystem<RE> {
         local: &mut BTreeMap<StorageKey, OverlayedEntry<Option<StorageValue>>>,
         other: &mut BTreeMap<StorageKey, OverlayedEntry<Option<StorageValue>>>,
         offset: u32,
-        _in_order: bool,
     ) {
         if let Some(entry_other) = other.remove(&SYSTEM_ALL_EXTRINSICS_LEN.to_vec()) {
             let other_len: u32 = parse_entry_value(&entry_other).unwrap_or_default();
@@ -116,7 +103,6 @@ impl<RE: Encode + Decode + Debug + Clone> MergeSystem<RE> {
         local: &mut BTreeMap<StorageKey, OverlayedEntry<Option<StorageValue>>>,
         other: &mut BTreeMap<StorageKey, OverlayedEntry<Option<StorageValue>>>,
         offset: u32,
-        _in_order: bool,
     ) {
         if let Some(entry_other) = other.remove(&SYSTEM_DIGEST.to_vec()) {
             let other_digest: Digest = parse_entry_value(&entry_other).unwrap_or_default();
@@ -149,7 +135,6 @@ impl<RE: Encode + Decode + Debug + Clone> MergeSystem<RE> {
         local: &mut BTreeMap<StorageKey, OverlayedEntry<Option<StorageValue>>>,
         other: &mut BTreeMap<StorageKey, OverlayedEntry<Option<StorageValue>>>,
         offset: u32,
-        _in_order: bool,
     ) {
         if let Some(entry_other) = other.remove(&SYSTEM_BLOCK_WEIGHT.to_vec()) {
             let other_weight: PerDispatchClass<Weight> = parse_entry_value(&entry_other).unwrap_or_default();
@@ -192,7 +177,6 @@ impl<RE: Encode + Decode + Debug + Clone> MergeSystem<RE> {
         local: &mut BTreeMap<StorageKey, OverlayedEntry<Option<StorageValue>>>,
         other: &mut BTreeMap<StorageKey, OverlayedEntry<Option<StorageValue>>>,
         offset: u32,
-        _in_order: bool,
     ) {
         if let Some(entry_other) = other.remove(&SYSTEM_EVENT_COUNT.to_vec()) {
             let other_count: u32 = parse_entry_value(&entry_other).unwrap_or_default();
@@ -221,121 +205,53 @@ impl<RE: Encode + Decode + Debug + Clone> MergeSystem<RE> {
         offset: u32,
         in_order: bool,
     ) {
-        if in_order {
-            if let Some(entry_other) = other.remove(&SYSTEM_EVENTS.to_vec()) {
-                if let Some(entry_local) = local.get_mut(&SYSTEM_EVENTS.to_vec()) {
-                    if let Some(append_events) = entry_other.into_value() {
-                        let append_len = u32::from(Compact::<u32>::decode(&mut &append_events[..]).unwrap());
-                        let encoded_append_len = Compact::<u32>::compact_len(&append_len);
-                        if let Some(local_events) = entry_local.value_mut() {
-                            let local_len = u32::from(Compact::<u32>::decode(&mut &local_events[..]).unwrap());
-                            let encoded_local_len = Compact::<u32>::compact_len(&local_len);
-                            let new_len = local_len.saturating_add(append_len);
-                            let new_encoded_len = Compact::<u32>::compact_len(&new_len);
-                            let new_encoded_len_data = Compact(new_len).encode();
-                            if new_encoded_len == encoded_local_len {
-                                local_events[..new_encoded_len].copy_from_slice(&new_encoded_len_data);
-                            } else {
-                                *local_events = [&new_encoded_len_data, &local_events[encoded_local_len..]].concat();
-                            }
-                            log::trace!(target: "merge_system", "merge Events(in_order) len: {local_len}+{append_len}>{new_len}");
-                            local_events.extend(&append_events[encoded_append_len..]);
-                        } else {
-                            log::trace!(target: "merge_system", "merge Events(in_order) append other: {append_len}");
-                            entry_local.set(Some(append_events), false, None);
-                        }
-                    } else {
-                        log::trace!(target: "merge_system", "merge Events(in_order) other: None");
-                    }
-                } else {
-                    log::trace!(target: "merge_system", "merge Events(in_order) local: None");
-                    local.insert(SYSTEM_EVENTS.to_vec(), entry_other);
-                }
-            }
-            return;
-        }
         if let Some(entry_other) = other.remove(&SYSTEM_EVENTS.to_vec()) {
-            let other_events: Vec<EventRecord<RE>> = parse_entry_value(&entry_other).unwrap_or_default();
-            let extrinsics = entry_other.extrinsics();
-            let final_extrinsic = extrinsics.last().cloned().map(|e| e.saturating_add(offset).saturating_sub(self.init_index));
+            let mut other_events = entry_other.into_value().expect("EntryValue Must Some");
+            if !other_events.muted() || !other_events.exists() { return; }
             if let Some(entry_local) = local.get_mut(&SYSTEM_EVENTS.to_vec()) {
-                log::trace!(target: "merge_system", "merge Events other: {other_events:?}");
-                let local_event_data = entry_local
-                    .value_ref()
-                    .clone()
-                    .unwrap_or_default();
-                let append_events: Vec<_> = other_events
-                    .into_iter()
-                    .filter_map(|mut event| match &mut event.phase {
-                        // drop duplicate initialize events.
-                        Phase::Initialization => None,
-                        Phase::ApplyExtrinsic(e) => {
-                            if *e < self.init_index {
-                                // duplicate initial events will not be pushed.
-                                None
-                            } else {
-                                *e = e.saturating_add(offset).saturating_sub(self.init_index);
-                                Some(event)
+                let local_events = entry_local.value_mut().as_mut().expect("EntryValue Must Some");
+                let mut append_t = other_events.take_t::<Vec<Box<EventRecord<RE, H256>>>>().expect("No expected to be empty");
+                if !in_order {
+                    append_t = append_t
+                        .into_iter()
+                        .filter_map(|mut event| match &mut event.phase {
+                            // drop duplicate initialize events.
+                            Phase::Initialization => None,
+                            Phase::ApplyExtrinsic(e) => {
+                                if *e < self.init_index {
+                                    // duplicate initial events will not be pushed.
+                                    None
+                                } else {
+                                    *e = e.saturating_add(offset).saturating_sub(self.init_index);
+                                    Some(event)
+                                }
                             }
-                        }
-                        Phase::Finalization => Some(event),
-                    })
-                    .collect();
-                let final_events_encoded = <Vec<EventRecord<RE>> as EncodeAppend>::append_or_new(local_event_data, append_events)
-                    .expect("append new events");
-                entry_local.set(Some(final_events_encoded), false, final_extrinsic);
+                            Phase::Finalization => Some(event),
+                        })
+                        .collect();
+                }
+                local_events.downcast_mut::<Vec<Box<EventRecord<RE, H256>>>>()
+                    .mutate_value_query(|events| {
+                        log::trace!(target: "merge_system", "merge Events len: {}+{}>{}", events.len(), append_t.len(), events.len() + append_t.len());
+                        events.extend(append_t)
+                    });
             } else {
-                log::trace!(target: "merge_system", "merge Events local: None, other: {other_events:?}");
-                local.insert(SYSTEM_EVENTS.to_vec(), entry_other);
+                log::trace!(target: "merge_system", "merge Events local: None");
+                let mut new_entry = OverlayedEntry::default();
+                new_entry.set(Some(other_events), true, None);
+                local.insert(SYSTEM_EVENTS.to_vec(), new_entry);
             }
         }
     }
 
     fn merge_events_map(
         &self,
-        local: &mut BTreeMap<StorageKey, OverlayedEntry<Option<StorageValue>>>,
-        other: &mut BTreeMap<StorageKey, OverlayedEntry<Option<StorageValue>>>,
-        offset: u32,
+        _local: &mut BTreeMap<StorageKey, OverlayedEntry<Option<StorageValue>>>,
+        _other: &mut BTreeMap<StorageKey, OverlayedEntry<Option<StorageValue>>>,
+        _offset: u32,
         _in_order: bool,
     ) {
-        let events_map_key = [SYSTEM_EVENTS_MAP_PREFIX.to_vec(), blake2_128(&self.init_number_encoded).to_vec()].concat();
-        if let Some(entry_other) = other.remove(&events_map_key) {
-            let other_events: Vec<EventRecord<RE>> = parse_entry_value(&entry_other).unwrap_or_default();
-            let extrinsics = entry_other.extrinsics();
-            let final_extrinsic = extrinsics.last().cloned().map(|e| e.saturating_add(offset).saturating_sub(self.init_index));
-            if let Some(entry_local) = local.get_mut(&events_map_key) {
-                log::trace!(target: "merge_system", "merge EventsMap other: {other_events:?}");
-                let local_event_data = entry_local
-                    .value_ref()
-                    .clone()
-                    .unwrap_or_default()
-                    .get_raw(false)
-                    .unwrap_or_default();
-                let append_events: Vec<_> = other_events
-                    .into_iter()
-                    .filter_map(|mut event| match &mut event.phase {
-                        // drop duplicate initialize events.
-                        Phase::Initialization => None,
-                        Phase::ApplyExtrinsic(e) => {
-                            if *e < self.init_index {
-                                // duplicate initial events will not be pushed.
-                                None
-                            } else {
-                                *e = e.saturating_add(offset).saturating_sub(self.init_index);
-                                Some(event)
-                            }
-                        }
-                        Phase::Finalization => Some(event)
-                    })
-                    .collect();
-                let final_events_encoded = <Vec<EventRecord<RE>> as EncodeAppend>::append_or_new(local_event_data, append_events)
-                    .expect("append new events");
-                entry_local.set(Some(final_events_encoded.into()), false, final_extrinsic);
-            } else {
-                log::trace!(target: "merge_system", "merge EventsMap local: None, other: {other_events:?}");
-                local.insert(events_map_key, entry_other);
-            }
-        }
+        unimplemented!("disabled for not used before `finalize`");
     }
 
     fn merge_execution_phase(
@@ -346,18 +262,18 @@ impl<RE: Encode + Decode + Debug + Clone> MergeSystem<RE> {
         offset: u32,
         in_order: bool,
     ) {
+        let mut entry_other = match other.remove(&SYSTEM_EXECUTION_PHASE.to_vec()) {
+            Some(other) => other,
+            None => return,
+        };
         if in_order {
-            if let Some(entry_other) = other.remove(&SYSTEM_EXECUTION_PHASE.to_vec()) {
-                log::trace!(target: "merge_system", "merge ExecutionPhase(in_order) overwrite by other");
-                local.insert(SYSTEM_EXECUTION_PHASE.to_vec(), entry_other);
-            }
+            log::trace!(target: "merge_system", "merge ExecutionPhase(in_order) overwrite by other");
+            local.insert(SYSTEM_EXECUTION_PHASE.to_vec(), entry_other);
             return;
-        }
-        if let Some(entry_other) = other.remove(&SYSTEM_EXECUTION_PHASE.to_vec()) {
-            let other_phase: Phase = parse_entry_value(&entry_other).unwrap_or(Phase::ApplyExtrinsic(0));
-            let extrinsics = entry_other.extrinsics();
-            let final_extrinsic = extrinsics.last().cloned().map(|e| e.saturating_add(offset).saturating_sub(self.init_index));
+        } else {
             if let Some(entry_local) = local.get_mut(&SYSTEM_EXECUTION_PHASE.to_vec()) {
+                let other_phase = entry_other.into_value().expect("EntryValue Must Some")
+                    .take_muted_t().unwrap_or(Phase::ApplyExtrinsic(0));
                 let local_phase: Phase = parse_entry_value(&entry_local).unwrap_or(Phase::ApplyExtrinsic(0));
                 let final_phase = match (&local_phase, &other_phase) {
                     (Phase::ApplyExtrinsic(e1), Phase::ApplyExtrinsic(e2)) => {
@@ -371,13 +287,13 @@ impl<RE: Encode + Decode + Debug + Clone> MergeSystem<RE> {
                     },
                 };
                 log::trace!(target: "merge_system", "merge ExecutionPhase init: {}, local: {local_phase:?}, other: {other_phase:?}, final: {final_phase:?}", self.init_index);
-                entry_local.set(Some(final_phase.encode().into()), false, final_extrinsic);
+                entry_local.set(Some(final_phase.encode().into()), false, None);
                 // update conflict changes
                 let mut new_entry = OverlayedEntry::default();
-                new_entry.set(Some(final_phase.encode().into()), true, final_extrinsic);
+                new_entry.set(Some(final_phase.encode().into()), true, None);
                 changes.insert(SYSTEM_EXECUTION_PHASE.to_vec(), new_entry);
             } else {
-                log::trace!(target: "merge_system", "merge ExecutionPhase local: None, other: {other_phase:?}, final: {other_phase:?}");
+                log::trace!(target: "merge_system", "merge ExecutionPhase local: None, final: {:?}", parse_entry_value::<Phase>(&entry_other));
                 local.insert(SYSTEM_EXECUTION_PHASE.to_vec(), entry_other);
             }
         }
@@ -388,9 +304,11 @@ impl<RE: Encode + Decode + Debug + Clone> MergeSystem<RE> {
         local: &mut BTreeMap<StorageKey, OverlayedEntry<Option<StorageValue>>>,
         other: &mut BTreeMap<StorageKey, OverlayedEntry<Option<StorageValue>>>,
         offset: u32,
-        _in_order: bool,
     ) {
-        let other_keys = other.keys().filter(|k| k.starts_with(SYSTEM_EXTRINSIC_DATA_PREFIX.as_slice())).cloned().collect::<Vec<_>>();
+        let other_keys = other.keys()
+            .filter(|k| k.starts_with(SYSTEM_EXTRINSIC_DATA_PREFIX.as_slice()))
+            .cloned()
+            .collect::<Vec<_>>();
         for key in other_keys {
             let entry_other = other.remove(&key).unwrap();
             // update "System ExtrinsicData"
@@ -415,28 +333,25 @@ impl<RE: Encode + Decode + Debug + Clone> MergeSystem<RE> {
         changes: &mut Changes,
         local: &mut BTreeMap<StorageKey, OverlayedEntry<Option<StorageValue>>>,
         other: &mut BTreeMap<StorageKey, OverlayedEntry<Option<StorageValue>>>,
-        _offset: u32,
-        _in_order: bool,
     ) {
-        if let Some(entry_other) = other.remove(&THREAD_ROOT.to_vec()) {
+        if let Some(mut entry_other) = other.remove(&THREAD_ROOT.to_vec()) {
             if let Some(entry_local) = local.get_mut(&THREAD_ROOT.to_vec()) {
-                let other_root = entry_other.into_value();
-                if let Some(local_root) = entry_local.value_mut() {
-                    if let Some(other_root) = other_root {
-                        log::trace!(target: "merge_system", "merge Root extend other");
-                        local_root.extend(other_root);
-                    }
-                    // update conflict changes
-                    let mut new_entry = OverlayedEntry::default();
-                    new_entry.set(Some(local_root.clone()), true, None);
-                    changes.insert(THREAD_ROOT.to_vec(), new_entry);
-                } else if let Some(other_root) = other_root {
-                    log::trace!(target: "merge_system", "merge Root overwrite by other for local: None");
-                    entry_local.set(Some(other_root.clone()), true, None);
-                    // update conflict changes
-                    let mut new_entry = OverlayedEntry::default();
-                    new_entry.set(Some(other_root), true, None);
-                    changes.insert(THREAD_ROOT.to_vec(), new_entry);
+                let other_root = entry_other.into_value().expect("EntryValue Must Some").take_muted_raw();
+                if let Some(other_root) = other_root {
+                    entry_local.value_mut().as_mut().expect("EntryValue Must Some")
+                        .mutate_raw(|local_root| {
+                            if let Some(local_root) = local_root {
+                                log::trace!(target: "merge_system", "merge Root extend other");
+                                local_root.extend(other_root);
+                                // update conflict changes
+                                let mut new_entry = OverlayedEntry::default();
+                                new_entry.set(Some(local_root.clone().into()), true, None);
+                                changes.insert(THREAD_ROOT.to_vec(), new_entry);
+                            } else {
+                                log::trace!(target: "merge_system", "merge Root overwrite by other for local: None");
+                                *local_root = Some(other_root);
+                            }
+                        });
                 }
             } else {
                 log::trace!(target: "merge_system", "merge Root overwrite by other");
@@ -448,7 +363,7 @@ impl<RE: Encode + Decode + Debug + Clone> MergeSystem<RE> {
     }
 }
 
-impl<RE: Encode + Decode + Debug + Clone> Default for MergeSystem<RE> {
+impl<RE> Default for MergeSystem<RE> {
     fn default() -> Self {
         MergeSystem {
             init_index: 0,
@@ -463,7 +378,7 @@ impl<RE: Encode + Decode + Debug + Clone> Default for MergeSystem<RE> {
     }
 }
 
-impl<RE: Encode + Decode + Debug + Clone, B, Block: BlockT, Api: ApiExt<Block>> super::MultiThreadBlockBuilder<B, Block, Api> for MergeSystem<RE> {
+impl<RE: Parameter + Member, B, Block: BlockT, Api: ApiExt<Block>> super::MultiThreadBlockBuilder<B, Block, Api> for MergeSystem<RE> {
     fn prepare(&mut self, _backend: &Arc<B>, _parent: &Block::Hash, api: &Api) {
         self.init_index = api.get_typed_change(&EXTRINSIC_INDEX.to_vec())
             .unwrap_or_default()
@@ -487,18 +402,18 @@ impl<RE: Encode + Decode + Debug + Clone, B, Block: BlockT, Api: ApiExt<Block>> 
             .unwrap_or(get_top_value(api, &SYSTEM_ALL_EXTRINSICS_LEN.to_vec()).unwrap_or_default());
     }
 
-    fn prepare_thread_in_order(&mut self, thread: usize, txs: usize, cache: &mut OverlayCache, changes: &mut OverlayedChanges) {
+    fn prepare_thread_in_order(&mut self, thread: usize, txs: usize, changes: &mut OverlayedChanges) {
         let typed_cache: bool = std::env::var("TYPED_CACHE").unwrap_or("true".into()).parse().unwrap_or(true);
 
         // 1. update EventIndex for thread start index. For fast event merge.
         if thread > 1 {
             let execution_phase = Phase::ApplyExtrinsic(self.index_count);
             if typed_cache {
-                cache.put_t(&EXTRINSIC_INDEX, &EXTRINSIC_INDEX, self.index_count);
-                cache.try_update_raw(&SYSTEM_EXECUTION_PHASE, &SYSTEM_EXECUTION_PHASE, execution_phase.encode());
+                changes.top.set(EXTRINSIC_INDEX.to_vec(), Some(StorageValue::new_rct(Some(self.index_count), true)), None);
+                changes.top.set(SYSTEM_EXECUTION_PHASE.to_vec(), Some(StorageValue::new_rct(Some(execution_phase), true)), None);
             } else {
-                changes.top.set(EXTRINSIC_INDEX.to_vec(), Some(self.index_count.encode()), None);
-                changes.top.set(SYSTEM_EXECUTION_PHASE.to_vec(), Some(execution_phase.encode()), None);
+                changes.top.set(EXTRINSIC_INDEX.to_vec(), Some(self.index_count.encode().into()), None);
+                changes.top.set(SYSTEM_EXECUTION_PHASE.to_vec(), Some(execution_phase.encode().into()), None);
             }
         }
         self.index_count += txs as u32;
@@ -508,7 +423,7 @@ impl<RE: Encode + Decode + Debug + Clone, B, Block: BlockT, Api: ApiExt<Block>> 
         // 3. if not first thread, remove init events for fast Events merge.
         if thread > 1 {
             if typed_cache {
-                cache.try_kill(&SYSTEM_EVENTS, &SYSTEM_EVENTS);
+                changes.top.kill(&SYSTEM_EVENTS);
                 // we actually use raw data for `Events` since it only use `append`.
                 changes.top.set(SYSTEM_EVENTS.to_vec(), None, None);
             } else {
@@ -522,7 +437,7 @@ impl<RE: Encode + Decode + Debug + Clone, B, Block: BlockT, Api: ApiExt<Block>> 
     }
 }
 
-impl<RE: Encode + Decode + Debug + Clone> MergeChange<StorageKey, Option<StorageValue>> for MergeSystem<RE> {
+impl<RE: Parameter + Member> MergeChange<StorageKey, Option<StorageValue>> for MergeSystem<RE> {
     fn merge_changes(&self, local: &mut Changes, other: &mut Changes, in_order: bool) -> Result<Changes, Vec<StorageKey>> {
         let mut changes = Changes::default();
         let offset: u32 = get_map_value(local, &EXTRINSIC_INDEX.to_vec()).unwrap_or_default();
@@ -531,13 +446,13 @@ impl<RE: Encode + Decode + Debug + Clone> MergeChange<StorageKey, Option<Storage
         // update "System ExtrinsicCount" u32
         self.merge_extrinsic_count();
         // update "System AllExtrinsicsLen" u32
-        self.merge_all_extrinsics_len(&mut changes, local, other, offset, in_order);
+        self.merge_all_extrinsics_len(&mut changes, local, other, offset);
         // update "System Digest"
-        self.merge_digest(&mut changes, local, other, offset, in_order);
+        self.merge_digest(&mut changes, local, other, offset);
         // update "System BlockWeight"
-        self.merge_block_weight(&mut changes, local, other, offset, in_order);
+        self.merge_block_weight(&mut changes, local, other, offset);
         // update "System EventCount" u32
-        self.merge_event_count(&mut changes, local, other, offset, in_order);
+        self.merge_event_count(&mut changes, local, other, offset);
         // update "System Events"(disabled for events are stored by map for block and thread).
         // self.merge_events(local, other, offset, in_order);
         // update "System EventsMap"(disabled for not used before `finalize`)
@@ -545,10 +460,10 @@ impl<RE: Encode + Decode + Debug + Clone> MergeChange<StorageKey, Option<Storage
         // update "System ExecutionPhase" u32
         self.merge_execution_phase(&mut changes, local, other, offset, in_order);
         // update "System ExtrinsicData"
-        self.merge_extrinsic_data(local, other, offset, in_order);
+        self.merge_extrinsic_data(local, other, offset);
         // update "Thread Root"
         // this is an extra data not in System storage.
-        self.merge_root(&mut changes, local, other, offset, in_order);
+        self.merge_root(&mut changes, local, other);
         Ok(changes)
     }
 
@@ -558,7 +473,12 @@ impl<RE: Encode + Decode + Debug + Clone> MergeChange<StorageKey, Option<Storage
         let mut weight = value.len() as u32;
         let events_weight = value
             .get(&SYSTEM_EVENTS.to_vec())
-            .map(|v| v.value_ref().as_ref().map(|d| <Compact<u32>>::decode(&mut d.as_slice()).unwrap().0))
+            .map(|e| e.value().map(|v| v
+                .map::<Vec<Box<EventRecord<RE, H256>>>, _>(|e| e.as_ref().map(|events| events.len() as u32))
+                .or(v.map_raw::<_>(|raw| raw.as_ref().map(|d| <Compact<u32>>::decode(&mut d.as_slice()).unwrap().0)))
+                .unwrap_or_default()
+                .unwrap_or_default()
+            ))
             .unwrap_or_default()
             .unwrap_or_default();
         weight += events_weight;

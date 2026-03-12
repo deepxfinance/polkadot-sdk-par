@@ -8,12 +8,11 @@ pub mod oracle;
 use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
-use codec::Decode;
 use frame_support::storage::TStorageOverlay;
 use sp_api::{ApiExt, HeaderT};
 use sp_consensus::Proposal;
 use sp_runtime::traits::Block as BlockT;
-use sp_state_machine::{MergeChange, OverlayCache, OverlayedChanges, OverlayedEntry, StorageKey, StorageValue};
+use sp_state_machine::{MergeChange, OverlayedChanges, OverlayedEntry, StorageKey, StorageValue};
 pub use merge_system::*;
 pub use mth_authorship::*;
 use sp_core::ExecutionContext;
@@ -27,7 +26,7 @@ pub trait MultiThreadBlockBuilder<B, Block: BlockT, Api>: MergeChange<StorageKey
     /// Pre handle the state for future [MergeChange::merge_changes]
     fn prepare(&mut self, _backend: &Arc<B>, _parent: &Block::Hash, _api: &Api) {}
 
-    fn prepare_thread_in_order(&mut self, _thread: usize, _txs: usize, _cache: &mut OverlayCache, _changes: &mut OverlayedChanges) {}
+    fn prepare_thread_in_order(&mut self, _thread: usize, _txs: usize, _changes: &mut OverlayedChanges) {}
 
     /// Copy a new Self for another spawn merge work.
     fn copy_state(&self) -> Self;
@@ -105,35 +104,12 @@ pub trait ExtraExecute<Block: BlockT, Api: ApiExt<Block>> {
 }
 
 pub fn parse_entry_value<T: TStorageOverlay>(entry: &OverlayedEntry<Option<StorageValue>>) -> Option<T> {
-    #[cfg(not(feature = "typed-cache"))]
-    { entry.value_ref().as_ref().map(|v| Decode::decode(&mut v.as_slice()).unwrap()) }
-    #[cfg(feature = "typed-cache")]
-    {
-        entry.value_ref().as_ref()
-            .and_then(|v| if v.muted() {
-                v.get_t()
-            } else {
-                None
-            })
-    }
+    entry.value_ref().as_ref().and_then(|v| v.get_muted_t())
 }
 
 pub fn get_map_value<T: TStorageOverlay>(map: &BTreeMap<StorageKey, OverlayedEntry<Option<StorageValue>>>, key: &Vec<u8>) -> Option<T> {
-    #[cfg(not(feature = "typed-cache"))]
-    {
-        map.get(key)
-            .map(|e| e.value_ref().as_ref().map(|v| codec::Decode::decode(&mut v.as_slice()).unwrap()))
-            .unwrap_or_default()
-    }
-    #[cfg(feature = "typed-cache")]
     map.get(key)
-        .and_then(|e| e.value_ref().value_ref().as_ref()
-            .and_then(|v| if v.muted() {
-                v.get_t()
-            } else {
-                None
-            })
-        )?
+        .and_then(|e| e.value_ref().as_ref().and_then(|v| v.get_muted_t()))?
 }
 
 pub fn get_top_value<Block: BlockT, Api: ApiExt<Block>, T: TStorageOverlay>(api: &Api, key: &Vec<u8>) -> Option<T> {
