@@ -1275,11 +1275,9 @@ pub fn extrinsics_data_root<H: Hash>(xts: Vec<Vec<u8>>) -> H::Output {
 }
 
 pub fn set_threads_to_storage<Block: BlockT>(block: NumberFor<Block>, threads: u8, changes: &mut Changes) {
-    use sp_core::blake2_128;
-
     const SYSTEM_THREADS_PREFIX: [u8; 32] = [38, 170, 57, 78, 234, 86, 48, 224, 124, 72, 174, 12, 149, 88, 206, 247, 156, 181, 201, 244, 0, 171, 65, 57, 156, 107, 139, 81, 248, 209, 136, 25];
 
-    let threads_key = [SYSTEM_THREADS_PREFIX.to_vec(), blake2_128(&block.encode()).to_vec()].concat();
+    let threads_key = [SYSTEM_THREADS_PREFIX.to_vec(), block.encode()].concat();
     if let Some(entry) = changes.get_mut(&threads_key) {
         entry.set(Some(threads.encode()), false, None);
     } else {
